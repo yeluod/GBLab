@@ -8,7 +8,7 @@ export type {
   SimulatedChannel,
   SimulatedDevice,
   RegistrationStatus,
-  SipServiceConfig,
   SubscriptionKind,
   SubscriptionStatus,
 } from './types';
+export type { SipServiceConfig } from '@/features/settings';

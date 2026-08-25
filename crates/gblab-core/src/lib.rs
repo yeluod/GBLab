@@ -16,4 +16,5 @@ pub mod sip;
 mod error;
 
 pub use application::{CoreInfo, CoreService};
+pub use configuration::{SipServiceConfiguration, SipTransport};
 pub use error::{CoreError, Result};

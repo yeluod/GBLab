@@ -1,13 +1,3 @@
-/** 唯一 SIP 服务的前端演示配置。 */
-export interface SipServiceConfig {
-  uri: string;
-  transport: 'UDP' | 'TCP';
-  platformId: string;
-  domain: string;
-  registerExpires: number;
-  keepaliveInterval: number;
-}
-
 /** 模拟设备支持的最小类型集合。 */
 export type DeviceType = '摄像机' | '球机' | 'NVR' | '门禁设备';
 

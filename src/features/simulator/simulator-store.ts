@@ -1,6 +1,13 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
+import {
+  getSipServiceConfiguration,
+  saveSipServiceConfiguration,
+  type ConfigurationCommandError,
+  type SipServiceConfig,
+} from '@/features/settings';
+
 import type {
   BatchDeviceDraft,
   DeviceUpdateDraft,
@@ -9,7 +16,6 @@ import type {
   OperationResult,
   SimulatedChannel,
   SimulatedDevice,
-  SipServiceConfig,
   SubscriptionKind,
 } from './types';
 
@@ -18,6 +24,19 @@ const MAX_BATCH_DEVICE_COUNT = 1_000;
 const MAX_CHANNEL_COUNT = 128;
 const MAX_INTERACTION_LOG_COUNT = 500;
 const DEFAULT_CREATED_AT = '2026-08-25 14:20:00';
+
+function getConfigurationErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const commandError = error as ConfigurationCommandError;
+    if (typeof commandError.message === 'string' && commandError.message.length > 0) {
+      return commandError.message;
+    }
+  }
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+  return '桌面后端暂时不可用，请重试。';
+}
 
 function createInitialDevices(): SimulatedDevice[] {
   return [
@@ -237,18 +256,52 @@ function validateDeviceDraft(draft: DeviceUpdateDraft): OperationResult {
   return { ok: true };
 }
 
-/**
- * 静态前端演示数据源。后续接入桌面核心时，以同名操作替换为类型化 IPC 调用。
- */
+function validateSipServiceConfig(config: SipServiceConfig): OperationResult {
+  if (!config.uri.trim().startsWith('sip:')) {
+    return { ok: false, message: 'SIP 地址必须以 sip: 开头。' };
+  }
+  if (!DEVICE_ID_PATTERN.test(config.platformId.trim())) {
+    return { ok: false, message: '平台 ID 必须为 20 位数字。' };
+  }
+  if (config.password.length === 0 || config.password.length > 128) {
+    return { ok: false, message: '密码不能为空且长度不能超过 128 个字符。' };
+  }
+  if (/\p{Cc}/u.test(config.password)) {
+    return { ok: false, message: '密码不能包含控制字符。' };
+  }
+  if (
+    config.domain.trim().length === 0 ||
+    config.registerExpires <= 0 ||
+    config.keepaliveInterval <= 0
+  ) {
+    return { ok: false, message: '请填写有效的服务配置。' };
+  }
+
+  return { ok: true };
+}
+
+function normalizeSipServiceConfig(config: SipServiceConfig): SipServiceConfig {
+  return {
+    ...config,
+    uri: config.uri.trim(),
+    platformId: config.platformId.trim(),
+    domain: config.domain.trim(),
+  };
+}
+
+/** 设备与运行状态演示数据源；SIP 服务配置通过类型化 IPC 读写桌面核心。 */
 export const useSimulatorStore = defineStore('simulator', () => {
   const sipService = ref<SipServiceConfig>({
     uri: 'sip:192.168.1.100:5060',
     transport: 'UDP',
     platformId: '34020000002000000001',
     domain: '3402000000',
+    password: '',
     registerExpires: 3_600,
     keepaliveInterval: 60,
   });
+  const isSipServiceLoading = ref(false);
+  const isSipServiceSaving = ref(false);
   const devices = ref<SimulatedDevice[]>(createInitialDevices());
   const subscriptions = ref<DeviceSubscription[]>(createInitialSubscriptions());
   const channels = ref<SimulatedChannel[]>(
@@ -293,22 +346,51 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   function updateSipService(config: SipServiceConfig): OperationResult {
-    if (!config.uri.trim().startsWith('sip:')) {
-      return { ok: false, message: 'SIP 地址必须以 sip: 开头。' };
-    }
-    if (!DEVICE_ID_PATTERN.test(config.platformId)) {
-      return { ok: false, message: '平台 ID 必须为 20 位数字。' };
-    }
-    if (
-      config.domain.trim().length === 0 ||
-      config.registerExpires <= 0 ||
-      config.keepaliveInterval <= 0
-    ) {
-      return { ok: false, message: '请填写有效的服务配置。' };
+    const normalized = normalizeSipServiceConfig(config);
+    const validation = validateSipServiceConfig(normalized);
+    if (!validation.ok) {
+      return validation;
     }
 
-    sipService.value = { ...config, uri: config.uri.trim(), domain: config.domain.trim() };
+    sipService.value = normalized;
     return { ok: true };
+  }
+
+  async function loadSipService(): Promise<OperationResult> {
+    if (isSipServiceLoading.value) {
+      return { ok: false, message: 'SIP 服务配置正在加载。' };
+    }
+
+    isSipServiceLoading.value = true;
+    try {
+      sipService.value = await getSipServiceConfiguration();
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isSipServiceLoading.value = false;
+    }
+  }
+
+  async function saveSipService(config: SipServiceConfig): Promise<OperationResult> {
+    if (isSipServiceSaving.value) {
+      return { ok: false, message: 'SIP 服务配置正在保存。' };
+    }
+    const normalized = normalizeSipServiceConfig(config);
+    const validation = validateSipServiceConfig(normalized);
+    if (!validation.ok) {
+      return validation;
+    }
+
+    isSipServiceSaving.value = true;
+    try {
+      sipService.value = await saveSipServiceConfiguration(normalized);
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isSipServiceSaving.value = false;
+    }
   }
 
   function updateDevice(deviceId: string, draft: DeviceUpdateDraft): OperationResult {
@@ -434,6 +516,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
 
   return {
     sipService,
+    isSipServiceLoading,
+    isSipServiceSaving,
     devices,
     subscriptions,
     channels,
@@ -442,6 +526,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
     registeredDeviceCount,
     activeSubscriptionCount,
     updateSipService,
+    loadSipService,
+    saveSipService,
     updateDevice,
     addDevicesInBatch,
     deleteDevice,

@@ -24,6 +24,10 @@ pub fn run() -> Result<(), tauri::Error> {
             app.manage(AppState::new(core));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::get_app_info])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_app_info,
+            commands::get_sip_service_configuration,
+            commands::save_sip_service_configuration
+        ])
         .run(tauri::generate_context!())
 }

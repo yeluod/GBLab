@@ -47,14 +47,14 @@ src/
 │   ├── stores/
 │   └── bootstrap.ts
 ├── features/                       # 按业务领域组织
-│   ├── simulator/                  # 静态演示状态；后续替换为类型化 IPC
+│   ├── simulator/                  # 设备与运行状态演示；设置通过公开入口调用 IPC
 │   ├── platforms/
 │   ├── devices/
 │   ├── channels/
 │   ├── scenarios/
 │   ├── media/
 │   ├── logs/
-│   └── settings/
+│   └── settings/                   # SIP 配置类型、读取与保存 API
 ├── infrastructure/                 # 技术适配，不包含业务规则
 │   ├── tauri/                      # 类型化 command/event 客户端
 │   ├── telemetry/
@@ -93,7 +93,7 @@ src-tauri/
 │   └── README.md                   # 来源、版本、许可证与校验规则
 ├── src/
 │   ├── commands/                   # 面向前端的薄 IPC 命令
-│   │   └── mod.rs                  # 当前提供核心状态查询
+│   │   └── mod.rs                  # 应用信息及 SIP 配置读取、保存命令
 │   ├── app_state.rs                # 桌面壳持有的核心句柄
 │   ├── dto.rs                      # IPC DTO 与领域类型转换
 │   ├── lib.rs                      # Tauri Builder 与插件装配

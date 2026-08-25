@@ -14,6 +14,7 @@ describe('useSimulatorStore', () => {
       ...store.sipService,
       uri: 'sip:10.10.0.8:5060',
       transport: 'TCP',
+      password: 'test-only-password',
     });
 
     expect(result).toEqual({ ok: true });

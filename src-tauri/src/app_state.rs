@@ -1,15 +1,15 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use gblab_core::CoreService;
 
 pub struct AppState {
-    pub core: Arc<CoreService>,
+    pub core: Arc<RwLock<CoreService>>,
 }
 
 impl AppState {
     pub fn new(core: CoreService) -> Self {
         Self {
-            core: Arc::new(core),
+            core: Arc::new(RwLock::new(core)),
         }
     }
 }

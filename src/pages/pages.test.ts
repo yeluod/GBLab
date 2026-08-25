@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +12,15 @@ vi.mock('naive-ui', async (importOriginal) => {
   };
 });
 
+const settingsMocks = vi.hoisted(() => ({
+  getSipServiceConfiguration: vi.fn(),
+  saveSipServiceConfiguration: vi.fn(),
+}));
+
+vi.mock('@/features/settings', () => settingsMocks);
+
 import DevicesPage from './devices-page.vue';
+import SipServicePage from './sip-service-page.vue';
 import { useSimulatorStore } from '@/features/simulator';
 
 function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
@@ -27,6 +35,18 @@ describe('静态演示页面', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     document.body.innerHTML = '';
+    settingsMocks.getSipServiceConfiguration.mockResolvedValue({
+      uri: 'sip:192.168.1.100:5060',
+      transport: 'UDP',
+      platformId: '34020000002000000001',
+      domain: '3402000000',
+      password: '',
+      registerExpires: 3_600,
+      keepaliveInterval: 60,
+    });
+    settingsMocks.saveSipServiceConfiguration.mockImplementation(async (configuration) =>
+      Promise.resolve(configuration),
+    );
   });
 
   it('设备管理页应按关键字筛选设备', async () => {
@@ -107,5 +127,20 @@ describe('静态演示页面', () => {
       true,
     );
     expect(store.interactionLogs.at(-1)?.message).toContain('Expires: 0');
+  });
+
+  it('SIP 服务页应加载密码配置并通过桌面后端保存', async () => {
+    const wrapper = mount(SipServicePage, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    const passwordInput = wrapper.get('input[type="password"]');
+
+    await passwordInput.setValue('test-only-password');
+    await findButtonByText(wrapper, '保存配置').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('认证密码');
+    expect(settingsMocks.saveSipServiceConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({ password: 'test-only-password' }),
+    );
   });
 });
