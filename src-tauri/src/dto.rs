@@ -7,7 +7,7 @@ pub struct AppInfoDto {
     app_name: &'static str,
     app_version: &'static str,
     core_version: &'static str,
-    database_ready: bool,
+    configuration_ready: bool,
 }
 
 impl AppInfoDto {
@@ -16,7 +16,7 @@ impl AppInfoDto {
             app_name: "GBLab",
             app_version: env!("CARGO_PKG_VERSION"),
             core_version: core.version,
-            database_ready: core.database_ready,
+            configuration_ready: core.configuration_ready,
         }
     }
 }

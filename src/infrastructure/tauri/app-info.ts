@@ -5,7 +5,7 @@ export interface AppInfo {
   appName: string;
   appVersion: string;
   coreVersion: string;
-  databaseReady: boolean;
+  configurationReady: boolean;
 }
 
 /** 获取桌面后端和 Rust 核心的基础状态。 */

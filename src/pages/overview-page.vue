@@ -18,7 +18,7 @@
       <div>
         <p class="eyebrow">GB28181 DEVICE SIMULATOR</p>
         <h1 id="overview-title">运行总览</h1>
-        <p>单一 SIP 服务下的多设备模拟与订阅内容演示。</p>
+        <p>单一 SIP 服务下的多设备注册与通道交互演示。</p>
       </div>
       <NTag type="success" round>静态演示模式</NTag>
     </header>
@@ -26,11 +26,11 @@
     <div class="metric-grid">
       <NCard>
         <NStatistic label="模拟设备" :value="store.devices.length" />
-        <p class="metric-caption">新建设备默认不启用</p>
+        <p class="metric-caption">批量新建设备默认未注册</p>
       </NCard>
       <NCard>
-        <NStatistic label="已启用设备" :value="store.enabledDeviceCount" />
-        <p class="metric-caption">仅为本地模拟状态</p>
+        <NStatistic label="已注册设备" :value="store.registeredDeviceCount" />
+        <p class="metric-caption">运行时状态，不写入 JSON 配置</p>
       </NCard>
       <NCard>
         <NStatistic label="活跃订阅" :value="store.activeSubscriptionCount" />
@@ -49,7 +49,7 @@
     </NCard>
 
     <NCard title="开始模拟" class="overview-action-card">
-      <p>通过设备管理页新增、编辑和启用模拟设备；所有数据在刷新应用后恢复为演示数据。</p>
+      <p>通过设备管理页批量新增、编辑并注册模拟设备；运行时状态在刷新应用后恢复为演示数据。</p>
       <NButton type="primary" @click="navigateTo('Devices')">进入设备管理</NButton>
     </NCard>
   </section>

@@ -6,8 +6,6 @@ mod app_state;
 mod commands;
 mod dto;
 
-use std::fs;
-
 use app_state::AppState;
 use gblab_core::CoreService;
 use tauri::Manager;
@@ -21,9 +19,8 @@ pub fn run() -> Result<(), tauri::Error> {
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            fs::create_dir_all(&app_data_dir)?;
-            let database_path = app_data_dir.join("gblab.db");
-            let core = tauri::async_runtime::block_on(CoreService::open(&database_path))?;
+            let configuration_path = app_data_dir.join("gblab.config.json");
+            let core = CoreService::open(&configuration_path)?;
             app.manage(AppState::new(core));
             Ok(())
         })

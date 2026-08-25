@@ -13,7 +13,7 @@
 
 ## 项目结构与依赖方向
 
-Rust 核心按业务和技术边界组织：设备管理、场景编排、SIP 适配、媒体适配、持久化与桌面命令层各自拥有明确职责。业务层不直接依赖 Tauri UI、FFmpeg 进程细节或 `siprs` 的内部 API；通过明确的 adapter 接口协作。
+Rust 核心按业务和技术边界组织：设备管理、场景编排、SIP 适配、媒体适配、JSON 配置与桌面命令层各自拥有明确职责。业务层不直接依赖 Tauri UI、FFmpeg 进程细节或 `siprs` 的内部 API；通过明确的 adapter 接口协作。
 
 Vue 前端按以下方向组织新增能力：
 
@@ -45,13 +45,13 @@ app → pages / layouts → features → infrastructure / shared
 - 每个虚拟设备是轻量状态机，不创建 OS 线程、独立 socket 或常驻 FFmpeg 进程。socket 按平台或本地端口复用。
 - 使用 `CancellationToken` 管理设备、场景和应用关闭；由 `JoinSet` 或等价机制监督 task。每个长期 task 都必须有退出路径，外部 IO 必须有 timeout。
 - 不得跨 `.await` 持有锁；锁只覆盖最小临界区。优先使用消息传递而非共享可变状态。
-- SQLite 只保存配置、场景及用户请求留存的结果；SIP 消息、运行状态与高频日志不在协议路径同步写库。
+- JSON 配置只保存可恢复的应用配置；SIP 消息、运行状态与高频日志不落盘。
 - 运行日志异步批量写入、支持限量或采样；UI 通过批量和降频事件刷新状态，不能逐条协议消息触发渲染。
 - FFmpeg 仅为已启用真实媒体的通道启动；其生命周期由 Media Adapter 管理，必须限制媒体并发数、超时与退出清理。
 
 ## 前端与 TypeScript 规范
 
-- 使用 Vue 3 Composition API 和 `<script setup lang="ts">`；UI 优先使用 PrimeVue 与项目已有封装。
+- 使用 Vue 3 Composition API 和 `<script setup lang="ts">`；UI 优先使用 Naive UI 与项目已有封装。
 - TypeScript 必须严格检查：禁止新增 `any`、`@ts-ignore`、无依据的断言和非空断言。外部输入用 `unknown` 接收，经校验后使用；仅类型导入使用 `import type`。
 - 组件、类型、接口、枚举和类使用 `PascalCase`；组件文件和普通目录使用 `kebab-case`；变量、函数、Props、Emits 使用 `camelCase`；布尔值用 `is`、`has`、`can`、`should` 前缀；事件处理函数用 `handleXxx`，组合式函数用 `useXxx`。
 - Props 只读，变更通过具名、类型化 Emits 表达；跨页面共享状态使用 Pinia，临时 UI 状态留在组件或 Hook 中。
@@ -59,18 +59,18 @@ app → pages / layouts → features → infrastructure / shared
 - 异步交互必须覆盖 loading、成功、空数据、失败、取消和重复提交；列表使用稳定业务键。
 - Tauri command/event 的参数和返回值是明确、版本可控的 IPC 契约；前端不得绕过类型化封装直接散落调用。
 - 用户可见文案默认使用中文；保持语义化结构、键盘可达性、表单标签、替代文本和图标按钮可访问名称。
-- 样式优先使用 PrimeVue token、CSS 变量和既有断点；避免硬编码主题色、脆弱 DOM 选择器与无理由的 `!important`。
+- 样式优先使用 Naive UI 主题覆盖、CSS 变量和既有断点；避免硬编码主题色、脆弱 DOM 选择器与无理由的 `!important`。
 
 ## 数据、安全与诊断
 
-- Tauri command 参数、文件路径、SQLite 数据、SIP/SDP/XML 报文、FFmpeg 参数和平台响应均是不可信输入，进入领域逻辑前必须校验大小、格式、范围和业务关系。
+- Tauri command 参数、文件路径、JSON 配置、SIP/SDP/XML 报文、FFmpeg 参数和平台响应均是不可信输入，进入领域逻辑前必须校验大小、格式、范围和业务关系。
 - 不通过 shell 拼接启动 FFmpeg；使用 program/argv 边界。媒体路径、协议地址和端口必须经受控配置和校验。
 - 日志使用结构化字段；错误保留操作、资源、超时和底层原因等诊断上下文，但不记录凭据、完整敏感报文或媒体访问令牌。
 - 外部流程按“原始输入 → 已校验领域命令 → 执行规格 → Adapter”转换；校验失败不得部分执行或套用默认行为。
 
 ## 测试与质量门禁
 
-- 为业务规则、外部输入校验、协议报文、状态机、取消/关闭、超时、背压、资源清理、数据库迁移、错误映射与已修复缺陷编写或更新自动化测试。
+- 为业务规则、外部输入校验、协议报文、状态机、取消/关闭、超时、背压、资源清理、JSON 配置读写、错误映射与已修复缺陷编写或更新自动化测试。
 - Rust 私有行为的测试就近放在 `#[cfg(test)]`；公开协议和跨模块行为放在 `tests/`。测试不访问真实 GB28181 平台、真实媒体服务或真实网络资源。
 - Rust 异步、时间、文件和进程测试须有 timeout，使用临时目录和 fake adapter，且不依赖执行顺序。
 - Vue 测试使用 Vitest；测试名描述条件与可观察结果，覆盖正常、边界和失败路径。网络、时间、存储和全局对象需受控，异步测试等待最终可观察状态而非固定延时。

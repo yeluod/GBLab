@@ -1,25 +1,23 @@
 //! 桌面应用可调用的用例与业务编排入口。
 
-use std::path::Path;
-
 use serde::Serialize;
 
-use crate::{Result, persistence::Database};
+use crate::{Result, configuration::ConfigurationStore};
 
 /// `GBLab` 核心服务。
 pub struct CoreService {
-    database: Database,
+    configuration: ConfigurationStore,
 }
 
 impl CoreService {
-    /// 打开持久化文件并初始化核心服务。
+    /// 打开 JSON 配置文件并初始化核心服务。
     ///
     /// # Errors
     ///
-    /// SQLite 连接或迁移失败时返回错误。
-    pub async fn open(database_path: &Path) -> Result<Self> {
-        let database = Database::open(database_path).await?;
-        Ok(Self { database })
+    /// JSON 配置读取或创建失败时返回错误。
+    pub fn open(configuration_path: &std::path::Path) -> Result<Self> {
+        let configuration = ConfigurationStore::open(configuration_path)?;
+        Ok(Self { configuration })
     }
 
     /// 返回桌面端展示所需的轻量核心信息。
@@ -27,7 +25,7 @@ impl CoreService {
     pub fn info(&self) -> CoreInfo {
         CoreInfo {
             version: env!("CARGO_PKG_VERSION"),
-            database_ready: self.database.is_ready(),
+            configuration_ready: self.configuration.is_ready(),
         }
     }
 }
@@ -37,31 +35,26 @@ impl CoreService {
 pub struct CoreInfo {
     /// 核心 crate 版本。
     pub version: &'static str,
-    /// SQLite 连接池是否已建立连接。
-    pub database_ready: bool,
+    /// JSON 配置文件是否已成功读取或创建。
+    pub configuration_ready: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use tempfile::tempdir;
 
     use super::CoreService;
 
     #[tokio::test]
-    async fn open_should_initialize_database_and_report_ready()
+    async fn open_should_create_json_configuration_and_report_ready()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
-        let database_path = directory.path().join("gblab.db");
+        let configuration_path = directory.path().join("gblab.config.json");
 
-        let service = tokio::time::timeout(
-            Duration::from_secs(5),
-            CoreService::open(database_path.as_path()),
-        )
-        .await??;
+        let service = CoreService::open(configuration_path.as_path())?;
 
-        assert!(service.info().database_ready);
+        assert!(service.info().configuration_ready);
+        assert!(configuration_path.is_file());
         Ok(())
     }
 }

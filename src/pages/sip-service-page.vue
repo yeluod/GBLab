@@ -1,6 +1,15 @@
 <script setup lang="ts">
-  import { reactive, ref, watch } from 'vue';
-  import { NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui';
+  import { reactive, watch } from 'vue';
+  import {
+    NButton,
+    NCard,
+    NForm,
+    NFormItem,
+    NInput,
+    NInputNumber,
+    NSelect,
+    useMessage,
+  } from 'naive-ui';
 
   import { useSimulatorStore, type SipServiceConfig } from '@/features/simulator';
 
@@ -23,7 +32,7 @@
       message.error(result.message);
       return;
     }
-    message.success('唯一 SIP 服务配置已保存到本地演示状态。');
+    message.success('唯一 SIP 服务配置已更新；桌面核心会将配置写入 JSON 文件。');
   }
 </script>
 
@@ -57,7 +66,11 @@
             <NInputNumber v-model:value="formModel.registerExpires" :min="1" :show-button="false" />
           </NFormItem>
           <NFormItem label="心跳间隔（秒）" path="keepaliveInterval">
-            <NInputNumber v-model:value="formModel.keepaliveInterval" :min="1" :show-button="false" />
+            <NInputNumber
+              v-model:value="formModel.keepaliveInterval"
+              :min="1"
+              :show-button="false"
+            />
           </NFormItem>
         </div>
       </NForm>

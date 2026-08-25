@@ -45,10 +45,9 @@ src/
 ├── app/                            # 应用启动与全局装配
 │   ├── router/
 │   ├── stores/
-│   ├── primevue.ts
 │   └── bootstrap.ts
 ├── features/                       # 按业务领域组织
-│   ├── dashboard/
+│   ├── simulator/                  # 静态演示状态；后续替换为类型化 IPC
 │   ├── platforms/
 │   ├── devices/
 │   ├── channels/
@@ -68,7 +67,7 @@ src/
 │   ├── constants/
 │   ├── types/
 │   └── utils/
-├── styles/                         # PrimeVue token、主题与全局样式
+├── styles/                         # Naive UI 主题与全局样式
 ├── App.vue
 ├── main.ts
 └── vite-env.d.ts
@@ -104,7 +103,7 @@ src-tauri/
 └── tauri.conf.json
 ```
 
-`commands/` 只负责参数校验、调用核心 API 和结果映射，不实现 SIP、SQLite、FFmpeg 或设备状态机逻辑。新增业务命令按领域拆分文件；后端事件能力出现后，通过独立事件投影模块只发布适合 UI 消费的降频、批量快照。
+`commands/` 只负责参数校验、调用核心 API 和结果映射，不实现 SIP、JSON 配置读写、FFmpeg 或设备状态机逻辑。新增业务命令按领域拆分文件；后端事件能力出现后，通过独立事件投影模块只发布适合 UI 消费的降频、批量快照。
 
 `binaries/` 下的平台 FFmpeg 由准备脚本或 CI 放入，不直接维护来历不明的二进制；其版本、许可证、来源和哈希必须可追踪。
 
@@ -112,7 +111,6 @@ src-tauri/
 
 ```text
 crates/gblab-core/
-├── migrations/                     # 内嵌 SQLite schema migrations
 ├── src/
 │   ├── domain/                     # 纯领域类型与规则
 │   │   ├── ids.rs                  # 当前提供 DeviceId
@@ -125,8 +123,7 @@ crates/gblab-core/
 │   │   └── mod.rs
 │   ├── media/                      # FFmpeg 与媒体会话管理
 │   │   └── mod.rs
-│   ├── persistence/                # SQLite 仓储实现
-│   │   ├── database.rs
+│   ├── configuration/              # JSON 配置读写
 │   │   └── mod.rs
 │   ├── observability/              # tracing、指标与日志采样
 │   │   └── mod.rs
@@ -142,12 +139,12 @@ domain
   ↑
 application ← runtime
   ↑
-sip / media / persistence / observability
+sip / media / configuration / observability
   ↑
 src-tauri
 ```
 
-`domain` 不依赖 Tokio、Tauri、SQLite、FFmpeg 或 `siprs`。`application` 定义设备生命周期和场景语义；外部适配模块实现协议、进程和存储能力。`src-tauri` 只装配并调用 `gblab-core`。
+`domain` 不依赖 Tokio、Tauri、JSON 配置实现、FFmpeg 或 `siprs`。`application` 定义设备生命周期和场景语义；外部适配模块实现协议、进程和配置读写能力。`src-tauri` 只装配并调用 `gblab-core`。
 
 初始阶段只使用一个 `gblab-core` crate，通过 Rust module 保持边界。只有出现独立复用、独立发布或编译隔离的真实需求时，才拆分为多个 crate。
 

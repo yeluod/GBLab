@@ -6,7 +6,7 @@ GBLab 是面向开发联调与压测的 GB28181 多设备模拟器桌面应用�
 
 - Tauri 2、Vue 3、TypeScript、Naive UI
 - Rust、Tokio、siprs
-- SQLite
+- JSON 配置文件（运行时数据不落盘）
 - 按需使用 FFmpeg sidecar
 
 ## 开发环境

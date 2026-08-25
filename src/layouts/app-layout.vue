@@ -3,12 +3,14 @@
   import { NButton, NMenu, type MenuOption } from 'naive-ui';
   import { useRoute, useRouter } from 'vue-router';
 
+  import { useSimulatorStore } from '@/features/simulator';
+
   const route = useRoute();
   const router = useRouter();
+  const store = useSimulatorStore();
   const menuOptions: MenuOption[] = [
     { label: '运行总览', key: 'Overview' },
     { label: '设备管理', key: 'Devices' },
-    { label: '服务订阅', key: 'Subscriptions' },
     { label: 'SIP 服务', key: 'SipService' },
   ];
   const activeMenuKey = computed(() => String(route.name));
@@ -38,7 +40,13 @@
       </nav>
 
       <div class="sidebar-footer">
-        <NButton block type="primary" @click="openDeviceManagement">批量添加设备</NButton>
+        <NButton
+          block
+          type="primary"
+          :disabled="store.hasCompletedBatchAdd"
+          @click="openDeviceManagement"
+          >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
+        >
         <span>静态演示数据 · 未连接后端</span>
       </div>
     </aside>

@@ -1,0 +1,111 @@
+import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
+import { nextTick } from 'vue';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('naive-ui', async (importOriginal) => {
+  const naiveUi = await importOriginal<typeof import('naive-ui')>();
+  return {
+    ...naiveUi,
+    useDialog: () => ({ warning: vi.fn() }),
+    useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
+  };
+});
+
+import DevicesPage from './devices-page.vue';
+import { useSimulatorStore } from '@/features/simulator';
+
+function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
+  const button = wrapper.findAll('button').find((item) => item.text() === text);
+  if (button === undefined) {
+    throw new Error(`未找到按钮：${text}`);
+  }
+  return button;
+}
+
+describe('静态演示页面', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    document.body.innerHTML = '';
+  });
+
+  it('设备管理页应按关键字筛选设备', async () => {
+    const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
+
+    await wrapper.get('input.n-input__input-el').setValue('园区球机');
+
+    expect(wrapper.text()).toContain('园区球机-001');
+    expect(wrapper.text()).not.toContain('模拟摄像机-001');
+    expect(wrapper.text()).toContain('交互日志');
+    expect(wrapper.text()).toContain('SIP / GB28181');
+    expect(wrapper.find('.device-table-scroll').exists()).toBe(true);
+    expect(wrapper.find('.interaction-log-scroll').exists()).toBe(true);
+    expect(wrapper.find('.device-pagination').exists()).toBe(true);
+    expect(wrapper.findAll('.n-pagination')).toHaveLength(1);
+  });
+
+  it('点击批量添加设备后应展示批量表单', async () => {
+    const wrapper = mount(DevicesPage, {
+      attachTo: document.body,
+      global: { plugins: [createPinia()] },
+    });
+
+    await findButtonByText(wrapper, '批量添加设备').trigger('click');
+    await nextTick();
+
+    expect(document.body.textContent).toContain('默认未注册');
+  });
+
+  it('完成一次批量添加后应禁用再次添加', async () => {
+    const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
+    const store = useSimulatorStore();
+    const result = store.addDevicesInBatch({
+      count: 1,
+      startDeviceId: '34020000001320000100',
+      nameTemplate: '批量设备-{序号}',
+      type: '摄像机',
+      manufacturer: 'GBLab',
+      model: 'SIM-CAM-100',
+      firmwareVersion: 'V1.0.0',
+      channelCount: 1,
+    });
+
+    await nextTick();
+
+    expect(result).toEqual({ ok: true });
+    expect(findButtonByText(wrapper, '设备已批量添加').attributes('disabled')).toBeDefined();
+  });
+
+  it('点击通道操作后应展示通道列表与平台订阅项', async () => {
+    const wrapper = mount(DevicesPage, {
+      attachTo: document.body,
+      global: { plugins: [createPinia()] },
+    });
+
+    await findButtonByText(wrapper, '通道').trigger('click');
+    await nextTick();
+
+    expect(document.body.textContent).toContain('通道列表');
+    expect(document.body.textContent).toContain('平台订阅项');
+    expect(document.body.textContent).toContain('目录 Catalog');
+  });
+
+  it('应通过全量操作更新全部设备注册状态并记录日志', async () => {
+    const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
+    const store = useSimulatorStore();
+
+    await findButtonByText(wrapper, '全量注册').trigger('click');
+    await nextTick();
+
+    expect(store.devices.every((device) => device.registrationStatus === 'registered')).toBe(true);
+    expect(store.interactionLogs.at(-1)?.message).toContain('设备已请求注册');
+
+    await findButtonByText(wrapper, '全量停止注册').trigger('click');
+    await nextTick();
+
+    expect(store.devices.every((device) => device.registrationStatus === 'unregistered')).toBe(
+      true,
+    );
+    expect(store.interactionLogs.at(-1)?.message).toContain('Expires: 0');
+  });
+});

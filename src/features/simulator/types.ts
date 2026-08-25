@@ -11,12 +11,19 @@ export interface SipServiceConfig {
 /** 模拟设备支持的最小类型集合。 */
 export type DeviceType = '摄像机' | '球机' | 'NVR' | '门禁设备';
 
+/** 设备与平台之间的运行时注册状态，不写入配置文件。 */
+export type RegistrationStatus = 'unregistered' | 'registered';
+
 /** 内存中的模拟设备。 */
 export interface SimulatedDevice {
   id: string;
   name: string;
   type: DeviceType;
-  isEnabled: boolean;
+  manufacturer: string;
+  model: string;
+  firmwareVersion: string;
+  channelCount: number;
+  registrationStatus: RegistrationStatus;
   createdAt: string;
 }
 
@@ -37,12 +44,32 @@ export interface DeviceSubscription {
   catalogPreview: string[];
 }
 
-/** 单设备新增或编辑表单。 */
-export interface DeviceDraft {
+/** 设备下的模拟通道及平台已订阅的业务项；通道 ID 为 20 位数字。 */
+export interface SimulatedChannel {
   id: string;
+  deviceId: string;
+  name: string;
+  index: number;
+  platformSubscriptions: SubscriptionKind[];
+}
+
+/** 与平台发生的单条模拟交互记录；设备与通道 ID 均为 20 位数字。 */
+export interface InteractionLog {
+  id: string;
+  timestamp: string;
+  deviceId: string;
+  channelId: string;
+  message: string;
+}
+
+/** 单设备编辑表单；设备创建仅支持批量操作。 */
+export interface DeviceUpdateDraft {
   name: string;
   type: DeviceType;
-  isEnabled: boolean;
+  manufacturer: string;
+  model: string;
+  firmwareVersion: string;
+  channelCount: number;
 }
 
 /** 批量新增表单。 */
@@ -51,7 +78,10 @@ export interface BatchDeviceDraft {
   startDeviceId: string;
   nameTemplate: string;
   type: DeviceType;
-  isEnabled: boolean;
+  manufacturer: string;
+  model: string;
+  firmwareVersion: string;
+  channelCount: number;
 }
 
 /** 前端演示操作的可见结果。 */
