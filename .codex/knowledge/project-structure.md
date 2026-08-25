@@ -18,6 +18,9 @@ GBLab/
 ├── src-tauri/                      # Tauri 2 桌面壳
 ├── Cargo.toml                      # Rust workspace
 ├── Cargo.lock
+├── CHANGELOG.md                    # Release Please 自动维护的变更日志
+├── release-please-config.json      # 自动版本与发布规则
+├── .release-please-manifest.json   # 当前发布版本清单
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
@@ -162,8 +165,9 @@ docs/
 
 .github/workflows/
 ├── ci.yml                          # 前端与平台无关 Rust 检查
-├── build-macos.yml                 # macOS 原生构建、签名、公证
-└── build-windows.yml               # Windows 原生构建与签名
+├── release.yml                     # Release PR、Tag、双平台构建与 GitHub Release
+├── build-macos.yml                 # macOS 手动原生构建入口
+└── build-windows.yml               # Windows 手动原生构建入口
 ```
 
 通用开发命令通过 `Justfile`、pnpm scripts 和 Cargo workspace 暴露。只有出现无法由这些入口表达的真实平台资源准备流程时，才新增 `scripts/`。

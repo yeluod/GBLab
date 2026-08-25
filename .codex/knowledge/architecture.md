@@ -41,5 +41,8 @@ GBLab 是面向开发联调与压测的 GB28181 多设备模拟器桌面应用�
 - macOS 应用只在 macOS 构建、签名与公证。
 - macOS 最低系统版本为 11.0。
 - Windows 应用只在 Windows 构建、签名并生成安装包。
-- CI 使用 macOS 与 Windows 原生 runner 分别完成构建、测试、签名与发布。
+- Release Please 在 `main` 上维护 Release PR、Rust workspace 与桌面前端版本、`CHANGELOG.md`、`v<version>` Tag 和草稿 GitHub Release。合并 Release PR 后，CI 使用 macOS 与 Windows 原生 runner 分别构建 DMG、NSIS 和 MSI；所有安装包上传成功后才发布 Release，任一平台失败时保留草稿。
+- 应用只维护一个发布版本。Release Please 以根 `package.json` 为发布组件，并通过精确 `extra-files` 同步根 Cargo workspace、`Cargo.lock` 中的两个本地 crate 以及 `src-tauri/tauri.conf.json`；根 Cargo 清单是纯 workspace，不作为独立 Rust package 发布。
+- `build-macos.yml` 与 `build-windows.yml` 保留为手动构建和平台排查入口。
+- 签名凭据配置完成前，自动发布产物为未签名安装包；签名凭据不得进入仓库、日志或 `.codex`。
 - FFmpeg 按 macOS 与 Windows 目标平台分别打包和验证。
