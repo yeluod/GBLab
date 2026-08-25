@@ -76,9 +76,6 @@
           <NFormItem label="认证密码" path="password">
             <NInput
               v-model:value="formModel.password"
-              type="password"
-              show-password-on="mousedown"
-              autocomplete="current-password"
               :maxlength="128"
               placeholder="请输入 SIP Digest 认证密码"
             />

@@ -132,13 +132,19 @@ describe('静态演示页面', () => {
   it('SIP 服务页应加载密码配置并通过桌面后端保存', async () => {
     const wrapper = mount(SipServicePage, { global: { plugins: [createPinia()] } });
     await flushPromises();
-    const passwordInput = wrapper.get('input[type="password"]');
+    const passwordInput = wrapper
+      .findAll('input')
+      .find((input) => input.attributes('maxlength') === '128');
+    if (passwordInput === undefined) {
+      throw new Error('未找到认证密码输入框');
+    }
 
     await passwordInput.setValue('test-only-password');
     await findButtonByText(wrapper, '保存配置').trigger('click');
     await flushPromises();
 
     expect(wrapper.text()).toContain('认证密码');
+    expect(passwordInput.attributes('type')).toBe('text');
     expect(settingsMocks.saveSipServiceConfiguration).toHaveBeenCalledWith(
       expect.objectContaining({ password: 'test-only-password' }),
     );

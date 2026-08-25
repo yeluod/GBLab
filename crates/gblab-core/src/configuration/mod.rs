@@ -52,7 +52,7 @@ pub enum SipTransport {
 
 /// 全部模拟设备共享的 SIP 服务配置。
 ///
-/// 密码属于可恢复配置，但不得写入日志或错误上下文。
+/// 密码作为模拟器配置明文读取、传输并写入 JSON。
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SipServiceConfiguration {
