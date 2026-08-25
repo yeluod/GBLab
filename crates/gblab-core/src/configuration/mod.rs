@@ -12,6 +12,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::domain::SimulatedDevice;
+
 const CURRENT_SCHEMA_VERSION: u8 = 1;
 const MAX_SIP_URI_LENGTH: usize = 256;
 const MAX_PASSWORD_LENGTH: usize = 128;
@@ -29,6 +31,8 @@ pub struct AppConfiguration {
     pub schema_version: u8,
     /// 全部模拟设备共享的唯一 SIP 服务配置。
     pub sip_service: SipServiceConfiguration,
+    /// 设备配置；注册状态和通道不会写入此集合。
+    pub device_collection: DeviceCollectionConfiguration,
 }
 
 impl Default for AppConfiguration {
@@ -36,8 +40,19 @@ impl Default for AppConfiguration {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: SipServiceConfiguration::default(),
+            device_collection: DeviceCollectionConfiguration::default(),
         }
     }
+}
+
+/// 写入 JSON 的设备集合配置。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeviceCollectionConfiguration {
+    /// 是否已执行唯一一次批量添加。
+    pub has_completed_batch_add: bool,
+    /// 持久化设备，不包含注册状态与派生通道。
+    pub devices: Vec<SimulatedDevice>,
 }
 
 /// SIP 信令传输协议。
@@ -164,6 +179,12 @@ impl ConfigurationStore {
         self.configuration.sip_service.clone()
     }
 
+    /// 返回当前设备集合配置快照。
+    #[must_use]
+    pub fn device_collection(&self) -> DeviceCollectionConfiguration {
+        self.configuration.device_collection.clone()
+    }
+
     /// 校验并保存唯一 SIP 服务配置。
     ///
     /// 只有文件写入成功后才会替换内存配置，确保内存与磁盘一致。
@@ -179,11 +200,31 @@ impl ConfigurationStore {
         let next_configuration = AppConfiguration {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: sip_service.clone(),
+            device_collection: self.configuration.device_collection.clone(),
         };
 
         write_configuration(&self.path, &next_configuration)?;
         self.configuration = next_configuration;
         Ok(sip_service)
+    }
+
+    /// 保存设备配置与一次性批量添加标记。
+    ///
+    /// # Errors
+    ///
+    /// JSON 序列化或文件写入失败时返回错误。
+    pub fn save_device_collection(
+        &mut self,
+        device_collection: DeviceCollectionConfiguration,
+    ) -> Result<DeviceCollectionConfiguration, ConfigurationError> {
+        let next_configuration = AppConfiguration {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            sip_service: self.configuration.sip_service.clone(),
+            device_collection: device_collection.clone(),
+        };
+        write_configuration(&self.path, &next_configuration)?;
+        self.configuration = next_configuration;
+        Ok(device_collection)
     }
 }
 
@@ -328,7 +369,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{ConfigurationError, ConfigurationStore, SipServiceConfiguration, SipTransport};
+    use super::{
+        ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration,
+        SipServiceConfiguration, SipTransport,
+    };
 
     fn valid_sip_service() -> SipServiceConfiguration {
         SipServiceConfiguration {
@@ -401,6 +445,24 @@ mod tests {
         let store = ConfigurationStore::open(&configuration_path)?;
 
         assert!(store.sip_service().password.is_empty());
+        assert!(store.device_collection().devices.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn save_sip_service_should_preserve_device_collection() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+        store.save_device_collection(DeviceCollectionConfiguration {
+            has_completed_batch_add: true,
+            devices: Vec::new(),
+        })?;
+
+        store.save_sip_service(valid_sip_service())?;
+
+        assert!(store.device_collection().has_completed_batch_add);
         Ok(())
     }
 }

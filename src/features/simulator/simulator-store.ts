@@ -7,11 +7,19 @@ import {
   type ConfigurationCommandError,
   type SipServiceConfig,
 } from '@/features/settings';
+import {
+  addDevicesInBatchCommand,
+  deleteDeviceCommand,
+  getDeviceChannels,
+  getDeviceSnapshot,
+  updateDeviceCommand,
+} from './device-api';
 
 import type {
   BatchDeviceDraft,
   DeviceUpdateDraft,
   DeviceSubscription,
+  DeviceSnapshot,
   InteractionLog,
   OperationResult,
   SimulatedChannel,
@@ -23,7 +31,6 @@ const DEVICE_ID_PATTERN = /^\d{20}$/;
 const MAX_BATCH_DEVICE_COUNT = 1_000;
 const MAX_CHANNEL_COUNT = 128;
 const MAX_INTERACTION_LOG_COUNT = 500;
-const DEFAULT_CREATED_AT = '2026-08-25 14:20:00';
 
 function getConfigurationErrorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error) {
@@ -36,185 +43,6 @@ function getConfigurationErrorMessage(error: unknown): string {
     return error.message;
   }
   return '桌面后端暂时不可用，请重试。';
-}
-
-function createInitialDevices(): SimulatedDevice[] {
-  return [
-    {
-      id: '34020000001320000001',
-      name: '模拟摄像机-001',
-      type: '摄像机',
-      manufacturer: '海康威视',
-      model: 'DS-2CD2146G2-I',
-      firmwareVersion: 'V5.7.11',
-      channelCount: 2,
-      registrationStatus: 'unregistered',
-      createdAt: DEFAULT_CREATED_AT,
-    },
-    {
-      id: '34020000001320000002',
-      name: '模拟摄像机-002',
-      type: '摄像机',
-      manufacturer: '大华',
-      model: 'DH-IPC-HFW5442',
-      firmwareVersion: '2.840.G.2',
-      channelCount: 1,
-      registrationStatus: 'unregistered',
-      createdAt: DEFAULT_CREATED_AT,
-    },
-    {
-      id: '34020000001320000003',
-      name: '园区球机-001',
-      type: '球机',
-      manufacturer: '海康威视',
-      model: 'DS-2DE7A245IX-AE',
-      firmwareVersion: 'V5.7.19',
-      channelCount: 1,
-      registrationStatus: 'registered',
-      createdAt: DEFAULT_CREATED_AT,
-    },
-    {
-      id: '34020000001320000004',
-      name: '仓库 NVR-001',
-      type: 'NVR',
-      manufacturer: '大华',
-      model: 'NVR608-128-4KS2',
-      firmwareVersion: '4.004.0000004.1',
-      channelCount: 8,
-      registrationStatus: 'registered',
-      createdAt: DEFAULT_CREATED_AT,
-    },
-    {
-      id: '34020000001320000005',
-      name: '门禁设备-001',
-      type: '门禁设备',
-      manufacturer: 'GBLab',
-      model: 'ACS-SIM-100',
-      firmwareVersion: 'V1.0.0',
-      channelCount: 1,
-      registrationStatus: 'unregistered',
-      createdAt: DEFAULT_CREATED_AT,
-    },
-  ];
-}
-
-/**
- * 静态演示阶段使用的 20 位数字通道 ID。接入桌面核心后，直接采用后端返回的通道 ID。
- */
-function createMockChannelId(deviceId: string, channelIndex: number): string {
-  return `${deviceId.slice(0, 14)}${deviceId.slice(-3)}${String(channelIndex).padStart(3, '0')}`;
-}
-
-function createChannelsForDevice(
-  device: Pick<SimulatedDevice, 'id' | 'name' | 'channelCount'>,
-  subscriptions: DeviceSubscription[],
-): SimulatedChannel[] {
-  const platformSubscriptions = subscriptions
-    .filter(
-      (subscription) => subscription.deviceId === device.id && subscription.status === 'active',
-    )
-    .map((subscription) => subscription.kind);
-
-  return Array.from({ length: device.channelCount }, (_, index) => ({
-    id: createMockChannelId(device.id, index + 1),
-    deviceId: device.id,
-    name: `${device.name} · 通道 ${String(index + 1).padStart(2, '0')}`,
-    index: index + 1,
-    platformSubscriptions: [...new Set(platformSubscriptions)] as SubscriptionKind[],
-  }));
-}
-
-function createInitialSubscriptions(): DeviceSubscription[] {
-  return [
-    {
-      id: 'subscription-001',
-      deviceId: '34020000001320000001',
-      kind: 'catalog',
-      status: 'active',
-      expiresAt: '2026-08-25 15:18:00',
-      lastNotifiedAt: '2026-08-25 14:18:12',
-      catalogPreview: [
-        `${createMockChannelId('34020000001320000001', 1)} · 主码流`,
-        `${createMockChannelId('34020000001320000001', 2)} · 子码流`,
-      ],
-    },
-    {
-      id: 'subscription-002',
-      deviceId: '34020000001320000001',
-      kind: 'alarm',
-      status: 'active',
-      expiresAt: '2026-08-25 15:18:00',
-      lastNotifiedAt: null,
-      catalogPreview: [],
-    },
-    {
-      id: 'subscription-003',
-      deviceId: '34020000001320000003',
-      kind: 'catalog',
-      status: 'active',
-      expiresAt: '2026-08-25 14:48:00',
-      lastNotifiedAt: '2026-08-25 14:15:32',
-      catalogPreview: [`${createMockChannelId('34020000001320000003', 1)} · 园区入口`],
-    },
-    {
-      id: 'subscription-004',
-      deviceId: '34020000001320000003',
-      kind: 'mobile-position',
-      status: 'inactive',
-      expiresAt: null,
-      lastNotifiedAt: null,
-      catalogPreview: [],
-    },
-    {
-      id: 'subscription-005',
-      deviceId: '34020000001320000004',
-      kind: 'alarm',
-      status: 'active',
-      expiresAt: '2026-08-25 15:30:00',
-      lastNotifiedAt: '2026-08-25 14:14:05',
-      catalogPreview: [],
-    },
-  ];
-}
-
-function createInitialInteractionLogs(): InteractionLog[] {
-  return [
-    {
-      id: 'interaction-001',
-      timestamp: '2026-08-25 14:20:00',
-      deviceId: '34020000001320000001',
-      channelId: createMockChannelId('34020000001320000001', 1),
-      message: '← SUBSCRIBE Catalog · 平台已订阅设备目录。',
-    },
-    {
-      id: 'interaction-002',
-      timestamp: '2026-08-25 14:20:04',
-      deviceId: '34020000001320000004',
-      channelId: createMockChannelId('34020000001320000004', 1),
-      message: '→ REGISTER sip:192.168.1.100:5060 · Contact 已发送。',
-    },
-    {
-      id: 'interaction-003',
-      timestamp: '2026-08-25 14:20:08',
-      deviceId: '34020000001320000003',
-      channelId: createMockChannelId('34020000001320000003', 1),
-      message: '← SIP/2.0 200 OK · REGISTER 注册成功，Expires: 3600。',
-    },
-    {
-      id: 'interaction-004',
-      timestamp: '2026-08-25 14:20:12',
-      deviceId: '34020000001320000003',
-      channelId: createMockChannelId('34020000001320000003', 1),
-      message: '→ NOTIFY Catalog · 园区入口通道目录已上报至平台。',
-    },
-    {
-      id: 'interaction-005',
-      timestamp: '2026-08-25 14:20:15',
-      deviceId: '34020000001320000004',
-      channelId: createMockChannelId('34020000001320000004', 1),
-      message: '← SIP/2.0 200 OK · MESSAGE 报警订阅已确认。',
-    },
-  ];
 }
 
 function formatCurrentTimestamp(): string {
@@ -289,7 +117,7 @@ function normalizeSipServiceConfig(config: SipServiceConfig): SipServiceConfig {
   };
 }
 
-/** 设备与运行状态演示数据源；SIP 服务配置通过类型化 IPC 读写桌面核心。 */
+/** 设备配置通过类型化 IPC 持久化；注册、订阅和日志仅保存在运行内存。 */
 export const useSimulatorStore = defineStore('simulator', () => {
   const sipService = ref<SipServiceConfig>({
     uri: 'sip:192.168.1.100:5060',
@@ -302,12 +130,12 @@ export const useSimulatorStore = defineStore('simulator', () => {
   });
   const isSipServiceLoading = ref(false);
   const isSipServiceSaving = ref(false);
-  const devices = ref<SimulatedDevice[]>(createInitialDevices());
-  const subscriptions = ref<DeviceSubscription[]>(createInitialSubscriptions());
-  const channels = ref<SimulatedChannel[]>(
-    devices.value.flatMap((device) => createChannelsForDevice(device, subscriptions.value)),
-  );
-  const interactionLogs = ref<InteractionLog[]>(createInitialInteractionLogs());
+  const isDeviceLoading = ref(false);
+  const isDeviceSaving = ref(false);
+  const devices = ref<SimulatedDevice[]>([]);
+  const subscriptions = ref<DeviceSubscription[]>([]);
+  const channels = ref<SimulatedChannel[]>([]);
+  const interactionLogs = ref<InteractionLog[]>([]);
   const hasCompletedBatchAdd = ref(false);
 
   const registeredDeviceCount = computed(
@@ -316,6 +144,33 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const activeSubscriptionCount = computed(
     () => subscriptions.value.filter((subscription) => subscription.status === 'active').length,
   );
+
+  function applyDeviceSnapshot(snapshot: DeviceSnapshot): void {
+    const registrationByDevice = new Map(
+      devices.value.map((device) => [device.id, device.registrationStatus] as const),
+    );
+    devices.value = snapshot.devices.map((device) => ({
+      ...device,
+      registrationStatus: registrationByDevice.get(device.id) ?? 'unregistered',
+    }));
+    channels.value = [];
+    hasCompletedBatchAdd.value = snapshot.hasCompletedBatchAdd;
+  }
+
+  function applyDeviceChannels(derivedChannels: SimulatedChannel[]): void {
+    channels.value = derivedChannels.map((channel) => {
+      const platformSubscriptions = subscriptions.value
+        .filter(
+          (subscription) =>
+            subscription.deviceId === channel.deviceId && subscription.status === 'active',
+        )
+        .map((subscription) => subscription.kind);
+      return {
+        ...channel,
+        platformSubscriptions: [...new Set(platformSubscriptions)] as SubscriptionKind[],
+      };
+    });
+  }
 
   function appendInteractionLogs(logs: InteractionLog[]): void {
     interactionLogs.value.push(...logs);
@@ -337,7 +192,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
         id: `interaction-${crypto.randomUUID()}`,
         timestamp,
         deviceId: device.id,
-        channelId: firstChannelIdByDevice.get(device.id) ?? createMockChannelId(device.id, 1),
+        channelId: firstChannelIdByDevice.get(device.id) ?? device.id,
         message: isRegistering
           ? `→ REGISTER ${sipService.value.uri} · 设备已请求注册，Expires: ${sipService.value.registerExpires}。`
           : `→ REGISTER ${sipService.value.uri} · 设备已请求注销，Expires: 0。`,
@@ -393,7 +248,34 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
-  function updateDevice(deviceId: string, draft: DeviceUpdateDraft): OperationResult {
+  async function loadDevices(): Promise<OperationResult> {
+    if (isDeviceLoading.value) {
+      return { ok: false, message: '设备配置正在加载。' };
+    }
+    isDeviceLoading.value = true;
+    try {
+      applyDeviceSnapshot(await getDeviceSnapshot());
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isDeviceLoading.value = false;
+    }
+  }
+
+  async function loadDeviceChannels(deviceId: string): Promise<OperationResult> {
+    try {
+      applyDeviceChannels(await getDeviceChannels(deviceId));
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    }
+  }
+
+  async function updateDevice(
+    deviceId: string,
+    draft: DeviceUpdateDraft,
+  ): Promise<OperationResult> {
     const device = devices.value.find((item) => item.id === deviceId);
     if (device === undefined) {
       return { ok: false, message: '设备不存在或已被删除。' };
@@ -404,13 +286,21 @@ export const useSimulatorStore = defineStore('simulator', () => {
       return validation;
     }
 
-    Object.assign(device, normalizedDraft);
-    channels.value = channels.value.filter((channel) => channel.deviceId !== deviceId);
-    channels.value.push(...createChannelsForDevice(device, subscriptions.value));
-    return { ok: true };
+    if (isDeviceSaving.value) {
+      return { ok: false, message: '设备配置正在保存。' };
+    }
+    isDeviceSaving.value = true;
+    try {
+      applyDeviceSnapshot(await updateDeviceCommand(deviceId, normalizedDraft));
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isDeviceSaving.value = false;
+    }
   }
 
-  function addDevicesInBatch(draft: BatchDeviceDraft): OperationResult {
+  async function addDevicesInBatch(draft: BatchDeviceDraft): Promise<OperationResult> {
     if (hasCompletedBatchAdd.value) {
       return { ok: false, message: '设备仅允许批量添加一次。' };
     }
@@ -446,50 +336,41 @@ export const useSimulatorStore = defineStore('simulator', () => {
       return { ok: false, message: `通道数量必须介于 1 到 ${MAX_CHANNEL_COUNT}。` };
     }
 
-    const startDeviceId = BigInt(normalizedDraft.startDeviceId);
-    const generatedDevices = Array.from({ length: normalizedDraft.count }, (_, index) => {
-      const id = (startDeviceId + BigInt(index)).toString();
-      return {
-        id,
-        name: normalizedDraft.nameTemplate.replace('{序号}', String(index + 1).padStart(3, '0')),
-        type: normalizedDraft.type,
-        manufacturer: normalizedDraft.manufacturer,
-        model: normalizedDraft.model,
-        firmwareVersion: normalizedDraft.firmwareVersion,
-        channelCount: normalizedDraft.channelCount,
-        registrationStatus: 'unregistered',
-        createdAt: DEFAULT_CREATED_AT,
-      } satisfies SimulatedDevice;
-    });
-
-    if (generatedDevices.some((device) => !DEVICE_ID_PATTERN.test(device.id))) {
-      return { ok: false, message: '批量生成的设备 ID 超出 20 位数字范围。' };
+    if (isDeviceSaving.value) {
+      return { ok: false, message: '设备配置正在保存。' };
     }
-    const existingIds = new Set(devices.value.map((device) => device.id));
-    if (generatedDevices.some((device) => existingIds.has(device.id))) {
-      return { ok: false, message: '批量生成的设备 ID 与现有设备重复。' };
+    isDeviceSaving.value = true;
+    try {
+      applyDeviceSnapshot(await addDevicesInBatchCommand(normalizedDraft));
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isDeviceSaving.value = false;
     }
-
-    devices.value.push(...generatedDevices);
-    channels.value.push(
-      ...generatedDevices.flatMap((device) => createChannelsForDevice(device, subscriptions.value)),
-    );
-    hasCompletedBatchAdd.value = true;
-    return { ok: true };
   }
 
-  function deleteDevice(deviceId: string): OperationResult {
+  async function deleteDevice(deviceId: string): Promise<OperationResult> {
     const deviceIndex = devices.value.findIndex((device) => device.id === deviceId);
     if (deviceIndex === -1) {
       return { ok: false, message: '设备不存在或已被删除。' };
     }
 
-    devices.value.splice(deviceIndex, 1);
-    subscriptions.value = subscriptions.value.filter(
-      (subscription) => subscription.deviceId !== deviceId,
-    );
-    channels.value = channels.value.filter((channel) => channel.deviceId !== deviceId);
-    return { ok: true };
+    if (isDeviceSaving.value) {
+      return { ok: false, message: '设备配置正在保存。' };
+    }
+    isDeviceSaving.value = true;
+    try {
+      applyDeviceSnapshot(await deleteDeviceCommand(deviceId));
+      subscriptions.value = subscriptions.value.filter(
+        (subscription) => subscription.deviceId !== deviceId,
+      );
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isDeviceSaving.value = false;
+    }
   }
 
   function registerAllDevices(): OperationResult {
@@ -518,6 +399,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
     sipService,
     isSipServiceLoading,
     isSipServiceSaving,
+    isDeviceLoading,
+    isDeviceSaving,
     devices,
     subscriptions,
     channels,
@@ -528,6 +411,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
     updateSipService,
     loadSipService,
     saveSipService,
+    loadDevices,
+    loadDeviceChannels,
     updateDevice,
     addDevicesInBatch,
     deleteDevice,

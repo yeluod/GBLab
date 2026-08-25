@@ -27,7 +27,12 @@ pub fn run() -> Result<(), tauri::Error> {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::get_sip_service_configuration,
-            commands::save_sip_service_configuration
+            commands::save_sip_service_configuration,
+            commands::get_device_snapshot,
+            commands::get_device_channels,
+            commands::add_devices_in_batch,
+            commands::update_device,
+            commands::delete_device
         ])
         .run(tauri::generate_context!())
 }

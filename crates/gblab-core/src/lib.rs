@@ -16,5 +16,9 @@ pub mod sip;
 mod error;
 
 pub use application::{CoreInfo, CoreService};
-pub use configuration::{SipServiceConfiguration, SipTransport};
+pub use configuration::{DeviceCollectionConfiguration, SipServiceConfiguration, SipTransport};
+pub use domain::{
+    BatchDeviceDraft, DeviceKind, DeviceSnapshot, DeviceUpdateDraft, SimulatedChannel,
+    SimulatedDevice,
+};
 pub use error::{CoreError, Result};

@@ -1,4 +1,7 @@
-use gblab_core::{CoreError, CoreInfo, SipServiceConfiguration, SipTransport};
+use gblab_core::{
+    BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
+    SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -84,6 +87,160 @@ impl SipServiceConfigurationDto {
     }
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub enum DeviceKindDto {
+    #[serde(rename = "摄像机")]
+    Camera,
+    #[serde(rename = "球机")]
+    PtzCamera,
+    #[serde(rename = "NVR")]
+    Nvr,
+    #[serde(rename = "门禁设备")]
+    AccessControl,
+}
+
+impl From<DeviceKind> for DeviceKindDto {
+    fn from(value: DeviceKind) -> Self {
+        match value {
+            DeviceKind::Camera => Self::Camera,
+            DeviceKind::PtzCamera => Self::PtzCamera,
+            DeviceKind::Nvr => Self::Nvr,
+            DeviceKind::AccessControl => Self::AccessControl,
+        }
+    }
+}
+
+impl From<DeviceKindDto> for DeviceKind {
+    fn from(value: DeviceKindDto) -> Self {
+        match value {
+            DeviceKindDto::Camera => Self::Camera,
+            DeviceKindDto::PtzCamera => Self::PtzCamera,
+            DeviceKindDto::Nvr => Self::Nvr,
+            DeviceKindDto::AccessControl => Self::AccessControl,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedDeviceDto {
+    id: String,
+    name: String,
+    r#type: DeviceKindDto,
+    manufacturer: String,
+    model: String,
+    firmware_version: String,
+    channel_count: u16,
+    registration_status: &'static str,
+    created_at: u64,
+}
+
+impl From<SimulatedDevice> for SimulatedDeviceDto {
+    fn from(value: SimulatedDevice) -> Self {
+        Self {
+            id: value.id.to_string(),
+            name: value.name,
+            r#type: value.kind.into(),
+            manufacturer: value.manufacturer,
+            model: value.model,
+            firmware_version: value.firmware_version,
+            channel_count: value.channel_count,
+            registration_status: "unregistered",
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedChannelDto {
+    id: String,
+    device_id: String,
+    name: String,
+    index: u16,
+    platform_subscriptions: Vec<String>,
+}
+
+impl From<SimulatedChannel> for SimulatedChannelDto {
+    fn from(value: SimulatedChannel) -> Self {
+        Self {
+            id: value.id.to_string(),
+            device_id: value.device_id.to_string(),
+            name: value.name,
+            index: value.index,
+            platform_subscriptions: Vec::new(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSnapshotDto {
+    devices: Vec<SimulatedDeviceDto>,
+    has_completed_batch_add: bool,
+}
+
+impl DeviceSnapshotDto {
+    pub fn from_core(value: DeviceSnapshot) -> Self {
+        Self {
+            devices: value.devices.into_iter().map(Into::into).collect(),
+            has_completed_batch_add: value.has_completed_batch_add,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchDeviceDraftDto {
+    count: u16,
+    start_device_id: String,
+    name_template: String,
+    r#type: DeviceKindDto,
+    manufacturer: String,
+    model: String,
+    firmware_version: String,
+    channel_count: u16,
+}
+
+impl BatchDeviceDraftDto {
+    pub fn into_core(self) -> BatchDeviceDraft {
+        BatchDeviceDraft {
+            count: self.count,
+            start_device_id: self.start_device_id,
+            name_template: self.name_template,
+            kind: self.r#type.into(),
+            manufacturer: self.manufacturer,
+            model: self.model,
+            firmware_version: self.firmware_version,
+            channel_count: self.channel_count,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUpdateDraftDto {
+    name: String,
+    r#type: DeviceKindDto,
+    manufacturer: String,
+    model: String,
+    firmware_version: String,
+    channel_count: u16,
+}
+
+impl DeviceUpdateDraftDto {
+    pub fn into_core(self) -> DeviceUpdateDraft {
+        DeviceUpdateDraft {
+            name: self.name,
+            kind: self.r#type.into(),
+            manufacturer: self.manufacturer,
+            model: self.model,
+            firmware_version: self.firmware_version,
+            channel_count: self.channel_count,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandErrorDto {
@@ -94,7 +251,7 @@ pub struct CommandErrorDto {
 impl CommandErrorDto {
     pub fn from_core(error: &CoreError) -> Self {
         Self {
-            code: "configuration_error",
+            code: "core_error",
             message: error.to_string(),
         }
     }

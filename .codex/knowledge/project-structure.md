@@ -47,7 +47,7 @@ src/
 │   ├── stores/
 │   └── bootstrap.ts
 ├── features/                       # 按业务领域组织
-│   ├── simulator/                  # 设备与运行状态演示；设置通过公开入口调用 IPC
+│   ├── simulator/                  # 设备配置、派生通道与运行时状态；通过类型化 IPC 读写
 │   ├── platforms/
 │   ├── devices/
 │   ├── channels/
@@ -93,7 +93,7 @@ src-tauri/
 │   └── README.md                   # 来源、版本、许可证与校验规则
 ├── src/
 │   ├── commands/                   # 面向前端的薄 IPC 命令
-│   │   └── mod.rs                  # 应用信息及 SIP 配置读取、保存命令
+│   │   └── mod.rs                  # 应用信息、SIP 配置和设备配置命令
 │   ├── app_state.rs                # 桌面壳持有的核心句柄
 │   ├── dto.rs                      # IPC DTO 与领域类型转换
 │   ├── lib.rs                      # Tauri Builder 与插件装配
@@ -113,7 +113,8 @@ src-tauri/
 crates/gblab-core/
 ├── src/
 │   ├── domain/                     # 纯领域类型与规则
-│   │   ├── ids.rs                  # 当前提供 DeviceId
+│   │   ├── ids.rs                  # GB28181 DeviceId 与编码校验
+│   │   ├── devices.rs              # 设备配置、批量规则与运行时通道派生
 │   │   └── mod.rs
 │   ├── application/                # 用例与业务编排
 │   │   └── mod.rs                  # 当前提供 CoreService
@@ -144,7 +145,7 @@ sip / media / configuration / observability
 src-tauri
 ```
 
-`domain` 不依赖 Tokio、Tauri、JSON 配置实现、FFmpeg 或 `siprs`。`application` 定义设备生命周期和场景语义；外部适配模块实现协议、进程和配置读写能力。`src-tauri` 只装配并调用 `gblab-core`。
+`domain` 不依赖 Tokio、Tauri、JSON 配置实现或 FFmpeg；仅允许使用 `siprs-gb28181-codec` 这类纯协议编码类型校验国标编号，不直接依赖 SIP 传输、事务或 UA。`application` 定义设备生命周期和场景语义；外部适配模块实现协议、进程和配置读写能力。`src-tauri` 只装配并调用 `gblab-core`。
 
 初始阶段只使用一个 `gblab-core` crate，通过 Rust module 保持边界。只有出现独立复用、独立发布或编译隔离的真实需求时，才拆分为多个 crate。
 

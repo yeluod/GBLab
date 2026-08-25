@@ -1,30 +1,98 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
+import type { DeviceSnapshot } from './types';
+
+const deviceApiMocks = vi.hoisted(() => ({
+  getDeviceSnapshot: vi.fn(),
+  getDeviceChannels: vi.fn(),
+  addDevicesInBatchCommand: vi.fn(),
+  updateDeviceCommand: vi.fn(),
+  deleteDeviceCommand: vi.fn(),
+}));
+
+vi.mock('./device-api', () => deviceApiMocks);
+
 import { useSimulatorStore } from './simulator-store';
+
+function initialSnapshot(): DeviceSnapshot {
+  return {
+    devices: [
+      {
+        id: '34020000001320000001',
+        name: '模拟摄像机-001',
+        type: '摄像机',
+        manufacturer: 'GBLab',
+        model: 'SIM-CAM-100',
+        firmwareVersion: 'V1.0.0',
+        channelCount: 2,
+        registrationStatus: 'unregistered',
+        createdAt: 1_777_777_777_000,
+      },
+    ],
+    hasCompletedBatchAdd: false,
+  };
+}
+
+function initialChannels() {
+  return [1, 2].map((index) => ({
+    id: `34020000001320001${String(index).padStart(3, '0')}`,
+    deviceId: '34020000001320000001',
+    name: `模拟摄像机-001 · 通道 ${String(index).padStart(2, '0')}`,
+    index,
+    platformSubscriptions: [],
+  }));
+}
 
 describe('useSimulatorStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    vi.clearAllMocks();
+    deviceApiMocks.getDeviceSnapshot.mockResolvedValue(initialSnapshot());
+    deviceApiMocks.getDeviceChannels.mockResolvedValue(initialChannels());
   });
 
-  it('应仅更新一份 SIP 服务配置', () => {
+  it('应从桌面后端加载设备及派生通道', async () => {
     const store = useSimulatorStore();
-    const result = store.updateSipService({
-      ...store.sipService,
-      uri: 'sip:10.10.0.8:5060',
-      transport: 'TCP',
-      password: 'test-only-password',
+
+    expect(await store.loadDevices()).toEqual({ ok: true });
+    expect(await store.loadDeviceChannels('34020000001320000001')).toEqual({ ok: true });
+    expect(store.devices).toHaveLength(1);
+    expect(store.channels.map((channel) => channel.id)).toEqual([
+      '34020000001320001001',
+      '34020000001320001002',
+    ]);
+    expect(store.devices[0]?.registrationStatus).toBe('unregistered');
+  });
+
+  it('批量新增应采用后端快照并保持默认未注册', async () => {
+    const store = useSimulatorStore();
+    await store.loadDevices();
+    const next = initialSnapshot();
+    next.hasCompletedBatchAdd = true;
+    next.devices.push({
+      id: '34020000001320000100',
+      name: '批量设备-001',
+      type: '摄像机',
+      manufacturer: 'GBLab',
+      model: 'SIM-CAM-100',
+      firmwareVersion: 'V1.0.0',
+      channelCount: 3,
+      registrationStatus: 'unregistered',
+      createdAt: 1_777_777_778_000,
     });
-
-    expect(result).toEqual({ ok: true });
-    expect(store.sipService).toMatchObject({ uri: 'sip:10.10.0.8:5060', transport: 'TCP' });
-  });
-
-  it('批量新增应默认创建未注册设备', () => {
-    const store = useSimulatorStore();
+    deviceApiMocks.getDeviceChannels.mockResolvedValue(
+      [1, 2, 3].map((index) => ({
+        id: `34020000001320100${String(index).padStart(3, '0')}`,
+        deviceId: '34020000001320000100',
+        name: `批量设备-001 · 通道 ${String(index).padStart(2, '0')}`,
+        index,
+        platformSubscriptions: [] as [],
+      })),
+    );
+    deviceApiMocks.addDevicesInBatchCommand.mockResolvedValue(next);
     const draft = {
-      count: 2,
+      count: 1,
       startDeviceId: '34020000001320000100',
       nameTemplate: '批量设备-{序号}',
       type: '摄像机',
@@ -33,89 +101,84 @@ describe('useSimulatorStore', () => {
       firmwareVersion: 'V1.0.0',
       channelCount: 3,
     } as const;
-    const result = store.addDevicesInBatch(draft);
 
-    expect(result).toEqual({ ok: true });
-    expect(store.devices.slice(-2).map((device) => device.registrationStatus)).toEqual([
-      'unregistered',
-      'unregistered',
-    ]);
-    expect(store.channels.filter((channel) => channel.deviceId.endsWith('100'))).toHaveLength(3);
+    expect(await store.addDevicesInBatch(draft)).toEqual({ ok: true });
+    expect(await store.loadDeviceChannels(draft.startDeviceId)).toEqual({ ok: true });
+    expect(store.devices.at(-1)?.registrationStatus).toBe('unregistered');
+    expect(
+      store.channels.filter((channel) => channel.deviceId === draft.startDeviceId),
+    ).toHaveLength(3);
     expect(store.hasCompletedBatchAdd).toBe(true);
-    expect(store.addDevicesInBatch(draft)).toEqual({
+    expect(await store.addDevicesInBatch(draft)).toEqual({
       ok: false,
       message: '设备仅允许批量添加一次。',
     });
   });
 
-  it('编辑设备时应更新可编辑字段', () => {
+  it('编辑持久化设备时应保留运行时注册状态', async () => {
     const store = useSimulatorStore();
-    const target = store.devices[0];
-    if (target === undefined) {
-      throw new Error('演示设备未初始化');
-    }
+    await store.loadDevices();
+    store.registerAllDevices();
+    const next = initialSnapshot();
+    const device = next.devices[0];
+    if (device === undefined) throw new Error('测试设备未初始化');
+    Object.assign(device, { name: '重命名设备', type: '球机', channelCount: 4 });
+    deviceApiMocks.getDeviceChannels.mockResolvedValue(
+      [1, 2, 3, 4].map((index) => ({
+        id: `34020000001320001${String(index).padStart(3, '0')}`,
+        deviceId: device.id,
+        name: `重命名设备 · 通道 ${String(index).padStart(2, '0')}`,
+        index,
+        platformSubscriptions: [],
+      })),
+    );
+    deviceApiMocks.updateDeviceCommand.mockResolvedValue(next);
 
-    const result = store.updateDevice(target.id, {
-      name: '重命名设备',
-      type: '球机',
-      manufacturer: 'GBLab',
-      model: 'SIM-PTZ-200',
-      firmwareVersion: 'V2.0.0',
-      channelCount: 4,
-    });
-
-    expect(result).toEqual({ ok: true });
+    expect(
+      await store.updateDevice(device.id, {
+        name: '重命名设备',
+        type: '球机',
+        manufacturer: 'GBLab',
+        model: 'SIM-PTZ-200',
+        firmwareVersion: 'V2.0.0',
+        channelCount: 4,
+      }),
+    ).toEqual({ ok: true });
+    await store.loadDeviceChannels(device.id);
     expect(store.devices[0]).toMatchObject({
       name: '重命名设备',
-      type: '球机',
-      manufacturer: 'GBLab',
-      model: 'SIM-PTZ-200',
-      firmwareVersion: 'V2.0.0',
       channelCount: 4,
-      registrationStatus: 'unregistered',
+      registrationStatus: 'registered',
     });
-    expect(store.channels.filter((channel) => channel.deviceId === target.id)).toHaveLength(4);
+    expect(store.channels).toHaveLength(4);
   });
 
-  it('删除设备时应同步删除关联订阅', () => {
+  it('删除设备时应采用后端快照', async () => {
     const store = useSimulatorStore();
-    const deviceId = '34020000001320000001';
+    await store.loadDevices();
+    deviceApiMocks.deleteDeviceCommand.mockResolvedValue({
+      devices: [],
+      hasCompletedBatchAdd: false,
+    });
 
-    const result = store.deleteDevice(deviceId);
-
-    expect(result).toEqual({ ok: true });
-    expect(store.devices.some((device) => device.id === deviceId)).toBe(false);
-    expect(store.subscriptions.some((subscription) => subscription.deviceId === deviceId)).toBe(
-      false,
-    );
-    expect(store.channels.some((channel) => channel.deviceId === deviceId)).toBe(false);
+    expect(await store.deleteDevice('34020000001320000001')).toEqual({ ok: true });
+    expect(store.devices).toHaveLength(0);
+    expect(store.channels).toHaveLength(0);
   });
 
-  it('模拟通道 ID 应为 20 位数字', () => {
+  it('应全量注册和停止注册，并为所有设备记录运行时日志', async () => {
     const store = useSimulatorStore();
+    await store.loadDevices();
+    await store.loadDeviceChannels('34020000001320000001');
 
-    expect(store.channels.every((channel) => /^\d{20}$/.test(channel.id))).toBe(true);
-  });
-
-  it('应全量注册和停止注册，并为所有设备记录交互日志', () => {
-    const store = useSimulatorStore();
-    const deviceCount = store.devices.length;
-    const initialLogCount = store.interactionLogs.length;
-    const result = store.registerAllDevices();
-
-    expect(result).toEqual({ ok: true });
+    expect(store.registerAllDevices()).toEqual({ ok: true });
     expect(store.devices.every((device) => device.registrationStatus === 'registered')).toBe(true);
-    expect(store.interactionLogs).toHaveLength(initialLogCount + deviceCount);
-    expect(store.interactionLogs.at(-1)?.message).toContain('设备已请求注册');
-    expect(store.interactionLogs.at(-1)?.channelId).toMatch(/^\d{20}$/);
+    expect(store.interactionLogs.at(-1)?.channelId).toBe('34020000001320001001');
 
-    const stopResult = store.stopAllDeviceRegistration();
-
-    expect(stopResult).toEqual({ ok: true });
+    expect(store.stopAllDeviceRegistration()).toEqual({ ok: true });
     expect(store.devices.every((device) => device.registrationStatus === 'unregistered')).toBe(
       true,
     );
-    expect(store.interactionLogs).toHaveLength(initialLogCount + deviceCount * 2);
     expect(store.interactionLogs.at(-1)?.message).toContain('Expires: 0');
   });
 });

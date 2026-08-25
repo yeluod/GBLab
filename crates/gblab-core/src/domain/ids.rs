@@ -1,6 +1,7 @@
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use siprs::siprs_gb28181_codec;
 use thiserror::Error;
 
 const GB_DEVICE_ID_LENGTH: usize = 20;
@@ -26,6 +27,8 @@ impl DeviceId {
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(DeviceIdError::NonDigit);
         }
+        siprs_gb28181_codec::DeviceId::parse(&value)
+            .map_err(|error| DeviceIdError::InvalidGb28181(error.to_string()))?;
         Ok(Self(value))
     }
 
@@ -62,6 +65,9 @@ pub enum DeviceIdError {
     /// 编号包含非 ASCII 数字字符。
     #[error("设备国标编号只能包含 ASCII 数字")]
     NonDigit,
+    /// 编号分段不符合 GB28181 编码规则。
+    #[error("设备国标编号不符合 GB28181 编码规则: {0}")]
+    InvalidGb28181(String),
 }
 
 #[cfg(test)]

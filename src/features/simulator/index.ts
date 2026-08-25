@@ -2,6 +2,7 @@ export { useSimulatorStore } from './simulator-store';
 export type {
   BatchDeviceDraft,
   DeviceUpdateDraft,
+  DeviceSnapshot,
   DeviceSubscription,
   DeviceType,
   InteractionLog,

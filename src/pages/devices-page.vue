@@ -134,9 +134,17 @@
     },
   );
 
-  onMounted(() => {
+  onMounted(async () => {
+    const result = await store.loadDevices();
+    if (!result.ok) {
+      message.error(result.message);
+    }
     void scrollInteractionLogToLatest();
   });
+
+  function formatCreatedAt(timestamp: number): string {
+    return new Date(timestamp).toLocaleString('zh-CN', { hour12: false });
+  }
 
   function selectDevice(device: SimulatedDevice): void {
     selectedDeviceId.value = device.id;
@@ -156,11 +164,11 @@
     isDeviceModalOpen.value = true;
   }
 
-  function handleSaveDevice(): void {
+  async function handleSaveDevice(): Promise<void> {
     if (editingDeviceId.value === null) {
       return;
     }
-    const result = store.updateDevice(editingDeviceId.value, { ...deviceDraft });
+    const result = await store.updateDevice(editingDeviceId.value, { ...deviceDraft });
     if (!result.ok) {
       message.error(result.message);
       return;
@@ -169,8 +177,8 @@
     message.success('设备已更新。');
   }
 
-  function handleBatchCreate(): void {
-    const result = store.addDevicesInBatch({ ...batchDraft });
+  async function handleBatchCreate(): Promise<void> {
+    const result = await store.addDevicesInBatch({ ...batchDraft });
     if (!result.ok) {
       message.error(result.message);
       return;
@@ -197,8 +205,13 @@
     message.success(`已停止 ${store.devices.length} 台设备的注册。`);
   }
 
-  function openChannels(device: SimulatedDevice): void {
+  async function openChannels(device: SimulatedDevice): Promise<void> {
     channelDeviceId.value = device.id;
+    const result = await store.loadDeviceChannels(device.id);
+    if (!result.ok) {
+      message.error(result.message);
+      return;
+    }
     isChannelsModalOpen.value = true;
   }
 
@@ -209,11 +222,11 @@
   function confirmDeleteDevice(device: SimulatedDevice): void {
     dialog.warning({
       title: '删除设备',
-      content: `确定删除“${device.name}”及其关联通道和订阅记录吗？`,
+      content: `确定删除“${device.name}”吗？其派生通道将同时消失。`,
       positiveText: '删除',
       negativeText: '取消',
-      onPositiveClick: () => {
-        const result = store.deleteDevice(device.id);
+      onPositiveClick: async () => {
+        const result = await store.deleteDevice(device.id);
         if (!result.ok) {
           message.error(result.message);
           return;
@@ -222,7 +235,7 @@
           selectedDeviceId.value = null;
           isDetailOpen.value = false;
         }
-        message.success('设备及其订阅记录已删除。');
+        message.success('设备已删除。');
       },
     });
   }
@@ -253,7 +266,13 @@
           { default: () => (device.registrationStatus === 'registered' ? '已注册' : '未注册') },
         ),
     },
-    { title: '创建时间', key: 'createdAt', minWidth: 164, align: 'center' },
+    {
+      title: '创建时间',
+      key: 'createdAt',
+      minWidth: 164,
+      align: 'center',
+      render: (device) => formatCreatedAt(device.createdAt),
+    },
     {
       title: '操作',
       key: 'actions',
@@ -269,7 +288,7 @@
               type: 'primary',
               onClick: (event: MouseEvent) => {
                 event.stopPropagation();
-                openChannels(device);
+                void openChannels(device);
               },
             },
             { default: () => '通道' },
@@ -335,7 +354,8 @@
           <div class="toolbar-actions">
             <NButton
               type="primary"
-              :disabled="store.hasCompletedBatchAdd"
+              :disabled="store.hasCompletedBatchAdd || store.isDeviceLoading"
+              :loading="store.isDeviceSaving"
               @click="isBatchModalOpen = true"
               >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
             >
@@ -483,7 +503,9 @@
       <template #footer>
         <div class="modal-actions">
           <NButton @click="isDeviceModalOpen = false">取消</NButton>
-          <NButton type="primary" @click="handleSaveDevice">保存</NButton>
+          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleSaveDevice"
+            >保存</NButton
+          >
         </div>
       </template>
     </NModal>
@@ -537,7 +559,7 @@
       <template #footer>
         <div class="modal-actions">
           <NButton @click="isBatchModalOpen = false">取消</NButton>
-          <NButton type="primary" @click="handleBatchCreate"
+          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleBatchCreate"
             >创建 {{ batchDraft.count }} 台设备</NButton
           >
         </div>
@@ -552,7 +574,7 @@
     >
       <p v-if="channelDevice !== null" class="form-hint">
         {{ channelDevice.id }} ·
-        {{ channelDevice.channelCount }} 路通道；平台订阅项仅为本地演示数据。
+        {{ channelDevice.channelCount }} 路通道；通道由设备编号与通道数量实时生成，不写入配置文件。
       </p>
       <NDataTable
         :columns="[

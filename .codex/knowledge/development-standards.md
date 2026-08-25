@@ -45,7 +45,7 @@ app → pages / layouts → features → infrastructure / shared
 - 每个虚拟设备是轻量状态机，不创建 OS 线程、独立 socket 或常驻 FFmpeg 进程。socket 按平台或本地端口复用。
 - 使用 `CancellationToken` 管理设备、场景和应用关闭；由 `JoinSet` 或等价机制监督 task。每个长期 task 都必须有退出路径，外部 IO 必须有 timeout。
 - 不得跨 `.await` 持有锁；锁只覆盖最小临界区。优先使用消息传递而非共享可变状态。
-- JSON 配置只保存可恢复的应用配置；SIP 消息、运行状态与高频日志不落盘。
+- JSON 配置只保存唯一 SIP 服务、设备字段和一次性批量添加标记等可恢复配置；注册状态、派生通道、平台订阅、SIP 消息与高频日志不落盘。设备变更必须由 Rust 核心先完整校验并成功写入 JSON，再向前端返回新快照。
 - 运行日志异步批量写入、支持限量或采样；UI 通过批量和降频事件刷新状态，不能逐条协议消息触发渲染。
 - FFmpeg 仅为已启用真实媒体的通道启动；其生命周期由 Media Adapter 管理，必须限制媒体并发数、超时与退出清理。
 

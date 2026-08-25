@@ -1,10 +1,16 @@
 //! 桌面应用可调用的用例与业务编排入口。
 
+use std::{collections::HashSet, time::SystemTime};
+
 use serde::Serialize;
 
 use crate::{
     Result,
     configuration::{ConfigurationStore, SipServiceConfiguration},
+    domain::{
+        BatchDeviceDraft, DeviceError, DeviceId, DeviceSnapshot, DeviceUpdateDraft,
+        SimulatedChannel, derive_channels_for_device,
+    },
 };
 
 /// `GBLab` 核心服务。
@@ -49,6 +55,110 @@ impl CoreService {
     ) -> Result<SipServiceConfiguration> {
         Ok(self.configuration.save_sip_service(configuration)?)
     }
+
+    /// 返回持久化设备列表；通道由独立用例按单台设备加载。
+    #[must_use]
+    pub fn device_snapshot(&self) -> DeviceSnapshot {
+        let collection = self.configuration.device_collection();
+        DeviceSnapshot::devices_only(collection.devices, collection.has_completed_batch_add)
+    }
+
+    /// 按需返回单台设备的派生通道，避免设备列表加载全部通道。
+    ///
+    /// # Errors
+    ///
+    /// 设备不存在或通道无法按国标规则生成时返回错误。
+    pub fn device_channels(&self, device_id: &str) -> Result<Vec<SimulatedChannel>> {
+        let device_id = DeviceId::new(device_id.to_owned()).map_err(DeviceError::from)?;
+        let collection = self.configuration.device_collection();
+        let device = collection
+            .devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .ok_or_else(|| DeviceError::DeviceNotFound(device_id.to_string()))?;
+        Ok(derive_channels_for_device(device)?)
+    }
+
+    /// 执行唯一一次批量设备添加并写入 JSON。
+    ///
+    /// # Errors
+    ///
+    /// 批量添加已完成、输入无效、编号重复或配置写入失败时返回错误。
+    pub fn add_devices_in_batch(&mut self, draft: BatchDeviceDraft) -> Result<DeviceSnapshot> {
+        let mut collection = self.configuration.device_collection();
+        if collection.has_completed_batch_add {
+            return Err(DeviceError::BatchAlreadyCompleted.into());
+        }
+        let generated = draft.generate(SystemTime::now())?;
+        let existing_ids: HashSet<_> = collection.devices.iter().map(|item| &item.id).collect();
+        if let Some(duplicate) = generated
+            .iter()
+            .find(|device| existing_ids.contains(&device.id))
+        {
+            return Err(DeviceError::DuplicateDeviceId(duplicate.id.to_string()).into());
+        }
+        collection.devices.extend(generated);
+        collection.has_completed_batch_add = true;
+        let snapshot = DeviceSnapshot::derive(
+            collection.devices.clone(),
+            collection.has_completed_batch_add,
+        )?;
+        self.configuration.save_device_collection(collection)?;
+        Ok(snapshot)
+    }
+
+    /// 编辑设备并重新派生通道后写入 JSON。
+    ///
+    /// # Errors
+    ///
+    /// 设备不存在、输入无效、通道编号冲突或配置写入失败时返回错误。
+    pub fn update_device(
+        &mut self,
+        device_id: &str,
+        draft: DeviceUpdateDraft,
+    ) -> Result<DeviceSnapshot> {
+        let device_id = DeviceId::new(device_id.to_owned()).map_err(DeviceError::from)?;
+        let draft = draft.normalize_and_validate()?;
+        let mut collection = self.configuration.device_collection();
+        let device = collection
+            .devices
+            .iter_mut()
+            .find(|device| device.id == device_id)
+            .ok_or_else(|| DeviceError::DeviceNotFound(device_id.to_string()))?;
+        device.name = draft.name;
+        device.kind = draft.kind;
+        device.manufacturer = draft.manufacturer;
+        device.model = draft.model;
+        device.firmware_version = draft.firmware_version;
+        device.channel_count = draft.channel_count;
+        let snapshot = DeviceSnapshot::derive(
+            collection.devices.clone(),
+            collection.has_completed_batch_add,
+        )?;
+        self.configuration.save_device_collection(collection)?;
+        Ok(snapshot)
+    }
+
+    /// 删除设备配置；派生通道随之自然消失。
+    ///
+    /// # Errors
+    ///
+    /// 设备不存在或配置写入失败时返回错误。
+    pub fn delete_device(&mut self, device_id: &str) -> Result<DeviceSnapshot> {
+        let device_id = DeviceId::new(device_id.to_owned()).map_err(DeviceError::from)?;
+        let mut collection = self.configuration.device_collection();
+        let original_len = collection.devices.len();
+        collection.devices.retain(|device| device.id != device_id);
+        if collection.devices.len() == original_len {
+            return Err(DeviceError::DeviceNotFound(device_id.to_string()).into());
+        }
+        let snapshot = DeviceSnapshot::derive(
+            collection.devices.clone(),
+            collection.has_completed_batch_add,
+        )?;
+        self.configuration.save_device_collection(collection)?;
+        Ok(snapshot)
+    }
 }
 
 /// Rust 模拟核心的基础状态。
@@ -65,7 +175,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::CoreService;
-    use crate::configuration::{SipServiceConfiguration, SipTransport};
+    use crate::{
+        configuration::{SipServiceConfiguration, SipTransport},
+        domain::{BatchDeviceDraft, DeviceKind, DeviceUpdateDraft},
+    };
 
     #[tokio::test]
     async fn open_should_create_json_configuration_and_report_ready()
@@ -99,6 +212,68 @@ mod tests {
         service.save_sip_service_configuration(configuration)?;
 
         assert_eq!(service.sip_service_configuration().uri, "sip:10.0.0.9:5060");
+        Ok(())
+    }
+
+    fn batch_draft() -> BatchDeviceDraft {
+        BatchDeviceDraft {
+            count: 2,
+            start_device_id: "34020000001320000100".to_owned(),
+            name_template: "设备-{序号}".to_owned(),
+            kind: DeviceKind::Camera,
+            manufacturer: "GBLab".to_owned(),
+            model: "SIM-100".to_owned(),
+            firmware_version: "V1.0.0".to_owned(),
+            channel_count: 2,
+        }
+    }
+
+    #[test]
+    fn device_mutations_should_persist_devices_but_not_channels_or_registration_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut service = CoreService::open(configuration_path.as_path())?;
+        let added = service.add_devices_in_batch(batch_draft())?;
+        assert_eq!(added.devices.len(), 2);
+        assert_eq!(added.channels.len(), 4);
+
+        let updated = service.update_device(
+            "34020000001320000100",
+            DeviceUpdateDraft {
+                name: "更新设备".to_owned(),
+                kind: DeviceKind::Nvr,
+                manufacturer: "GBLab".to_owned(),
+                model: "NVR-200".to_owned(),
+                firmware_version: "V2.0.0".to_owned(),
+                channel_count: 3,
+            },
+        )?;
+        assert_eq!(updated.channels.len(), 5);
+
+        let reloaded = CoreService::open(configuration_path.as_path())?;
+        let snapshot = reloaded.device_snapshot();
+        assert_eq!(snapshot.devices[0].name, "更新设备");
+        assert_eq!(reloaded.device_channels("34020000001320000100")?.len(), 3);
+        assert_eq!(reloaded.device_channels("34020000001320000101")?.len(), 2);
+        let json = std::fs::read_to_string(configuration_path)?;
+        assert!(!json.contains("channels"));
+        assert!(!json.contains("registrationStatus"));
+        Ok(())
+    }
+
+    #[test]
+    fn batch_add_should_remain_single_use_after_restart() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut service = CoreService::open(configuration_path.as_path())?;
+        service.add_devices_in_batch(batch_draft())?;
+        drop(service);
+
+        let mut reloaded = CoreService::open(configuration_path.as_path())?;
+
+        assert!(reloaded.add_devices_in_batch(batch_draft()).is_err());
         Ok(())
     }
 }

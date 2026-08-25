@@ -16,8 +16,16 @@ const settingsMocks = vi.hoisted(() => ({
   getSipServiceConfiguration: vi.fn(),
   saveSipServiceConfiguration: vi.fn(),
 }));
+const deviceApiMocks = vi.hoisted(() => ({
+  getDeviceSnapshot: vi.fn(),
+  getDeviceChannels: vi.fn(),
+  addDevicesInBatchCommand: vi.fn(),
+  updateDeviceCommand: vi.fn(),
+  deleteDeviceCommand: vi.fn(),
+}));
 
 vi.mock('@/features/settings', () => settingsMocks);
+vi.mock('@/features/simulator/device-api', () => deviceApiMocks);
 
 import DevicesPage from './devices-page.vue';
 import SipServicePage from './sip-service-page.vue';
@@ -29,6 +37,62 @@ function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
     throw new Error(`未找到按钮：${text}`);
   }
   return button;
+}
+
+function deviceSnapshot(hasCompletedBatchAdd = false) {
+  return {
+    devices: [
+      {
+        id: '34020000001320000001',
+        name: '模拟摄像机-001',
+        type: '摄像机',
+        manufacturer: 'GBLab',
+        model: 'SIM-CAM-100',
+        firmwareVersion: 'V1.0.0',
+        channelCount: 2,
+        registrationStatus: 'unregistered',
+        createdAt: 1_777_777_777_000,
+      },
+      {
+        id: '34020000001320000003',
+        name: '园区球机-001',
+        type: '球机',
+        manufacturer: 'GBLab',
+        model: 'SIM-PTZ-100',
+        firmwareVersion: 'V1.0.0',
+        channelCount: 1,
+        registrationStatus: 'unregistered',
+        createdAt: 1_777_777_777_000,
+      },
+    ],
+    hasCompletedBatchAdd,
+  };
+}
+
+function deviceChannels() {
+  return [
+    {
+      id: '34020000001320001001',
+      deviceId: '34020000001320000001',
+      name: '模拟摄像机-001 · 通道 01',
+      index: 1,
+      platformSubscriptions: [],
+    },
+    {
+      id: '34020000001320001002',
+      deviceId: '34020000001320000001',
+      name: '模拟摄像机-001 · 通道 02',
+      index: 2,
+      platformSubscriptions: [],
+    },
+    {
+      id: '34020000001320003001',
+      deviceId: '34020000001320000003',
+      name: '园区球机-001 · 通道 01',
+      index: 1,
+      platformSubscriptions: [],
+    },
+  ];
 }
 
 describe('静态演示页面', () => {
@@ -47,10 +111,16 @@ describe('静态演示页面', () => {
     settingsMocks.saveSipServiceConfiguration.mockImplementation(async (configuration) =>
       Promise.resolve(configuration),
     );
+    deviceApiMocks.getDeviceSnapshot.mockResolvedValue(deviceSnapshot());
+    deviceApiMocks.getDeviceChannels.mockImplementation(async (deviceId: string) =>
+      deviceChannels().filter((channel) => channel.deviceId === deviceId),
+    );
+    deviceApiMocks.addDevicesInBatchCommand.mockResolvedValue(deviceSnapshot(true));
   });
 
   it('设备管理页应按关键字筛选设备', async () => {
     const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
+    await flushPromises();
 
     await wrapper.get('input.n-input__input-el').setValue('园区球机');
 
@@ -79,7 +149,8 @@ describe('静态演示页面', () => {
   it('完成一次批量添加后应禁用再次添加', async () => {
     const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
     const store = useSimulatorStore();
-    const result = store.addDevicesInBatch({
+    await flushPromises();
+    const result = await store.addDevicesInBatch({
       count: 1,
       startDeviceId: '34020000001320000100',
       nameTemplate: '批量设备-{序号}',
@@ -101,18 +172,21 @@ describe('静态演示页面', () => {
       attachTo: document.body,
       global: { plugins: [createPinia()] },
     });
+    await flushPromises();
 
     await findButtonByText(wrapper, '通道').trigger('click');
-    await nextTick();
+    await flushPromises();
 
     expect(document.body.textContent).toContain('通道列表');
     expect(document.body.textContent).toContain('平台订阅项');
-    expect(document.body.textContent).toContain('目录 Catalog');
+    expect(document.body.textContent).toContain('不写入配置文件');
+    expect(document.body.textContent).toContain('未订阅');
   });
 
   it('应通过全量操作更新全部设备注册状态并记录日志', async () => {
     const wrapper = mount(DevicesPage, { global: { plugins: [createPinia()] } });
     const store = useSimulatorStore();
+    await flushPromises();
 
     await findButtonByText(wrapper, '全量注册').trigger('click');
     await nextTick();

@@ -14,7 +14,7 @@ export interface SimulatedDevice {
   firmwareVersion: string;
   channelCount: number;
   registrationStatus: RegistrationStatus;
-  createdAt: string;
+  createdAt: number;
 }
 
 /** 平台可能订阅的 GB28181 内容类型。 */
@@ -72,6 +72,12 @@ export interface BatchDeviceDraft {
   model: string;
   firmwareVersion: string;
   channelCount: number;
+}
+
+/** Rust 核心返回的持久化设备与运行时派生通道快照。 */
+export interface DeviceSnapshot {
+  devices: SimulatedDevice[];
+  hasCompletedBatchAdd: boolean;
 }
 
 /** 前端演示操作的可见结果。 */
