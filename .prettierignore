@@ -1,0 +1,9 @@
+Cargo.lock
+pnpm-lock.yaml
+.codex/
+coverage/
+dist/
+node_modules/
+src-tauri/icons/
+src-tauri/gen/
+src-tauri/target/

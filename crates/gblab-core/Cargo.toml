@@ -1,0 +1,23 @@
+[package]
+name = "gblab-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "High-performance GB28181 multi-device simulation core"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+siprs = "0.1.2"
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

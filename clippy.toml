@@ -1,0 +1,11 @@
+msrv = "1.98.0"
+avoid-breaking-exported-api = false
+too-many-arguments-threshold = 6
+too-many-lines-threshold = 120
+cognitive-complexity-threshold = 30
+type-complexity-threshold = 250
+enum-variant-size-threshold = 200
+future-size-threshold = 16384
+pass-by-value-size-limit = 128
+large-error-threshold = 128
+trivial-copy-size-limit = 24

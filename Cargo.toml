@@ -1,0 +1,50 @@
+[workspace]
+members = ["crates/gblab-core", "src-tauri"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+authors = ["GBLab Contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["derive", "macros", "migrate", "runtime-tokio", "sqlite"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+await_holding_lock = "deny"
+future_not_send = "deny"
+large_futures = "warn"
+large_enum_variant = "warn"
+redundant_clone = "warn"
+needless_collect = "warn"
+clone_on_ref_ptr = "warn"
+rc_mutex = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
