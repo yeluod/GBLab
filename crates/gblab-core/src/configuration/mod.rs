@@ -3,6 +3,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -81,6 +82,12 @@ pub struct SipServiceConfiguration {
     pub domain: String,
     /// 全部设备共用的 SIP Digest 认证密码。
     pub password: String,
+    /// SIP socket 本地绑定地址。
+    pub local_bind_address: String,
+    /// 写入 Via 与 Contact 的对外地址；为空时根据到平台的路由自动探测。
+    pub advertised_address: String,
+    /// 全部设备共享的本地 SIP 监听端口。
+    pub local_port: u16,
     /// 注册有效期，单位为秒。
     pub register_expires: u32,
     /// 心跳间隔，单位为秒。
@@ -95,6 +102,9 @@ impl Default for SipServiceConfiguration {
             platform_id: "34020000002000000001".to_owned(),
             domain: "3402000000".to_owned(),
             password: String::new(),
+            local_bind_address: "0.0.0.0".to_owned(),
+            advertised_address: String::new(),
+            local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
         }
@@ -111,11 +121,21 @@ impl SipServiceConfiguration {
         self.uri = self.uri.trim().to_owned();
         self.platform_id = self.platform_id.trim().to_owned();
         self.domain = self.domain.trim().to_owned();
+        self.local_bind_address = self.local_bind_address.trim().to_owned();
+        self.advertised_address = self.advertised_address.trim().to_owned();
 
         validate_sip_uri(&self.uri)?;
         validate_twenty_digit_id("platformId", &self.platform_id)?;
         validate_domain(&self.domain)?;
         validate_password(&self.password)?;
+        validate_ip_address("localBindAddress", &self.local_bind_address, false)?;
+        validate_ip_address("advertisedAddress", &self.advertised_address, true)?;
+        if self.local_port == 0 {
+            return Err(ConfigurationError::invalid_field(
+                "localPort",
+                "本地 SIP 端口必须介于 1 到 65535",
+            ));
+        }
         validate_range(
             "registerExpires",
             self.register_expires,
@@ -303,6 +323,20 @@ fn validate_password(password: &str) -> Result<(), ConfigurationError> {
     Ok(())
 }
 
+fn validate_ip_address(
+    field: &'static str,
+    address: &str,
+    allow_empty: bool,
+) -> Result<(), ConfigurationError> {
+    if allow_empty && address.is_empty() {
+        return Ok(());
+    }
+    address
+        .parse::<IpAddr>()
+        .map(|_| ())
+        .map_err(|_| ConfigurationError::invalid_field(field, "必须是有效的 IPv4 或 IPv6 地址"))
+}
+
 fn validate_range(
     field: &'static str,
     value: u32,
@@ -381,6 +415,9 @@ mod tests {
             platform_id: "34020000002000000001".to_owned(),
             domain: "3402000000".to_owned(),
             password: "test-only-password".to_owned(),
+            local_bind_address: "0.0.0.0".to_owned(),
+            advertised_address: "10.0.0.10".to_owned(),
+            local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
         }

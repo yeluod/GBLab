@@ -1,5 +1,13 @@
 //! Tokio task 监督、调度、限流与关闭机制。
 
+mod registration;
+
+pub use registration::{
+    BatchOperationAccepted, DeviceRegistrationSnapshot, DeviceRegistrationStatus,
+    InteractionDirection, InteractionLog, RegistrationEvent, RegistrationHandle,
+    RegistrationOperationStatus, RegistrationRuntimeError, RegistrationSnapshot,
+};
+
 /// 核心运行时的有界资源配置。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeLimits {

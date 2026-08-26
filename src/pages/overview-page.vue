@@ -1,4 +1,5 @@
 <script setup lang="ts">
+  import { onMounted } from 'vue';
   import { NButton, NCard, NStatistic, NTag } from 'naive-ui';
   import { useRouter } from 'vue-router';
 
@@ -6,6 +7,11 @@
 
   const router = useRouter();
   const store = useSimulatorStore();
+
+  onMounted(async () => {
+    await store.loadSipService();
+    await store.loadDevices();
+  });
 
   function navigateTo(name: 'Devices' | 'SipService'): void {
     void router.push({ name });
@@ -20,7 +26,9 @@
         <h1 id="overview-title">运行总览</h1>
         <p>单一 SIP 服务下的多设备注册与通道交互演示。</p>
       </div>
-      <NTag type="success" round>静态演示模式</NTag>
+      <NTag :type="store.isRegistrationActive ? 'success' : 'default'" round>
+        {{ store.isRegistrationActive ? '注册运行中' : '未运行' }}
+      </NTag>
     </header>
 
     <div class="metric-grid">
@@ -49,7 +57,7 @@
     </NCard>
 
     <NCard title="开始模拟" class="overview-action-card">
-      <p>通过设备管理页批量新增、编辑并注册模拟设备；运行时状态在刷新应用后恢复为演示数据。</p>
+      <p>通过设备管理页批量新增设备并启动完整注册生命周期；注册状态与交互日志仅保存在运行内存。</p>
       <NButton type="primary" @click="navigateTo('Devices')">进入设备管理</NButton>
     </NCard>
   </section>

@@ -1017,7 +1017,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -1028,6 +1027,7 @@ dependencies = [
  "serde",
  "tauri",
  "tauri-build",
+ "tokio",
 ]
 
 [[package]]

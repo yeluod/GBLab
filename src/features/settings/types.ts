@@ -5,6 +5,9 @@ export interface SipServiceConfig {
   platformId: string;
   domain: string;
   password: string;
+  localBindAddress: string;
+  advertisedAddress: string;
+  localPort: number;
   registerExpires: number;
   keepaliveInterval: number;
 }

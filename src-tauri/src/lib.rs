@@ -8,7 +8,10 @@ mod dto;
 
 use app_state::AppState;
 use gblab_core::CoreService;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+const REGISTRATION_SNAPSHOT_EVENT: &str = "registration-snapshot";
+const INTERACTION_LOGS_EVENT: &str = "sip-interaction-logs";
 
 /// 启动 `GBLab` 桌面应用。
 ///
@@ -16,12 +19,29 @@ use tauri::Manager;
 ///
 /// Tauri 运行时无法初始化或桌面事件循环异常退出时返回错误。
 pub fn run() -> Result<(), tauri::Error> {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let configuration_path = app_data_dir.join("gblab.config.json");
             let core = CoreService::open(&configuration_path)?;
-            app.manage(AppState::new(core));
+            let state = AppState::new(core);
+            let mut registration_events = state.registration.subscribe();
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match registration_events.recv().await {
+                        Ok(gblab_core::runtime::RegistrationEvent::Snapshot(snapshot)) => {
+                            let _ = app_handle.emit(REGISTRATION_SNAPSHOT_EVENT, snapshot);
+                        }
+                        Ok(gblab_core::runtime::RegistrationEvent::InteractionLogs(logs)) => {
+                            let _ = app_handle.emit(INTERACTION_LOGS_EVENT, logs);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -32,7 +52,31 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::get_device_channels,
             commands::add_devices_in_batch,
             commands::update_device,
-            commands::delete_device
+            commands::delete_device,
+            commands::register_all_devices,
+            commands::stop_all_device_registration,
+            commands::get_registration_snapshot
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())?;
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            let state = app_handle.state::<AppState>();
+            if state.registration.is_active() && state.begin_shutdown() {
+                api.prevent_exit();
+                let registration = state.registration.clone();
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = registration.stop_all().await;
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        while registration.is_active() {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    })
+                    .await;
+                    app_handle.exit(0);
+                });
+            }
+        }
+    });
+    Ok(())
 }

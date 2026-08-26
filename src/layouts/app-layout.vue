@@ -47,7 +47,7 @@
           @click="openDeviceManagement"
           >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
         >
-        <span>静态演示数据 · 未连接后端</span>
+        <span>JSON 配置 · SIP 运行状态仅驻留内存</span>
       </div>
     </aside>
 

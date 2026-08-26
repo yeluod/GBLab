@@ -21,3 +21,4 @@ tauri-build = { version = "2", features = [] }
 gblab-core = { path = "../crates/gblab-core" }
 serde.workspace = true
 tauri = { version = "2.11.5", features = [] }
+tokio.workspace = true

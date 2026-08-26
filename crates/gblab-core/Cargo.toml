@@ -17,7 +17,6 @@ siprs = "0.1.2"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

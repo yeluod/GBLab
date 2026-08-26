@@ -2,7 +2,11 @@
 export type DeviceType = '摄像机' | '球机' | 'NVR' | '门禁设备';
 
 /** 设备与平台之间的运行时注册状态，不写入配置文件。 */
-export type RegistrationStatus = 'unregistered' | 'registered';
+export type RegistrationStatus =
+  'unregistered' | 'queued' | 'registering' | 'registered' | 'unregistering' | 'failed';
+
+/** 全量设备注册生命周期状态。 */
+export type RegistrationOperationStatus = 'idle' | 'registering' | 'running' | 'stopping';
 
 /** 内存中的模拟设备。 */
 export interface SimulatedDevice {
@@ -46,10 +50,33 @@ export interface SimulatedChannel {
 /** 与平台发生的单条模拟交互记录；设备与通道 ID 均为 20 位数字。 */
 export interface InteractionLog {
   id: string;
-  timestamp: string;
+  timestamp: number;
   deviceId: string;
-  channelId: string;
+  channelId: string | null;
+  direction: 'send' | 'receive';
   message: string;
+}
+
+/** Rust 注册运行时返回的单设备状态。 */
+export interface DeviceRegistrationSnapshot {
+  deviceId: string;
+  status: RegistrationStatus;
+  lastError: string | null;
+  expiresAt: number | null;
+}
+
+/** Rust 注册运行时返回的完整内存快照。 */
+export interface RegistrationSnapshot {
+  operationStatus: RegistrationOperationStatus;
+  operationId: string | null;
+  devices: DeviceRegistrationSnapshot[];
+  interactionLogs: Array<Omit<InteractionLog, 'id'> & { sequence: number }>;
+}
+
+/** 后端已接收的异步全量操作。 */
+export interface BatchOperationAccepted {
+  operationId: string;
+  total: number;
 }
 
 /** 单设备编辑表单；设备创建仅支持批量操作。 */

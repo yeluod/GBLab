@@ -26,6 +26,9 @@ describe('SIP 服务配置 IPC', () => {
       platformId: '34020000002000000001',
       domain: '3402000000',
       password: 'test-only-password',
+      localBindAddress: '0.0.0.0',
+      advertisedAddress: '10.0.0.10',
+      localPort: 5_060,
       registerExpires: 3_600,
       keepaliveInterval: 60,
     } as const;

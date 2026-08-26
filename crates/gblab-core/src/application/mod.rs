@@ -205,6 +205,9 @@ mod tests {
             platform_id: "34020000002000000001".to_owned(),
             domain: "3402000000".to_owned(),
             password: "test-only-password".to_owned(),
+            local_bind_address: "0.0.0.0".to_owned(),
+            advertised_address: "10.0.0.10".to_owned(),
+            local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
         };

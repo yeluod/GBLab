@@ -54,7 +54,7 @@
       <NButton
         type="primary"
         :loading="store.isSipServiceSaving"
-        :disabled="store.isSipServiceLoading"
+        :disabled="store.isSipServiceLoading || store.isRegistrationActive"
         @click="handleSave"
       >
         保存配置
@@ -62,7 +62,11 @@
     </header>
 
     <NCard class="form-card">
-      <NForm label-placement="top" :model="formModel" :disabled="store.isSipServiceLoading">
+      <NForm
+        label-placement="top"
+        :model="formModel"
+        :disabled="store.isSipServiceLoading || store.isRegistrationActive"
+      >
         <div class="form-grid">
           <NFormItem label="SIP 地址" path="uri">
             <NInput v-model:value="formModel.uri" placeholder="sip:192.168.1.100:5060" />
@@ -78,6 +82,23 @@
               v-model:value="formModel.password"
               :maxlength="128"
               placeholder="请输入 SIP Digest 认证密码"
+            />
+          </NFormItem>
+          <NFormItem label="本地监听地址" path="localBindAddress">
+            <NInput v-model:value="formModel.localBindAddress" placeholder="0.0.0.0" />
+          </NFormItem>
+          <NFormItem label="对外通信地址" path="advertisedAddress">
+            <NInput
+              v-model:value="formModel.advertisedAddress"
+              placeholder="留空时根据到平台的路由自动探测"
+            />
+          </NFormItem>
+          <NFormItem label="本地 SIP 端口" path="localPort">
+            <NInputNumber
+              v-model:value="formModel.localPort"
+              :min="1"
+              :max="65535"
+              :show-button="false"
             />
           </NFormItem>
           <NFormItem label="域" path="domain">

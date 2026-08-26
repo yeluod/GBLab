@@ -122,9 +122,11 @@ crates/gblab-core/
 │   ├── application/                # 用例与业务编排
 │   │   └── mod.rs                  # 当前提供 CoreService
 │   ├── runtime/                    # Tokio 生命周期与性能机制
-│   │   └── mod.rs                  # 当前提供有界资源配置
+│   │   ├── mod.rs                  # 有界资源配置与运行时公开契约
+│   │   └── registration.rs         # 全量注册监督器、状态快照与批量事件
 │   ├── sip/                        # siprs 隔离层
-│   │   └── mod.rs
+│   │   ├── mod.rs
+│   │   └── registration.rs         # 共享 UDP 传输、REGISTER 与 Digest 适配
 │   ├── media/                      # FFmpeg 与媒体会话管理
 │   │   └── mod.rs
 │   ├── configuration/              # JSON 配置读写

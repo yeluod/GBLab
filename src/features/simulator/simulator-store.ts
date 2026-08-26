@@ -14,6 +14,13 @@ import {
   getDeviceSnapshot,
   updateDeviceCommand,
 } from './device-api';
+import {
+  getRegistrationSnapshot,
+  listenInteractionLogs,
+  listenRegistrationSnapshot,
+  registerAllDevicesCommand,
+  stopAllDeviceRegistrationCommand,
+} from './registration-api';
 
 import type {
   BatchDeviceDraft,
@@ -22,6 +29,9 @@ import type {
   DeviceSnapshot,
   InteractionLog,
   OperationResult,
+  RegistrationOperationStatus,
+  RegistrationSnapshot,
+  RegistrationStatus,
   SimulatedChannel,
   SimulatedDevice,
   SubscriptionKind,
@@ -30,7 +40,7 @@ import type {
 const DEVICE_ID_PATTERN = /^\d{20}$/;
 const MAX_BATCH_DEVICE_COUNT = 1_000;
 const MAX_CHANNEL_COUNT = 128;
-const MAX_INTERACTION_LOG_COUNT = 500;
+const MAX_INTERACTION_LOG_COUNT = 10_000;
 
 function getConfigurationErrorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error) {
@@ -43,14 +53,6 @@ function getConfigurationErrorMessage(error: unknown): string {
     return error.message;
   }
   return '桌面后端暂时不可用，请重试。';
-}
-
-function formatCurrentTimestamp(): string {
-  const now = new Date();
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(
-    now.getHours(),
-  )}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 
 function normalizeDeviceDraft(draft: DeviceUpdateDraft): DeviceUpdateDraft {
@@ -99,6 +101,10 @@ function validateSipServiceConfig(config: SipServiceConfig): OperationResult {
   }
   if (
     config.domain.trim().length === 0 ||
+    config.localBindAddress.trim().length === 0 ||
+    !Number.isInteger(config.localPort) ||
+    config.localPort < 1 ||
+    config.localPort > 65_535 ||
     config.registerExpires <= 0 ||
     config.keepaliveInterval <= 0
   ) {
@@ -114,6 +120,8 @@ function normalizeSipServiceConfig(config: SipServiceConfig): SipServiceConfig {
     uri: config.uri.trim(),
     platformId: config.platformId.trim(),
     domain: config.domain.trim(),
+    localBindAddress: config.localBindAddress.trim(),
+    advertisedAddress: config.advertisedAddress.trim(),
   };
 }
 
@@ -125,6 +133,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
     platformId: '34020000002000000001',
     domain: '3402000000',
     password: '',
+    localBindAddress: '0.0.0.0',
+    advertisedAddress: '',
+    localPort: 5_060,
     registerExpires: 3_600,
     keepaliveInterval: 60,
   });
@@ -132,6 +143,10 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const isSipServiceSaving = ref(false);
   const isDeviceLoading = ref(false);
   const isDeviceSaving = ref(false);
+  const isRegistrationCommandPending = ref(false);
+  const registrationOperationStatus = ref<RegistrationOperationStatus>('idle');
+  const registrationStatusByDevice = ref(new Map<string, RegistrationStatus>());
+  const registrationErrorByDevice = ref(new Map<string, string>());
   const devices = ref<SimulatedDevice[]>([]);
   const subscriptions = ref<DeviceSubscription[]>([]);
   const channels = ref<SimulatedChannel[]>([]);
@@ -144,14 +159,49 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const activeSubscriptionCount = computed(
     () => subscriptions.value.filter((subscription) => subscription.status === 'active').length,
   );
+  const isRegistrationActive = computed(() => registrationOperationStatus.value !== 'idle');
+
+  let registrationListenersPromise: Promise<void> | null = null;
+
+  function mapInteractionLog(
+    log: Omit<InteractionLog, 'id'> & { sequence: number },
+  ): InteractionLog {
+    return { ...log, id: `sip-${log.sequence}` };
+  }
+
+  function applyRegistrationSnapshot(snapshot: RegistrationSnapshot): void {
+    registrationOperationStatus.value = snapshot.operationStatus;
+    registrationStatusByDevice.value = new Map(
+      snapshot.devices.map((device) => [device.deviceId, device.status]),
+    );
+    registrationErrorByDevice.value = new Map(
+      snapshot.devices.flatMap((device) =>
+        device.lastError === null ? [] : [[device.deviceId, device.lastError] as const],
+      ),
+    );
+    devices.value.forEach((device) => {
+      device.registrationStatus = registrationStatusByDevice.value.get(device.id) ?? 'unregistered';
+    });
+    if (snapshot.interactionLogs.length > 0) {
+      interactionLogs.value = snapshot.interactionLogs.map(mapInteractionLog);
+    }
+  }
+
+  async function ensureRegistrationListeners(): Promise<void> {
+    if (registrationListenersPromise !== null) {
+      return registrationListenersPromise;
+    }
+    registrationListenersPromise = Promise.all([
+      listenRegistrationSnapshot(applyRegistrationSnapshot),
+      listenInteractionLogs((logs) => appendInteractionLogs(logs.map(mapInteractionLog))),
+    ]).then(() => undefined);
+    return registrationListenersPromise;
+  }
 
   function applyDeviceSnapshot(snapshot: DeviceSnapshot): void {
-    const registrationByDevice = new Map(
-      devices.value.map((device) => [device.id, device.registrationStatus] as const),
-    );
     devices.value = snapshot.devices.map((device) => ({
       ...device,
-      registrationStatus: registrationByDevice.get(device.id) ?? 'unregistered',
+      registrationStatus: registrationStatusByDevice.value.get(device.id) ?? 'unregistered',
     }));
     channels.value = [];
     hasCompletedBatchAdd.value = snapshot.hasCompletedBatchAdd;
@@ -179,27 +229,6 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
-  function appendRegistrationLogs(targetDevices: SimulatedDevice[], isRegistering: boolean): void {
-    const timestamp = formatCurrentTimestamp();
-    const firstChannelIdByDevice = new Map<string, string>();
-    channels.value.forEach((channel) => {
-      if (!firstChannelIdByDevice.has(channel.deviceId)) {
-        firstChannelIdByDevice.set(channel.deviceId, channel.id);
-      }
-    });
-    appendInteractionLogs(
-      targetDevices.map((device) => ({
-        id: `interaction-${crypto.randomUUID()}`,
-        timestamp,
-        deviceId: device.id,
-        channelId: firstChannelIdByDevice.get(device.id) ?? device.id,
-        message: isRegistering
-          ? `→ REGISTER ${sipService.value.uri} · 设备已请求注册，Expires: ${sipService.value.registerExpires}。`
-          : `→ REGISTER ${sipService.value.uri} · 设备已请求注销，Expires: 0。`,
-      })),
-    );
-  }
-
   function updateSipService(config: SipServiceConfig): OperationResult {
     const normalized = normalizeSipServiceConfig(config);
     const validation = validateSipServiceConfig(normalized);
@@ -218,7 +247,13 @@ export const useSimulatorStore = defineStore('simulator', () => {
 
     isSipServiceLoading.value = true;
     try {
-      sipService.value = await getSipServiceConfiguration();
+      await ensureRegistrationListeners();
+      const [configuration, registrationSnapshot] = await Promise.all([
+        getSipServiceConfiguration(),
+        getRegistrationSnapshot(),
+      ]);
+      sipService.value = configuration;
+      applyRegistrationSnapshot(registrationSnapshot);
       return { ok: true };
     } catch (error: unknown) {
       return { ok: false, message: getConfigurationErrorMessage(error) };
@@ -228,6 +263,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   async function saveSipService(config: SipServiceConfig): Promise<OperationResult> {
+    if (isRegistrationActive.value) {
+      return { ok: false, message: '请先完成全量停止注册，再修改 SIP 服务配置。' };
+    }
     if (isSipServiceSaving.value) {
       return { ok: false, message: 'SIP 服务配置正在保存。' };
     }
@@ -254,7 +292,13 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
     isDeviceLoading.value = true;
     try {
-      applyDeviceSnapshot(await getDeviceSnapshot());
+      await ensureRegistrationListeners();
+      const [deviceSnapshot, registrationSnapshot] = await Promise.all([
+        getDeviceSnapshot(),
+        getRegistrationSnapshot(),
+      ]);
+      applyRegistrationSnapshot(registrationSnapshot);
+      applyDeviceSnapshot(deviceSnapshot);
       return { ok: true };
     } catch (error: unknown) {
       return { ok: false, message: getConfigurationErrorMessage(error) };
@@ -276,6 +320,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
     deviceId: string,
     draft: DeviceUpdateDraft,
   ): Promise<OperationResult> {
+    if (isRegistrationActive.value) {
+      return { ok: false, message: '请先完成全量停止注册，再修改设备。' };
+    }
     const device = devices.value.find((item) => item.id === deviceId);
     if (device === undefined) {
       return { ok: false, message: '设备不存在或已被删除。' };
@@ -301,6 +348,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   async function addDevicesInBatch(draft: BatchDeviceDraft): Promise<OperationResult> {
+    if (isRegistrationActive.value) {
+      return { ok: false, message: '请先完成全量停止注册，再添加设备。' };
+    }
     if (hasCompletedBatchAdd.value) {
       return { ok: false, message: '设备仅允许批量添加一次。' };
     }
@@ -351,6 +401,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   async function deleteDevice(deviceId: string): Promise<OperationResult> {
+    if (isRegistrationActive.value) {
+      return { ok: false, message: '请先完成全量停止注册，再删除设备。' };
+    }
     const deviceIndex = devices.value.findIndex((device) => device.id === deviceId);
     if (deviceIndex === -1) {
       return { ok: false, message: '设备不存在或已被删除。' };
@@ -373,26 +426,49 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
-  function registerAllDevices(): OperationResult {
+  async function registerAllDevices(): Promise<OperationResult> {
     if (devices.value.length === 0) {
       return { ok: false, message: '当前没有可注册的设备。' };
     }
-    devices.value.forEach((device) => {
-      device.registrationStatus = 'registered';
-    });
-    appendRegistrationLogs(devices.value, true);
-    return { ok: true };
+    if (isRegistrationCommandPending.value || isRegistrationActive.value) {
+      return { ok: false, message: '全量注册生命周期已经在运行。' };
+    }
+    isRegistrationCommandPending.value = true;
+    try {
+      await ensureRegistrationListeners();
+      await registerAllDevicesCommand();
+      registrationOperationStatus.value = 'registering';
+      devices.value.forEach((device) => {
+        device.registrationStatus = 'queued';
+      });
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isRegistrationCommandPending.value = false;
+    }
   }
 
-  function stopAllDeviceRegistration(): OperationResult {
+  async function stopAllDeviceRegistration(): Promise<OperationResult> {
     if (devices.value.length === 0) {
       return { ok: false, message: '当前没有可停止注册的设备。' };
     }
-    devices.value.forEach((device) => {
-      device.registrationStatus = 'unregistered';
-    });
-    appendRegistrationLogs(devices.value, false);
-    return { ok: true };
+    if (isRegistrationCommandPending.value) {
+      return { ok: false, message: '注册操作正在提交，请稍后重试。' };
+    }
+    if (!isRegistrationActive.value) {
+      return { ok: false, message: '当前没有运行中的注册生命周期。' };
+    }
+    isRegistrationCommandPending.value = true;
+    try {
+      await stopAllDeviceRegistrationCommand();
+      registrationOperationStatus.value = 'stopping';
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isRegistrationCommandPending.value = false;
+    }
   }
 
   return {
@@ -401,6 +477,10 @@ export const useSimulatorStore = defineStore('simulator', () => {
     isSipServiceSaving,
     isDeviceLoading,
     isDeviceSaving,
+    isRegistrationCommandPending,
+    registrationOperationStatus,
+    isRegistrationActive,
+    registrationErrorByDevice,
     devices,
     subscriptions,
     channels,

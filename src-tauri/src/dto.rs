@@ -1,6 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
     SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+    runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,9 @@ pub struct SipServiceConfigurationDto {
     platform_id: String,
     domain: String,
     password: String,
+    local_bind_address: String,
+    advertised_address: String,
+    local_port: u16,
     register_expires: u32,
     keepalive_interval: u32,
 }
@@ -69,6 +73,9 @@ impl SipServiceConfigurationDto {
             platform_id: configuration.platform_id,
             domain: configuration.domain,
             password: configuration.password,
+            local_bind_address: configuration.local_bind_address,
+            advertised_address: configuration.advertised_address,
+            local_port: configuration.local_port,
             register_expires: configuration.register_expires,
             keepalive_interval: configuration.keepalive_interval,
         }
@@ -81,8 +88,27 @@ impl SipServiceConfigurationDto {
             platform_id: self.platform_id,
             domain: self.domain,
             password: self.password,
+            local_bind_address: self.local_bind_address,
+            advertised_address: self.advertised_address,
+            local_port: self.local_port,
             register_expires: self.register_expires,
             keepalive_interval: self.keepalive_interval,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOperationAcceptedDto {
+    operation_id: String,
+    total: usize,
+}
+
+impl From<BatchOperationAccepted> for BatchOperationAcceptedDto {
+    fn from(value: BatchOperationAccepted) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            total: value.total,
         }
     }
 }
@@ -267,6 +293,34 @@ impl CommandErrorDto {
         Self {
             code: "background_task_failed",
             message: "配置保存任务异常结束，请重试。".to_owned(),
+        }
+    }
+
+    pub fn operation_busy() -> Self {
+        Self {
+            code: "operation_busy",
+            message: "另一个设备或配置操作正在执行，请稍后重试。".to_owned(),
+        }
+    }
+
+    pub fn registration_active() -> Self {
+        Self {
+            code: "registration_active",
+            message: "请先完成全量停止注册，再修改 SIP 或设备配置。".to_owned(),
+        }
+    }
+
+    pub fn registration(error: &RegistrationRuntimeError) -> Self {
+        Self {
+            code: "registration_error",
+            message: error.to_string(),
+        }
+    }
+
+    pub const fn invalid_configuration(message: String) -> Self {
+        Self {
+            code: "invalid_configuration",
+            message,
         }
     }
 }

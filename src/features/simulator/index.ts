@@ -9,6 +9,8 @@ export type {
   SimulatedChannel,
   SimulatedDevice,
   RegistrationStatus,
+  RegistrationOperationStatus,
+  RegistrationSnapshot,
   SubscriptionKind,
   SubscriptionStatus,
 } from './types';

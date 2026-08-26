@@ -27,13 +27,14 @@
     type InteractionLog,
     type SimulatedChannel,
     type SimulatedDevice,
+    type RegistrationStatus,
   } from '@/features/simulator';
 
   const store = useSimulatorStore();
   const message = useMessage();
   const dialog = useDialog();
   const searchKeyword = ref('');
-  const statusFilter = ref<'all' | 'registered' | 'unregistered'>('all');
+  const statusFilter = ref<'all' | RegistrationStatus>('all');
   const devicePage = ref(1);
   const devicePageSize = ref(10);
   const selectedDeviceId = ref<string | null>(null);
@@ -52,6 +53,10 @@
     { label: '全部状态', value: 'all' },
     { label: '已注册', value: 'registered' },
     { label: '未注册', value: 'unregistered' },
+    { label: '排队中', value: 'queued' },
+    { label: '注册中', value: 'registering' },
+    { label: '注销中', value: 'unregistering' },
+    { label: '失败', value: 'failed' },
   ];
   const devicePageSizeOptions = [10, 20, 50, 100];
   const deviceDraft = reactive<DeviceUpdateDraft>({
@@ -79,9 +84,7 @@
       const matchesKeyword =
         keyword.length === 0 || `${device.id}${device.name}`.toLowerCase().includes(keyword);
       const matchesStatus =
-        statusFilter.value === 'all' ||
-        (statusFilter.value === 'registered' && device.registrationStatus === 'registered') ||
-        (statusFilter.value === 'unregistered' && device.registrationStatus === 'unregistered');
+        statusFilter.value === 'all' || device.registrationStatus === statusFilter.value;
       return matchesKeyword && matchesStatus;
     });
   });
@@ -146,6 +149,26 @@
     return new Date(timestamp).toLocaleString('zh-CN', { hour12: false });
   }
 
+  function registrationStatusMeta(status: RegistrationStatus): {
+    label: string;
+    type: 'default' | 'success' | 'warning' | 'error' | 'info';
+  } {
+    switch (status) {
+      case 'queued':
+        return { label: '排队中', type: 'info' };
+      case 'registering':
+        return { label: '注册中', type: 'warning' };
+      case 'registered':
+        return { label: '已注册', type: 'success' };
+      case 'unregistering':
+        return { label: '注销中', type: 'warning' };
+      case 'failed':
+        return { label: '失败', type: 'error' };
+      case 'unregistered':
+        return { label: '未注册', type: 'default' };
+    }
+  }
+
   function selectDevice(device: SimulatedDevice): void {
     selectedDeviceId.value = device.id;
     isDetailOpen.value = true;
@@ -187,8 +210,8 @@
     message.success(`已新增 ${batchDraft.count} 台模拟设备。`);
   }
 
-  function handleRegisterAllDevices(): void {
-    const result = store.registerAllDevices();
+  async function handleRegisterAllDevices(): Promise<void> {
+    const result = await store.registerAllDevices();
     if (!result.ok) {
       message.error(result.message);
       return;
@@ -196,13 +219,13 @@
     message.success(`已向 ${store.devices.length} 台设备发起注册。`);
   }
 
-  function handleStopAllRegistration(): void {
-    const result = store.stopAllDeviceRegistration();
+  async function handleStopAllRegistration(): Promise<void> {
+    const result = await store.stopAllDeviceRegistration();
     if (!result.ok) {
       message.error(result.message);
       return;
     }
-    message.success(`已停止 ${store.devices.length} 台设备的注册。`);
+    message.success(`已向 ${store.devices.length} 台设备发起停止注册。`);
   }
 
   async function openChannels(device: SimulatedDevice): Promise<void> {
@@ -259,11 +282,10 @@
       render: (device) =>
         h(
           NTag,
+          { type: registrationStatusMeta(device.registrationStatus).type, size: 'small' },
           {
-            type: device.registrationStatus === 'registered' ? 'success' : 'default',
-            size: 'small',
+            default: () => registrationStatusMeta(device.registrationStatus).label,
           },
-          { default: () => (device.registrationStatus === 'registered' ? '已注册' : '未注册') },
         ),
     },
     {
@@ -298,6 +320,7 @@
             {
               size: 'small',
               tertiary: true,
+              disabled: store.isRegistrationActive,
               onClick: (event: MouseEvent) => {
                 event.stopPropagation();
                 openEditDevice(device);
@@ -311,6 +334,7 @@
               size: 'small',
               tertiary: true,
               type: 'error',
+              disabled: store.isRegistrationActive,
               onClick: (event: MouseEvent) => {
                 event.stopPropagation();
                 confirmDeleteDevice(device);
@@ -323,9 +347,21 @@
   ];
 
   const interactionLogColumns: DataTableColumns<InteractionLog> = [
-    { title: '时间', key: 'timestamp', width: 174, align: 'center' },
+    {
+      title: '时间',
+      key: 'timestamp',
+      width: 174,
+      align: 'center',
+      render: (log) => formatCreatedAt(log.timestamp),
+    },
     { title: '设备 ID', key: 'deviceId', minWidth: 210, align: 'center' },
-    { title: '通道 ID', key: 'channelId', minWidth: 250, align: 'center' },
+    {
+      title: '通道 ID',
+      key: 'channelId',
+      minWidth: 250,
+      align: 'center',
+      render: (log) => log.channelId ?? '—',
+    },
     {
       title: '消息',
       key: 'message',
@@ -354,7 +390,9 @@
           <div class="toolbar-actions">
             <NButton
               type="primary"
-              :disabled="store.hasCompletedBatchAdd || store.isDeviceLoading"
+              :disabled="
+                store.hasCompletedBatchAdd || store.isDeviceLoading || store.isRegistrationActive
+              "
               :loading="store.isDeviceSaving"
               @click="isBatchModalOpen = true"
               >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
@@ -363,15 +401,23 @@
               secondary
               type="primary"
               :disabled="
-                store.devices.length === 0 || store.registeredDeviceCount === store.devices.length
+                store.devices.length === 0 ||
+                store.isRegistrationActive ||
+                store.isRegistrationCommandPending
               "
+              :loading="store.isRegistrationCommandPending && !store.isRegistrationActive"
               @click="handleRegisterAllDevices"
               >全量注册</NButton
             >
             <NButton
               secondary
               type="warning"
-              :disabled="store.devices.length === 0 || store.registeredDeviceCount === 0"
+              :disabled="
+                store.devices.length === 0 ||
+                !store.isRegistrationActive ||
+                store.registrationOperationStatus === 'stopping'
+              "
+              :loading="store.registrationOperationStatus === 'stopping'"
               @click="handleStopAllRegistration"
               >全量停止注册</NButton
             >
@@ -455,13 +501,14 @@
           <div
             ><dt>注册状态</dt
             ><dd
-              ><NTag
-                :type="selectedDevice.registrationStatus === 'registered' ? 'success' : 'default'"
-                >{{
-                  selectedDevice.registrationStatus === 'registered' ? '已注册' : '未注册'
-                }}</NTag
-              ></dd
+              ><NTag :type="registrationStatusMeta(selectedDevice.registrationStatus).type">{{
+                registrationStatusMeta(selectedDevice.registrationStatus).label
+              }}</NTag></dd
             ></div
+          >
+          <div v-if="store.registrationErrorByDevice.has(selectedDevice.id)"
+            ><dt>最近错误</dt
+            ><dd>{{ store.registrationErrorByDevice.get(selectedDevice.id) }}</dd></div
           >
           <div
             ><dt>共享服务</dt><dd>{{ store.sipService.uri }}</dd></div
