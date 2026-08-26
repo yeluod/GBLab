@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 
 import DevicesPage from '@/pages/devices-page.vue';
+import InteractionLogsPage from '@/pages/interaction-logs-page.vue';
 import OverviewPage from '@/pages/overview-page.vue';
 import SipServicePage from '@/pages/sip-service-page.vue';
 
@@ -17,6 +18,11 @@ export const router = createRouter({
       path: '/devices',
       name: 'Devices',
       component: DevicesPage,
+    },
+    {
+      path: '/interaction-logs',
+      name: 'InteractionLogs',
+      component: InteractionLogsPage,
     },
     {
       path: '/sip-service',

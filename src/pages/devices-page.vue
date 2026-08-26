@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { computed, h, nextTick, onMounted, reactive, ref, watch } from 'vue';
+  import { computed, h, onMounted, reactive, ref, watch } from 'vue';
   import {
     NButton,
     NCard,
@@ -17,14 +17,12 @@
     useDialog,
     useMessage,
     type DataTableColumns,
-    type DataTableInst,
   } from 'naive-ui';
 
   import {
     useSimulatorStore,
     type BatchDeviceDraft,
     type DeviceUpdateDraft,
-    type InteractionLog,
     type SimulatedChannel,
     type SimulatedDevice,
     type RegistrationStatus,
@@ -44,7 +42,6 @@
   const isChannelsModalOpen = ref(false);
   const editingDeviceId = ref<string | null>(null);
   const channelDeviceId = ref<string | null>(null);
-  const interactionLogTableRef = ref<DataTableInst | null>(null);
   const deviceTypeOptions = ['摄像机', '球机', 'NVR', '门禁设备'].map((value) => ({
     label: value,
     value,
@@ -108,21 +105,6 @@
       : store.channels.filter((channel) => channel.deviceId === channelDevice.value?.id),
   );
 
-  async function scrollInteractionLogToLatest(): Promise<void> {
-    await nextTick();
-    const table = interactionLogTableRef.value;
-    if (table !== null && typeof HTMLElement.prototype.scrollTo === 'function') {
-      table.scrollTo({ top: Number.MAX_SAFE_INTEGER });
-    }
-  }
-
-  watch(
-    () => store.interactionLogs.length,
-    () => {
-      void scrollInteractionLogToLatest();
-    },
-  );
-
   watch([searchKeyword, statusFilter, devicePageSize], () => {
     devicePage.value = 1;
   });
@@ -142,7 +124,6 @@
     if (!result.ok) {
       message.error(result.message);
     }
-    void scrollInteractionLogToLatest();
   });
 
   function formatCreatedAt(timestamp: number): string {
@@ -370,30 +351,6 @@
         ]),
     },
   ];
-
-  const interactionLogColumns: DataTableColumns<InteractionLog> = [
-    {
-      title: '时间',
-      key: 'timestamp',
-      width: 174,
-      align: 'center',
-      render: (log) => formatCreatedAt(log.timestamp),
-    },
-    { title: '设备 ID', key: 'deviceId', minWidth: 210, align: 'center' },
-    {
-      title: '通道 ID',
-      key: 'channelId',
-      minWidth: 250,
-      align: 'center',
-      render: (log) => log.channelId ?? '—',
-    },
-    {
-      title: '消息',
-      key: 'message',
-      minWidth: 480,
-      render: (log) => h('code', { class: 'interaction-message' }, log.message),
-    },
-  ];
 </script>
 
 <template>
@@ -487,28 +444,6 @@
             :page-sizes="devicePageSizeOptions"
             show-quick-jumper
             show-size-picker
-          />
-        </div>
-      </NCard>
-
-      <NCard class="data-surface interaction-log-surface" :bordered="false">
-        <div class="section-card-header">
-          <div>
-            <h2>交互日志</h2>
-            <p>展示模拟设备与平台之间发生的 SIP / GB28181 交互消息。</p>
-          </div>
-        </div>
-        <div class="interaction-log-scroll">
-          <NDataTable
-            ref="interactionLogTableRef"
-            class="interaction-log-table"
-            flex-height
-            :columns="interactionLogColumns"
-            :data="store.interactionLogs"
-            :pagination="false"
-            :scroll-x="1120"
-            :scrollbar-props="{ trigger: 'none', size: 10 }"
-            :row-key="(log) => log.id"
           />
         </div>
       </NCard>
