@@ -60,6 +60,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::stop_all_device_registration,
             commands::trigger_alarm,
             commands::trigger_mobile_position,
+            commands::control_device,
+            commands::control_ptz,
             commands::get_registration_snapshot
         ])
         .build(tauri::generate_context!())?;

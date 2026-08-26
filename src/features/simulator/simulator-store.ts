@@ -22,11 +22,14 @@ import {
   registerAllDevicesCommand,
   stopAllDeviceRegistrationCommand,
   triggerAlarmCommand,
+  controlDeviceCommand,
+  controlPtzCommand,
   triggerMobilePositionCommand,
 } from './registration-api';
 
 import type {
   BatchDeviceDraft,
+  DeviceRegistrationSnapshot,
   DeviceUpdateDraft,
   DeviceSubscription,
   DeviceSnapshot,
@@ -37,6 +40,7 @@ import type {
   RegistrationStatus,
   SimulatedChannel,
   SimulatedDevice,
+  SubscriptionSnapshot,
   SubscriptionKind,
 } from './types';
 
@@ -149,9 +153,11 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const isRegistrationCommandPending = ref(false);
   const registrationOperationStatus = ref<RegistrationOperationStatus>('idle');
   const registrationStatusByDevice = ref(new Map<string, RegistrationStatus>());
+  const registrationSnapshotByDevice = ref(new Map<string, DeviceRegistrationSnapshot>());
   const registrationErrorByDevice = ref(new Map<string, string>());
   const devices = ref<SimulatedDevice[]>([]);
   const subscriptions = ref<DeviceSubscription[]>([]);
+  const subscriptionSnapshots = ref<SubscriptionSnapshot[]>([]);
   const channels = ref<SimulatedChannel[]>([]);
   const interactionLogs = ref<InteractionLog[]>([]);
   const hasCompletedBatchAdd = ref(false);
@@ -179,14 +185,50 @@ export const useSimulatorStore = defineStore('simulator', () => {
     registrationStatusByDevice.value = new Map(
       snapshot.devices.map((device) => [device.deviceId, device.status]),
     );
+    registrationSnapshotByDevice.value = new Map(
+      snapshot.devices.map((device) => [device.deviceId, device]),
+    );
     registrationErrorByDevice.value = new Map(
       snapshot.devices.flatMap((device) =>
         device.lastError === null ? [] : [[device.deviceId, device.lastError] as const],
       ),
     );
     devices.value.forEach((device) => {
-      device.registrationStatus = registrationStatusByDevice.value.get(device.id) ?? 'unregistered';
+      const runtime = registrationSnapshotByDevice.value.get(device.id);
+      device.registrationStatus = runtime?.status ?? 'unregistered';
+      device.online = runtime?.online ?? false;
+      device.lastHeartbeatAt = runtime?.lastHeartbeatAt ?? null;
+      device.lastPlatformRequestAt = runtime?.lastPlatformRequestAt ?? null;
+      device.heartbeatFailures = runtime?.heartbeatFailures ?? 0;
+      device.lastControlAction = runtime?.lastControlAction ?? null;
+      device.ptzAction = runtime?.ptzAction ?? null;
+      device.guarded = runtime?.guarded ?? false;
+      device.alarmActive = runtime?.alarmActive ?? false;
     });
+    const nextSubscriptions = snapshot.subscriptions ?? [];
+    subscriptionSnapshots.value = nextSubscriptions;
+    subscriptions.value = nextSubscriptions
+      .filter((subscription) =>
+        ['catalog', 'alarm', 'mobilePosition'].includes(subscription.commandType),
+      )
+      .map((subscription) => ({
+        id: `${subscription.deviceId}:${subscription.channelId ?? ''}:${subscription.commandType}`,
+        deviceId: subscription.deviceId,
+        kind:
+          subscription.commandType === 'alarm'
+            ? 'alarm'
+            : subscription.commandType === 'mobilePosition'
+              ? 'mobile-position'
+              : 'catalog',
+        status: subscription.status === 'active' ? 'active' : 'inactive',
+        expiresAt:
+          subscription.expiresAt === null ? null : new Date(subscription.expiresAt).toISOString(),
+        lastNotifiedAt:
+          subscription.lastNotifiedAt === null
+            ? null
+            : new Date(subscription.lastNotifiedAt).toISOString(),
+        catalogPreview: [],
+      }));
     if (!hasHydratedInteractionLogSnapshot && !interactionLogsCleared) {
       interactionLogs.value = snapshot.interactionLogs.map(mapInteractionLog);
       hasHydratedInteractionLogSnapshot = true;
@@ -208,6 +250,16 @@ export const useSimulatorStore = defineStore('simulator', () => {
     devices.value = snapshot.devices.map((device) => ({
       ...device,
       registrationStatus: registrationStatusByDevice.value.get(device.id) ?? 'unregistered',
+      online: registrationSnapshotByDevice.value.get(device.id)?.online ?? false,
+      lastHeartbeatAt: registrationSnapshotByDevice.value.get(device.id)?.lastHeartbeatAt ?? null,
+      lastPlatformRequestAt:
+        registrationSnapshotByDevice.value.get(device.id)?.lastPlatformRequestAt ?? null,
+      heartbeatFailures: registrationSnapshotByDevice.value.get(device.id)?.heartbeatFailures ?? 0,
+      lastControlAction:
+        registrationSnapshotByDevice.value.get(device.id)?.lastControlAction ?? null,
+      ptzAction: registrationSnapshotByDevice.value.get(device.id)?.ptzAction ?? null,
+      guarded: registrationSnapshotByDevice.value.get(device.id)?.guarded ?? false,
+      alarmActive: registrationSnapshotByDevice.value.get(device.id)?.alarmActive ?? false,
     }));
     channels.value = [];
     // 空设备集合不应被一次性批量标记锁死，兼容旧版本删除全部设备后遗留的配置。
@@ -549,6 +601,40 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
+  async function controlDevice(deviceId: string, action: string): Promise<OperationResult> {
+    if (
+      !isRegistrationActive.value ||
+      devices.value.find((device) => device.id === deviceId)?.registrationStatus !== 'registered'
+    ) {
+      return { ok: false, message: '设备尚未注册，无法执行设备控制。' };
+    }
+    try {
+      await controlDeviceCommand(deviceId, action);
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    }
+  }
+
+  async function controlPtz(
+    deviceId: string,
+    channelId: string,
+    action: string,
+  ): Promise<OperationResult> {
+    if (
+      !isRegistrationActive.value ||
+      devices.value.find((device) => device.id === deviceId)?.registrationStatus !== 'registered'
+    ) {
+      return { ok: false, message: '设备尚未注册，无法执行 PTZ 控制。' };
+    }
+    try {
+      await controlPtzCommand(deviceId, channelId, action);
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    }
+  }
+
   return {
     sipService,
     isSipServiceLoading,
@@ -561,6 +647,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     registrationErrorByDevice,
     devices,
     subscriptions,
+    subscriptionSnapshots,
     channels,
     interactionLogs,
     clearInteractionLogs,
@@ -580,5 +667,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     stopAllDeviceRegistration,
     triggerAlarm,
     triggerMobilePosition,
+    controlDevice,
+    controlPtz,
   };
 });

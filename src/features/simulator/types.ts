@@ -18,6 +18,14 @@ export interface SimulatedDevice {
   firmwareVersion: string;
   channelCount: number;
   registrationStatus: RegistrationStatus;
+  online?: boolean;
+  lastHeartbeatAt?: number | null;
+  lastPlatformRequestAt?: number | null;
+  heartbeatFailures?: number;
+  lastControlAction?: string | null;
+  ptzAction?: string | null;
+  guarded?: boolean;
+  alarmActive?: boolean;
   createdAt: number;
 }
 
@@ -63,6 +71,14 @@ export interface DeviceRegistrationSnapshot {
   status: RegistrationStatus;
   lastError: string | null;
   expiresAt: number | null;
+  lastPlatformRequestAt?: number | null;
+  lastHeartbeatAt?: number | null;
+  online?: boolean;
+  heartbeatFailures?: number;
+  lastControlAction?: string | null;
+  ptzAction?: string | null;
+  guarded?: boolean;
+  alarmActive?: boolean;
 }
 
 /** Rust 注册运行时返回的完整内存快照。 */
@@ -71,6 +87,30 @@ export interface RegistrationSnapshot {
   operationId: string | null;
   devices: DeviceRegistrationSnapshot[];
   interactionLogs: Array<Omit<InteractionLog, 'id'> & { sequence: number }>;
+  subscriptions?: SubscriptionSnapshot[];
+}
+
+export type SubscriptionRuntimeStatus =
+  'pending' | 'active' | 'refreshing' | 'cancelled' | 'expired' | 'failed';
+
+export interface SubscriptionSnapshot {
+  deviceId: string;
+  channelId: string | null;
+  commandType:
+    | 'catalog'
+    | 'deviceInfo'
+    | 'deviceStatus'
+    | 'deviceControl'
+    | 'recordInfo'
+    | 'alarm'
+    | 'mobilePosition'
+    | 'keepalive'
+    | 'unknown';
+  callId: string | null;
+  status: SubscriptionRuntimeStatus;
+  expiresAt: number | null;
+  lastNotifiedAt: number | null;
+  lastError: string | null;
 }
 
 /** 后端已接收的异步全量操作。 */

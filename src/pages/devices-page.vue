@@ -260,6 +260,20 @@
     else isTriggerModalOpen.value = false;
   }
 
+  async function handleDeviceControl(action: string): Promise<void> {
+    if (selectedDevice.value === null) return;
+    const result = await store.controlDevice(selectedDevice.value.id, action);
+    if (result.ok) message.success('设备控制命令已发送。');
+    else message.error(result.message);
+  }
+
+  async function handlePtz(channel: SimulatedChannel, action: string): Promise<void> {
+    if (channelDevice.value === null) return;
+    const result = await store.controlPtz(channelDevice.value.id, channel.id, action);
+    if (result.ok) message.success('PTZ 命令已发送。');
+    else message.error(result.message);
+  }
+
   function getSubscriptionLabel(kind: SimulatedChannel['platformSubscriptions'][number]): string {
     return kind === 'catalog' ? '目录 Catalog' : kind === 'alarm' ? '报警 Alarm' : '移动位置';
   }
@@ -334,6 +348,25 @@
             default: () => registrationStatusMeta(device.registrationStatus).label,
           },
         ),
+    },
+    {
+      title: '在线状态',
+      key: 'online',
+      width: 96,
+      align: 'center',
+      render: (device) =>
+        h(
+          NTag,
+          { type: device.online ? 'success' : 'default', size: 'small' },
+          { default: () => (device.online ? '在线' : '离线') },
+        ),
+    },
+    {
+      title: '心跳失败',
+      key: 'heartbeatFailures',
+      width: 88,
+      align: 'center',
+      render: (device) => `${device.heartbeatFailures ?? 0}`,
     },
     {
       title: '创建时间',
@@ -519,6 +552,21 @@
               }}</NTag></dd
             ></div
           >
+          <div
+            ><dt>在线状态</dt><dd>{{ selectedDevice.online ? '在线' : '离线' }}</dd></div
+          >
+          <div
+            ><dt>心跳失败次数</dt><dd>{{ selectedDevice.heartbeatFailures ?? 0 }}</dd></div
+          >
+          <div
+            ><dt>布防状态</dt><dd>{{ selectedDevice.guarded ? '已布防' : '未布防' }}</dd></div
+          >
+          <div
+            ><dt>报警状态</dt><dd>{{ selectedDevice.alarmActive ? '报警中' : '正常' }}</dd></div
+          >
+          <div v-if="selectedDevice.lastControlAction !== null"
+            ><dt>最近控制</dt><dd>{{ selectedDevice.lastControlAction }}</dd></div
+          >
           <div v-if="store.registrationErrorByDevice.has(selectedDevice.id)"
             ><dt>最近错误</dt
             ><dd>{{ store.registrationErrorByDevice.get(selectedDevice.id) }}</dd></div
@@ -527,6 +575,33 @@
             ><dt>共享服务</dt><dd>{{ store.sipService.uri }}</dd></div
           >
         </dl>
+        <div class="drawer-actions">
+          <NButton
+            secondary
+            type="warning"
+            :disabled="selectedDevice.registrationStatus !== 'registered'"
+            @click="handleDeviceControl('restart')"
+            >远程重启</NButton
+          >
+          <NButton
+            secondary
+            :disabled="selectedDevice.registrationStatus !== 'registered'"
+            @click="handleDeviceControl('guard')"
+            >布防</NButton
+          >
+          <NButton
+            secondary
+            :disabled="selectedDevice.registrationStatus !== 'registered'"
+            @click="handleDeviceControl('unguard')"
+            >撤防</NButton
+          >
+          <NButton
+            secondary
+            :disabled="selectedDevice.registrationStatus !== 'registered'"
+            @click="handleDeviceControl('alarm-reset')"
+            >报警复位</NButton
+          >
+        </div>
       </NDrawerContent>
     </NDrawer>
 
@@ -685,6 +760,15 @@
                 @click="openMobilePositionTrigger(channel)"
                 >移动位置</NButton
               >
+            </div>
+            <div v-if="channelDevice.type === '球机'" class="ptz-controls">
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'up')">上</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'left')">左</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'stop')">停</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'right')">右</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'down')">下</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'zoom-in')">+</NButton>
+              <NButton size="tiny" secondary @click="handlePtz(channel, 'zoom-out')">-</NButton>
             </div>
           </NCard>
         </div>

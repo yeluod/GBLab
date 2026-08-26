@@ -294,6 +294,58 @@ pub async fn trigger_mobile_position(
 }
 
 #[tauri::command]
+pub async fn control_device(
+    device_id: String,
+    action: String,
+    state: State<'_, AppState>,
+) -> Result<(), CommandErrorDto> {
+    let action = match action.as_str() {
+        "restart" => gblab_core::runtime::DeviceControlAction::Restart,
+        "guard" => gblab_core::runtime::DeviceControlAction::Guard,
+        "unguard" => gblab_core::runtime::DeviceControlAction::Unguard,
+        "alarm-reset" => gblab_core::runtime::DeviceControlAction::AlarmReset,
+        _ => {
+            return Err(CommandErrorDto::invalid_configuration(
+                "不支持的设备控制动作".to_owned(),
+            ));
+        }
+    };
+    state
+        .registration
+        .control_device(device_id, action)
+        .await
+        .map_err(|error| CommandErrorDto::registration(&error))
+}
+
+#[tauri::command]
+pub async fn control_ptz(
+    device_id: String,
+    channel_id: String,
+    action: String,
+    state: State<'_, AppState>,
+) -> Result<(), CommandErrorDto> {
+    let action = match action.as_str() {
+        "up" => gblab_core::runtime::PtzAction::Up,
+        "down" => gblab_core::runtime::PtzAction::Down,
+        "left" => gblab_core::runtime::PtzAction::Left,
+        "right" => gblab_core::runtime::PtzAction::Right,
+        "zoom-in" => gblab_core::runtime::PtzAction::ZoomIn,
+        "zoom-out" => gblab_core::runtime::PtzAction::ZoomOut,
+        "stop" => gblab_core::runtime::PtzAction::Stop,
+        _ => {
+            return Err(CommandErrorDto::invalid_configuration(
+                "不支持的 PTZ 动作".to_owned(),
+            ));
+        }
+    };
+    state
+        .registration
+        .control_ptz(device_id, channel_id, action)
+        .await
+        .map_err(|error| CommandErrorDto::registration(&error))
+}
+
+#[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Tauri command 参数提取器要求按值接收 State"

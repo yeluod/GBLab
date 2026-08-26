@@ -1,11 +1,17 @@
 //! Tokio task 监督、调度、限流与关闭机制。
 
+mod platform;
 mod registration;
 
+pub use platform::{
+    PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionManager,
+    SubscriptionRuntimeStatus, SubscriptionSnapshot,
+};
 pub use registration::{
-    BatchOperationAccepted, DeviceRegistrationSnapshot, DeviceRegistrationStatus,
-    InteractionDirection, InteractionLog, RegistrationEvent, RegistrationHandle,
-    RegistrationOperationStatus, RegistrationRuntimeError, RegistrationSnapshot,
+    BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
+    DeviceRegistrationStatus, InteractionDirection, InteractionLog, PtzAction, RegistrationEvent,
+    RegistrationHandle, RegistrationOperationStatus, RegistrationRuntimeError,
+    RegistrationSnapshot,
 };
 
 /// 核心运行时的有界资源配置。

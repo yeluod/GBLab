@@ -13,5 +13,7 @@ export type {
   RegistrationSnapshot,
   SubscriptionKind,
   SubscriptionStatus,
+  SubscriptionSnapshot,
+  SubscriptionRuntimeStatus,
 } from './types';
 export type { SipServiceConfig } from '@/features/settings';

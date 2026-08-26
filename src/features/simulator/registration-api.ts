@@ -40,6 +40,18 @@ export function triggerMobilePositionCommand(
   });
 }
 
+export function controlDeviceCommand(deviceId: string, action: string): Promise<void> {
+  return invokeCommand('control_device', { deviceId, action });
+}
+
+export function controlPtzCommand(
+  deviceId: string,
+  channelId: string,
+  action: string,
+): Promise<void> {
+  return invokeCommand('control_ptz', { deviceId, channelId, action });
+}
+
 /** 订阅降频后的注册状态快照。 */
 export function listenRegistrationSnapshot(
   handler: (snapshot: RegistrationSnapshot) => void,
