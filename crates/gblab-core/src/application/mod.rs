@@ -60,7 +60,9 @@ impl CoreService {
     #[must_use]
     pub fn device_snapshot(&self) -> DeviceSnapshot {
         let collection = self.configuration.device_collection();
-        DeviceSnapshot::devices_only(collection.devices, collection.has_completed_batch_add)
+        let has_completed_batch_add =
+            collection.has_completed_batch_add && !collection.devices.is_empty();
+        DeviceSnapshot::devices_only(collection.devices, has_completed_batch_add)
     }
 
     /// 按需返回单台设备的派生通道，避免设备列表加载全部通道。
@@ -86,7 +88,7 @@ impl CoreService {
     /// 批量添加已完成、输入无效、编号重复或配置写入失败时返回错误。
     pub fn add_devices_in_batch(&mut self, draft: BatchDeviceDraft) -> Result<DeviceSnapshot> {
         let mut collection = self.configuration.device_collection();
-        if collection.has_completed_batch_add {
+        if collection.has_completed_batch_add && !collection.devices.is_empty() {
             return Err(DeviceError::BatchAlreadyCompleted.into());
         }
         let generated = draft.generate(SystemTime::now())?;
@@ -103,6 +105,23 @@ impl CoreService {
             collection.devices.clone(),
             collection.has_completed_batch_add,
         )?;
+        self.configuration.save_device_collection(collection)?;
+        Ok(snapshot)
+    }
+
+    /// 清空全部设备配置并重新开放一次批量添加。
+    ///
+    /// SIP 服务配置保持不变；通道、注册状态和订阅不属于持久化设备配置，
+    /// 会由调用方根据返回的空设备快照同步清理。
+    ///
+    /// # Errors
+    ///
+    /// 配置文件写入失败时返回错误。
+    pub fn clear_devices(&mut self) -> Result<DeviceSnapshot> {
+        let mut collection = self.configuration.device_collection();
+        collection.devices.clear();
+        collection.has_completed_batch_add = false;
+        let snapshot = DeviceSnapshot::devices_only(collection.devices.clone(), false);
         self.configuration.save_device_collection(collection)?;
         Ok(snapshot)
     }

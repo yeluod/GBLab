@@ -133,6 +133,31 @@ pub async fn add_devices_in_batch(
 }
 
 #[tauri::command]
+pub async fn clear_devices(
+    state: State<'_, AppState>,
+) -> Result<DeviceSnapshotDto, CommandErrorDto> {
+    let _operation = state
+        .try_operation()
+        .ok_or_else(CommandErrorDto::operation_busy)?;
+    if state.registration.is_active() {
+        return Err(CommandErrorDto::registration_active());
+    }
+    let core = Arc::clone(&state.core);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut core = core
+            .write()
+            .map_err(|_| CommandErrorDto::state_unavailable())?;
+        let snapshot = core
+            .clear_devices()
+            .map_err(|error| CommandErrorDto::from_core(&error))?;
+        drop(core);
+        Ok(DeviceSnapshotDto::from_core(snapshot))
+    })
+    .await
+    .map_err(|_| CommandErrorDto::task_failed())?
+}
+
+#[tauri::command]
 pub async fn update_device(
     device_id: String,
     draft: DeviceUpdateDraftDto,

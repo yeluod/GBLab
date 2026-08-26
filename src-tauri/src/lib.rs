@@ -53,6 +53,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::get_device_snapshot,
             commands::get_device_channels,
             commands::add_devices_in_batch,
+            commands::clear_devices,
             commands::update_device,
             commands::delete_device,
             commands::register_all_devices,

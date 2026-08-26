@@ -263,6 +263,31 @@
     });
   }
 
+  function confirmClearDevices(): void {
+    dialog.error({
+      title: '清空设备',
+      content:
+        '确定清空全部设备配置吗？设备和派生通道将被删除，清空后可以重新批量添加设备。交互日志会保留。',
+      positiveText: '清空设备',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        const result = await store.clearDevices();
+        if (!result.ok) {
+          message.error(result.message);
+          return;
+        }
+        searchKeyword.value = '';
+        statusFilter.value = 'all';
+        devicePage.value = 1;
+        selectedDeviceId.value = null;
+        channelDeviceId.value = null;
+        isDetailOpen.value = false;
+        isChannelsModalOpen.value = false;
+        message.success('设备配置已清空，可以重新批量添加。');
+      },
+    });
+  }
+
   const columns: DataTableColumns<SimulatedDevice> = [
     { title: '设备 ID', key: 'id', minWidth: 210, align: 'center' },
     { title: '名称', key: 'name', minWidth: 160, align: 'center' },
@@ -396,6 +421,18 @@
               :loading="store.isDeviceSaving"
               @click="isBatchModalOpen = true"
               >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
+            >
+            <NButton
+              secondary
+              type="error"
+              :disabled="
+                store.devices.length === 0 ||
+                store.isDeviceLoading ||
+                store.isDeviceSaving ||
+                store.isRegistrationActive
+              "
+              @click="confirmClearDevices"
+              >清空设备</NButton
             >
             <NButton
               secondary

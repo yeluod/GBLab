@@ -22,6 +22,11 @@ export function addDevicesInBatchCommand(draft: BatchDeviceDraft): Promise<Devic
   return invokeCommand<DeviceSnapshot>('add_devices_in_batch', { draft });
 }
 
+/** 清空全部设备配置并重新开放一次批量添加。 */
+export function clearDevicesCommand(): Promise<DeviceSnapshot> {
+  return invokeCommand<DeviceSnapshot>('clear_devices');
+}
+
 /** 编辑并持久化指定设备。 */
 export function updateDeviceCommand(
   deviceId: string,

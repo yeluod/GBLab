@@ -9,6 +9,7 @@ import {
 } from '@/features/settings';
 import {
   addDevicesInBatchCommand,
+  clearDevicesCommand,
   deleteDeviceCommand,
   getDeviceChannels,
   getDeviceSnapshot,
@@ -204,7 +205,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
       registrationStatus: registrationStatusByDevice.value.get(device.id) ?? 'unregistered',
     }));
     channels.value = [];
-    hasCompletedBatchAdd.value = snapshot.hasCompletedBatchAdd;
+    // 空设备集合不应被一次性批量标记锁死，兼容旧版本删除全部设备后遗留的配置。
+    hasCompletedBatchAdd.value = snapshot.hasCompletedBatchAdd && snapshot.devices.length > 0;
   }
 
   function applyDeviceChannels(derivedChannels: SimulatedChannel[]): void {
@@ -400,6 +402,32 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
+  async function clearDevices(): Promise<OperationResult> {
+    if (isRegistrationActive.value) {
+      return { ok: false, message: '请先完成全量停止注册，再清空设备。' };
+    }
+    if (devices.value.length === 0) {
+      return { ok: false, message: '当前没有可清空的设备。' };
+    }
+    if (isDeviceSaving.value) {
+      return { ok: false, message: '设备配置正在保存。' };
+    }
+
+    isDeviceSaving.value = true;
+    try {
+      applyDeviceSnapshot(await clearDevicesCommand());
+      subscriptions.value = [];
+      channels.value = [];
+      registrationStatusByDevice.value = new Map();
+      registrationErrorByDevice.value = new Map();
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    } finally {
+      isDeviceSaving.value = false;
+    }
+  }
+
   async function deleteDevice(deviceId: string): Promise<OperationResult> {
     if (isRegistrationActive.value) {
       return { ok: false, message: '请先完成全量停止注册，再删除设备。' };
@@ -495,6 +523,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     loadDeviceChannels,
     updateDevice,
     addDevicesInBatch,
+    clearDevices,
     deleteDevice,
     registerAllDevices,
     stopAllDeviceRegistration,
