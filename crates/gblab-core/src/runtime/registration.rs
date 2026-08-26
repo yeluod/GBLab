@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt::Write,
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -518,6 +519,14 @@ enum InternalEvent {
         guarded: Option<bool>,
         alarm_active: Option<bool>,
     },
+    SubscriptionNotification {
+        device_id: String,
+        channel_id: Option<String>,
+        command_type: PlatformCommandType,
+        success: bool,
+        error: Option<String>,
+        timestamp: u64,
+    },
     InitialSettled,
     OperationFinished,
     BusinessChannel(mpsc::Sender<BusinessCommand>),
@@ -529,6 +538,7 @@ enum BusinessCommand {
         channel_id: String,
         alarm_type: String,
         description: String,
+        subscription: SubscriptionSnapshot,
         reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
     },
     MobilePosition {
@@ -536,6 +546,7 @@ enum BusinessCommand {
         channel_id: String,
         longitude: f64,
         latitude: f64,
+        subscription: SubscriptionSnapshot,
         reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
     },
     DeviceControl {
@@ -553,6 +564,7 @@ enum BusinessCommand {
         device_id: String,
         channel_id: Option<String>,
         command_type: PlatformCommandType,
+        subscription: SubscriptionSnapshot,
         reply: Option<oneshot::Sender<Result<(), RegistrationRuntimeError>>>,
     },
 }
@@ -728,13 +740,26 @@ fn handle_command(
                 let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
                 return;
             };
-            let _ = tx.try_send(BusinessCommand::Alarm {
+            let Some(subscription) = state.subscriptions.next_notify(
+                &device_id,
+                Some(&channel_id),
+                PlatformCommandType::Alarm,
+                now_millis(),
+            ) else {
+                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                return;
+            };
+            let command = BusinessCommand::Alarm {
                 device_id,
                 channel_id,
                 alarm_type,
                 description,
+                subscription,
                 reply,
-            });
+            };
+            if let Err(error) = tx.try_send(command) {
+                reject_business_command(error.into_inner());
+            }
         }
         RegistrationCommand::TriggerMobilePosition {
             device_id,
@@ -747,13 +772,26 @@ fn handle_command(
                 let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
                 return;
             };
-            let _ = tx.try_send(BusinessCommand::MobilePosition {
+            let Some(subscription) = state.subscriptions.next_notify(
+                &device_id,
+                Some(&channel_id),
+                PlatformCommandType::MobilePosition,
+                now_millis(),
+            ) else {
+                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                return;
+            };
+            let command = BusinessCommand::MobilePosition {
                 device_id,
                 channel_id,
                 longitude,
                 latitude,
+                subscription,
                 reply,
-            });
+            };
+            if let Err(error) = tx.try_send(command) {
+                reject_business_command(error.into_inner());
+            }
         }
         RegistrationCommand::DeviceControl {
             device_id,
@@ -764,11 +802,14 @@ fn handle_command(
                 let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
                 return;
             };
-            let _ = tx.try_send(BusinessCommand::DeviceControl {
+            let command = BusinessCommand::DeviceControl {
                 device_id,
                 action,
                 reply,
-            });
+            };
+            if let Err(error) = tx.try_send(command) {
+                reject_business_command(error.into_inner());
+            }
         }
         RegistrationCommand::PtzControl {
             device_id,
@@ -780,14 +821,33 @@ fn handle_command(
                 let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
                 return;
             };
-            let _ = tx.try_send(BusinessCommand::PtzControl {
+            let command = BusinessCommand::PtzControl {
                 device_id,
                 channel_id,
                 action,
                 reply,
-            });
+            };
+            if let Err(error) = tx.try_send(command) {
+                reject_business_command(error.into_inner());
+            }
         }
     }
+}
+
+fn reject_business_command(command: BusinessCommand) {
+    let reply = match command {
+        BusinessCommand::Alarm { reply, .. }
+        | BusinessCommand::MobilePosition { reply, .. }
+        | BusinessCommand::DeviceControl { reply, .. }
+        | BusinessCommand::PtzControl { reply, .. } => reply,
+        BusinessCommand::SubscriptionNotify { reply, .. } => {
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(RegistrationRuntimeError::Unavailable));
+            }
+            return;
+        }
+    };
+    let _ = reply.send(Err(RegistrationRuntimeError::Unavailable));
 }
 
 #[expect(
@@ -846,20 +906,36 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                     sn: extract_xml_value(&event.message, "SN"),
                     call_id: event.call_id.clone(),
                     expires: event.expires,
+                    from_tag: event.from_tag.clone(),
+                    local_tag: event.local_tag.clone(),
+                    event: event.event.clone(),
+                    request_uri: event.request_uri.clone(),
+                    response_body: None,
+                    initial_notify_body: None,
                 };
                 if request.method == PlatformRequestMethod::Subscribe {
                     let now = now_millis();
                     if request.expires == Some(0) {
                         state.subscriptions.cancel(&request);
                     } else if state.subscriptions.subscribe(&request, now).is_some()
+                        && let Some(subscription) = state.subscriptions.next_notify(
+                            &event.device_id,
+                            event.channel_id.as_deref(),
+                            request.command_type,
+                            now,
+                        )
                         && let Some(tx) = state.business_tx.clone()
                     {
-                        let _ = tx.try_send(BusinessCommand::SubscriptionNotify {
+                        let command = BusinessCommand::SubscriptionNotify {
                             device_id: event.device_id.clone(),
                             channel_id: event.channel_id.clone(),
                             command_type: request.command_type,
+                            subscription,
                             reply: None,
-                        });
+                        };
+                        if let Err(error) = tx.try_send(command) {
+                            reject_business_command(error.into_inner());
+                        }
                     }
                     state.snapshot_dirty = true;
                 }
@@ -933,6 +1009,31 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                 state.snapshot_dirty = true;
             }
         }
+        InternalEvent::SubscriptionNotification {
+            device_id,
+            channel_id,
+            command_type,
+            success,
+            error,
+            timestamp,
+        } => {
+            if success {
+                state.subscriptions.mark_notified(
+                    &device_id,
+                    channel_id.as_deref(),
+                    command_type,
+                    timestamp,
+                );
+            } else if let Some(error) = error {
+                state.subscriptions.mark_failed(
+                    &device_id,
+                    channel_id.as_deref(),
+                    command_type,
+                    error,
+                );
+            }
+            state.snapshot_dirty = true;
+        }
         InternalEvent::InitialSettled => {
             state.initial_settled = state.initial_settled.saturating_add(1);
             if state.initial_settled >= state.operation_total
@@ -949,6 +1050,7 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
             state.operation_total = 0;
             state.initial_settled = 0;
             state.business_tx = None;
+            state.subscriptions.clear();
             state.snapshot_dirty = true;
         }
         InternalEvent::BusinessChannel(tx) => state.business_tx = Some(tx),
@@ -1021,7 +1123,8 @@ async fn run_registration_operation(
             .collect::<std::collections::HashMap<_, _>>(),
     );
     let receiver_task = tokio::spawn(
-        Arc::clone(&client).receive_loop(transport_cancellation.clone(), catalog_devices),
+        Arc::clone(&client)
+            .receive_loop(transport_cancellation.clone(), Arc::clone(&catalog_devices)),
     );
     let transport_forward_tx = internal_tx.clone();
     let transport_forward_task = tokio::spawn(async move {
@@ -1060,6 +1163,7 @@ async fn run_registration_operation(
         business_rx,
         Arc::clone(&session_map),
         Arc::clone(&client),
+        Arc::clone(&catalog_devices),
         configuration.clone(),
         cancellation.clone(),
         internal_tx.clone(),
@@ -1231,6 +1335,7 @@ async fn run_device_lifecycle(
 }
 
 #[expect(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "设备业务命令需要统一串行发送并投影运行时状态"
 )]
@@ -1238,6 +1343,7 @@ async fn run_business_commands(
     mut rx: mpsc::Receiver<BusinessCommand>,
     sessions: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<DeviceSipSession>>>>>,
     client: Arc<SipRegistrationClient>,
+    catalog_devices: Arc<std::collections::HashMap<String, SimulatedDevice>>,
     configuration: SipServiceConfiguration,
     cancellation: CancellationToken,
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -1252,10 +1358,22 @@ async fn run_business_commands(
                 channel_id,
                 alarm_type,
                 description,
+                subscription,
                 reply,
             } => {
-                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id),
+                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id), &subscription,
                     format!("<Notify><CmdType>Alarm</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><AlarmMethod>1</AlarmMethod><AlarmType>{alarm_type}</AlarmType><AlarmDescription>{description}</AlarmDescription></Notify>")).await;
+                let notification_error = result.as_ref().err().map(ToString::to_string);
+                let _ = internal_tx
+                    .send(InternalEvent::SubscriptionNotification {
+                        device_id: device_id.clone(),
+                        channel_id: Some(channel_id.clone()),
+                        command_type: PlatformCommandType::Alarm,
+                        success: result.is_ok(),
+                        error: notification_error,
+                        timestamp: now_millis(),
+                    })
+                    .await;
                 if result.is_ok() {
                     let _ = internal_tx
                         .send(InternalEvent::ControlState {
@@ -1274,10 +1392,22 @@ async fn run_business_commands(
                 channel_id,
                 longitude,
                 latitude,
+                subscription,
                 reply,
             } => {
-                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id),
+                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id), &subscription,
                     format!("<Notify><CmdType>MobilePosition</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><Longitude>{longitude}</Longitude><Latitude>{latitude}</Latitude></Notify>")).await;
+                let notification_error = result.as_ref().err().map(ToString::to_string);
+                let _ = internal_tx
+                    .send(InternalEvent::SubscriptionNotification {
+                        device_id: device_id.clone(),
+                        channel_id: Some(channel_id.clone()),
+                        command_type: PlatformCommandType::MobilePosition,
+                        success: result.is_ok(),
+                        error: notification_error,
+                        timestamp: now_millis(),
+                    })
+                    .await;
                 let _ = reply.send(result);
             }
             BusinessCommand::DeviceControl {
@@ -1354,17 +1484,31 @@ async fn run_business_commands(
                 device_id,
                 channel_id,
                 command_type,
+                subscription,
                 reply,
             } => {
                 let result = send_subscription_notify(
                     &sessions,
                     &client,
+                    &catalog_devices,
                     cancellation.clone(),
                     &device_id,
                     channel_id.as_deref(),
                     command_type,
+                    &subscription,
                 )
                 .await;
+                let notification_error = result.as_ref().err().map(ToString::to_string);
+                let _ = internal_tx
+                    .send(InternalEvent::SubscriptionNotification {
+                        device_id: device_id.clone(),
+                        channel_id: channel_id.clone(),
+                        command_type,
+                        success: result.is_ok(),
+                        error: notification_error,
+                        timestamp: now_millis(),
+                    })
+                    .await;
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
                 }
@@ -1373,19 +1517,23 @@ async fn run_business_commands(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "订阅通知发送需要完整的订阅、设备和传输上下文"
+)]
 async fn send_subscription_notify(
     sessions: &SessionMap,
     client: &Arc<SipRegistrationClient>,
+    devices: &Arc<std::collections::HashMap<String, SimulatedDevice>>,
     cancellation: CancellationToken,
     device_id: &str,
     channel_id: Option<&str>,
     command_type: PlatformCommandType,
+    subscription: &SubscriptionSnapshot,
 ) -> Result<(), RegistrationRuntimeError> {
     let body_device_id = channel_id.unwrap_or(device_id);
     let body = match command_type {
-        PlatformCommandType::Catalog => format!(
-            "<Notify><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>{body_device_id}</DeviceID><SumNum>0</SumNum><DeviceList Num=\"0\"></DeviceList></Notify>"
-        ),
+        PlatformCommandType::Catalog => build_catalog_notify_body(body_device_id, devices),
         PlatformCommandType::Alarm => format!(
             "<Notify><CmdType>Alarm</CmdType><SN>1</SN><DeviceID>{body_device_id}</DeviceID><AlarmMethod>1</AlarmMethod><AlarmType>0</AlarmType><AlarmDescription>订阅已建立</AlarmDescription></Notify>"
         ),
@@ -1403,9 +1551,59 @@ async fn send_subscription_notify(
     session
         .lock()
         .await
-        .send_notify(client, body, &cancellation, channel_id.map(str::to_owned))
+        .send_notify(
+            client,
+            body,
+            &cancellation,
+            channel_id.map(str::to_owned),
+            subscription,
+        )
         .await
         .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
+}
+
+fn build_catalog_notify_body(
+    device_id: &str,
+    devices: &std::collections::HashMap<String, SimulatedDevice>,
+) -> String {
+    let Some(device) = devices.get(device_id) else {
+        return format!(
+            "<Notify><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><DeviceList Num=\"0\"></DeviceList></Notify>"
+        );
+    };
+    let channels = crate::domain::derive_channels_for_device(device).unwrap_or_default();
+    let mut items = format!(
+        "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
+        xml_escape(&device.id.to_string()),
+        xml_escape(&device.name),
+        xml_escape(&device.manufacturer),
+        xml_escape(&device.model),
+        xml_escape(&device.id.to_string())
+    );
+    for channel in channels {
+        let _ = write!(
+            items,
+            "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
+            xml_escape(&channel.id.to_string()),
+            xml_escape(&channel.name),
+            xml_escape(&device.manufacturer),
+            xml_escape(&device.model),
+            xml_escape(&device.id.to_string())
+        );
+    }
+    let count = device.channel_count as usize + 1;
+    format!(
+        "<Notify><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><SumNum>{count}</SumNum><DeviceList Num=\"{count}\">{items}</DeviceList></Notify>"
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 type SessionMap =
@@ -1438,12 +1636,17 @@ async fn send_business_message(
         .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "业务通知发送需要完整的设备、订阅和传输上下文"
+)]
 async fn send_business_notify(
     sessions: &SessionMap,
     client: &Arc<SipRegistrationClient>,
     cancellation: CancellationToken,
     device_id: &str,
     channel_id: Option<&str>,
+    subscription: &SubscriptionSnapshot,
     body: String,
 ) -> Result<(), RegistrationRuntimeError> {
     let session = sessions
@@ -1455,7 +1658,13 @@ async fn send_business_notify(
     session
         .lock()
         .await
-        .send_notify(client, body, &cancellation, channel_id.map(str::to_owned))
+        .send_notify(
+            client,
+            body,
+            &cancellation,
+            channel_id.map(str::to_owned),
+            subscription,
+        )
         .await
         .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
 }

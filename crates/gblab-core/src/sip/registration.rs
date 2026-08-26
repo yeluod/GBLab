@@ -51,6 +51,9 @@ pub struct SipTransportEvent {
     pub(crate) method: Option<String>,
     pub(crate) command_type: Option<String>,
     pub(crate) event: Option<String>,
+    pub(crate) local_tag: Option<String>,
+    pub(crate) from_tag: Option<String>,
+    pub(crate) request_uri: Option<String>,
     pub(crate) call_id: Option<String>,
     pub(crate) expires: Option<u32>,
 }
@@ -97,6 +100,10 @@ pub struct SipRegistrationClient {
     socket: Arc<UdpSocket>,
     advertised_ip: IpAddr,
     local_port: u16,
+    registrar: SipUri,
+    domain: String,
+    platform_id: String,
+    subscription_tags: Mutex<HashMap<String, String>>,
     pending: Mutex<HashMap<String, PendingResponse>>,
     event_tx: mpsc::Sender<SipTransportEvent>,
 }
@@ -110,10 +117,15 @@ impl SipRegistrationClient {
             return Err(SipRegistrationError::UnsupportedTransport);
         }
 
-        let registrar = SipUri::parse(&configuration.uri)
+        let registrar_endpoint = SipUri::parse(&configuration.uri)
             .map_err(|error| SipRegistrationError::InvalidUri(error.to_string()))?;
-        let host = registrar.host.as_str();
-        let port = registrar.port.unwrap_or(5_060);
+        let host = registrar_endpoint.host.as_str();
+        let port = registrar_endpoint.port.unwrap_or(5_060);
+        let registrar = SipUri::parse(&format!(
+            "sip:{}@{}:{}",
+            configuration.platform_id, host, port
+        ))
+        .map_err(|error| SipRegistrationError::InvalidUri(error.to_string()))?;
         let remote = lookup_host((host.as_ref(), port))
             .await
             .map_err(|error| SipRegistrationError::Resolve(error.to_string()))?
@@ -152,6 +164,10 @@ impl SipRegistrationClient {
             socket: Arc::new(socket),
             advertised_ip,
             local_port: local_address.port(),
+            registrar,
+            domain: configuration.domain.clone(),
+            platform_id: configuration.platform_id.clone(),
+            subscription_tags: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             event_tx,
         }))
@@ -190,10 +206,27 @@ impl SipRegistrationClient {
                     .next()
                     .and_then(|line| line.split_whitespace().next())
                     .map(str::to_owned);
+                let is_subscribe = method.as_deref() == Some("SUBSCRIBE");
                 let command_type = extract_xml_value(&text, "CmdType");
                 let event = extract_header(&text, "Event");
+                let from_tag = extract_header_param(&text, "From", "tag");
+                let request_uri = extract_request_uri(&text);
                 let call_id = extract_header(&text, "Call-ID");
                 let expires = extract_header(&text, "Expires").and_then(|value| value.parse().ok());
+                let local_tag = if is_subscribe {
+                    if let Some(call_id) = call_id.as_ref() {
+                        let mut tags = self.subscription_tags.lock().await;
+                        Some(
+                            tags.entry(call_id.clone())
+                                .or_insert_with(|| Tag::new().to_string())
+                                .clone(),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let _ = self
                     .event_tx
                     .send(SipTransportEvent {
@@ -206,12 +239,22 @@ impl SipRegistrationClient {
                         method,
                         command_type,
                         event,
-                        call_id,
+                        local_tag: local_tag.clone(),
+                        from_tag,
+                        request_uri: request_uri.clone(),
+                        call_id: call_id.clone(),
                         expires,
                     })
                     .await;
-                let response = build_stateless_ok_response(&text);
+                let response = build_stateless_ok_response(
+                    &text,
+                    local_tag.as_deref(),
+                    &device_id,
+                    self.advertised_ip,
+                    self.local_port,
+                );
                 if !response.is_empty() {
+                    let response_call_id = extract_header(&response, "Call-ID");
                     let _ = self.socket.send(response.as_bytes()).await;
                     let _ = self
                         .event_tx
@@ -225,13 +268,23 @@ impl SipRegistrationClient {
                             method: None,
                             command_type: None,
                             event: None,
-                            call_id: None,
+                            local_tag: None,
+                            from_tag: None,
+                            request_uri: None,
+                            call_id: response_call_id,
                             expires: None,
                         })
                         .await;
+                    if is_subscribe
+                        && expires == Some(0)
+                        && let Some(call_id) = call_id.as_ref()
+                    {
+                        self.subscription_tags.lock().await.remove(call_id);
+                    }
                 }
                 if let Some(body) = dispatch_platform_request(&text, &catalog_devices) {
-                    let response_message = build_catalog_message(&text, &body);
+                    let response_message = self.build_query_response(&text, &body);
+                    let response_call_id = extract_header(&response_message, "Call-ID");
                     let _ = self.socket.send(response_message.as_bytes()).await;
                     let _ = self
                         .event_tx
@@ -242,10 +295,13 @@ impl SipRegistrationClient {
                             message: response_message,
                             channel_id: None,
                             is_request: false,
-                            method: None,
-                            command_type: None,
+                            method: Some("MESSAGE".to_owned()),
+                            command_type: extract_xml_value(&body, "CmdType"),
                             event: None,
-                            call_id: None,
+                            local_tag: None,
+                            from_tag: None,
+                            request_uri: None,
+                            call_id: response_call_id,
                             expires: None,
                         })
                         .await;
@@ -288,6 +344,39 @@ impl SipRegistrationClient {
                         method,
                         command_type,
                         event: None,
+                        local_tag: None,
+                        from_tag: None,
+                        request_uri: None,
+                        call_id: Some(call_id.clone()),
+                        expires: None,
+                    })
+                    .await;
+            } else {
+                let response_text = String::from_utf8_lossy(raw).into_owned();
+                let requested_id = extract_header(&response_text, "To")
+                    .or_else(|| extract_header(&response_text, "From"))
+                    .and_then(|value| extract_sip_uri_user(&value));
+                let (device_id, channel_id) = requested_id
+                    .as_deref()
+                    .map(|value| resolve_device_and_channel(value, &catalog_devices))
+                    .unwrap_or_default();
+                let method = extract_header(&response_text, "CSeq")
+                    .and_then(|value| value.split_whitespace().nth(1).map(str::to_owned));
+                let _ = self
+                    .event_tx
+                    .send(SipTransportEvent {
+                        timestamp_millis: now_millis(),
+                        device_id,
+                        direction: SipLogDirection::Receive,
+                        message: response_text,
+                        channel_id,
+                        is_request: false,
+                        method,
+                        command_type: None,
+                        event: None,
+                        local_tag: None,
+                        from_tag: None,
+                        request_uri: None,
                         call_id: Some(call_id.clone()),
                         expires: None,
                     })
@@ -355,10 +444,13 @@ impl SipRegistrationClient {
                     direction: SipLogDirection::Send,
                     message: String::from_utf8_lossy(&payload).into_owned(),
                     channel_id: channel_id.clone(),
-                    is_request: true,
+                    is_request: false,
                     method: request_method(&payload),
                     command_type: extract_xml_value(&String::from_utf8_lossy(&payload), "CmdType"),
                     event: None,
+                    local_tag: None,
+                    from_tag: None,
+                    request_uri: None,
                     call_id: Some(call_id.clone()),
                     expires: None,
                 })
@@ -393,6 +485,23 @@ impl SipRegistrationClient {
             IpAddr::V4(address) => Host::IPv4(address),
             IpAddr::V6(address) => Host::IPv6(address),
         }
+    }
+
+    fn build_query_response(&self, request: &str, body: &str) -> String {
+        let device_id = extract_xml_value(request, "DeviceID").unwrap_or_default();
+        let call_id = CallId::with_host(&self.endpoint_host().to_string());
+        let branch = format!("z9hG4bK{}", now_millis());
+        let from = format!("<sip:{device_id}@{}>", self.domain);
+        let to = format!("<sip:{}@{}>", self.platform_id, self.registrar.host);
+        format!(
+            "MESSAGE {} SIP/2.0\r\nVia: SIP/2.0/UDP {}:{};branch={branch}\r\nFrom: {from}\r\nTo: {to}\r\nCall-ID: {call_id}\r\nCSeq: 1 MESSAGE\r\nContact: <sip:{device_id}@{}:{}>\r\nMax-Forwards: 70\r\nContent-Type: Application/MANSCDP+xml\r\nContent-Length: {}\r\n\r\n{body}",
+            self.registrar,
+            self.advertised_ip,
+            self.local_port,
+            self.advertised_ip,
+            self.local_port,
+            body.len()
+        )
     }
 }
 
@@ -494,12 +603,13 @@ impl DeviceSipSession {
         body: String,
         cancellation: &CancellationToken,
         channel_id: Option<String>,
+        subscription: &crate::runtime::SubscriptionSnapshot,
     ) -> Result<(), SipRegistrationError> {
         self.cseq = self.cseq.saturating_add(1);
         client
             .exchange_with_channel(
                 &self.device_id,
-                self.build_message_request(Method::Notify, body),
+                self.build_notify_request(body, subscription),
                 cancellation,
                 channel_id,
             )
@@ -683,6 +793,45 @@ impl DeviceSipSession {
             )),
         }
     }
+
+    fn build_notify_request(
+        &self,
+        body: String,
+        subscription: &crate::runtime::SubscriptionSnapshot,
+    ) -> SipRequest {
+        let mut request = self.build_message_request(Method::Notify, body);
+        if let Some(call_id) = subscription.call_id.as_ref() {
+            request.headers.insert(
+                HeaderName::CallId,
+                HeaderValue::CallId(CallId(call_id.clone())),
+            );
+        }
+        request.headers.insert(
+            HeaderName::CSeq,
+            HeaderValue::CSeq(CSeqHeader::new(subscription.notify_cseq, Method::Notify)),
+        );
+        if let Some(tag) = subscription.remote_tag.as_ref() {
+            request.headers.insert(
+                HeaderName::To,
+                HeaderValue::FromTo(
+                    FromToHeader::new(self.registrar.clone()).with_tag(Tag(tag.clone())),
+                ),
+            );
+        }
+        if let Some(tag) = subscription.local_tag.as_ref() {
+            request.headers.insert(
+                HeaderName::From,
+                HeaderValue::FromTo(FromToHeader::new(self.aor.clone()).with_tag(Tag(tag.clone()))),
+            );
+        }
+        if let Some(event) = subscription.event.as_ref() {
+            request.headers.insert(
+                HeaderName::Extension("Event".to_owned()),
+                HeaderValue::Raw(event.clone()),
+            );
+        }
+        request
+    }
 }
 
 fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
@@ -699,6 +848,38 @@ fn extract_header(message: &str, name: &str) -> Option<String> {
         .lines()
         .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
         .map(|line| line[prefix.len()..].trim().to_owned())
+}
+
+fn extract_header_param(message: &str, name: &str, parameter: &str) -> Option<String> {
+    let value = extract_header(message, name)?;
+    let marker = format!("{parameter}=");
+    let start = value.to_ascii_lowercase().find(&marker)? + marker.len();
+    let remaining = &value[start..];
+    let end = remaining
+        .find(';')
+        .or_else(|| remaining.find('>'))
+        .unwrap_or(remaining.len());
+    Some(remaining[..end].trim_matches('"').to_owned())
+}
+
+fn extract_request_uri(message: &str) -> Option<String> {
+    message
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+}
+
+fn extract_sip_uri_user(value: &str) -> Option<String> {
+    let start = value.to_ascii_lowercase().find("sip:")? + 4;
+    let remaining = &value[start..];
+    let end = remaining
+        .find('@')
+        .or_else(|| remaining.find('>'))
+        .or_else(|| remaining.find(';'))
+        .unwrap_or(remaining.len());
+    let user = remaining[..end].trim();
+    (!user.is_empty()).then(|| user.to_owned())
 }
 
 fn request_method(payload: &[u8]) -> Option<String> {
@@ -728,30 +909,48 @@ fn resolve_device_and_channel(
     (requested_id.to_owned(), None)
 }
 
-fn build_stateless_ok_response(request: &str) -> String {
+fn build_stateless_ok_response(
+    request: &str,
+    local_tag: Option<&str>,
+    device_id: &str,
+    advertised_ip: IpAddr,
+    local_port: u16,
+) -> String {
     let mut response = String::from("SIP/2.0 200 OK\r\n");
+    let method = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_default();
     for name in ["Via", "From", "To", "Call-ID", "CSeq"] {
         let prefix = format!("{}:", name.to_ascii_lowercase());
         if let Some(line) = request
             .lines()
             .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
         {
-            response.push_str(line.trim_end());
+            let line = if name == "To"
+                && local_tag.is_some()
+                && !line.to_ascii_lowercase().contains(";tag=")
+            {
+                format!("{};tag={}", line.trim_end(), local_tag.unwrap_or_default())
+            } else {
+                line.trim_end().to_owned()
+            };
+            response.push_str(&line);
             response.push_str("\r\n");
         }
     }
+    if method == "SUBSCRIBE" {
+        if let Some(expires) = extract_header(request, "Expires") {
+            let _ = write!(response, "Expires: {expires}\r\n");
+        }
+        let _ = write!(
+            response,
+            "Contact: <sip:{device_id}@{advertised_ip}:{local_port}>\r\n"
+        );
+    }
     response.push_str("Content-Length: 0\r\n\r\n");
     response
-}
-
-fn build_catalog_message(request: &str, body: &str) -> String {
-    let device_id =
-        extract_xml_value(request, "DeviceID").unwrap_or_else(|| "00000000000000000000".to_owned());
-    let call_id = format!("gblab-catalog-{}", now_millis());
-    format!(
-        "MESSAGE sip:{device_id} SIP/2.0\r\nFrom: <sip:{device_id}>\r\nTo: <sip:{device_id}>\r\nCall-ID: {call_id}\r\nCSeq: 1 MESSAGE\r\nContent-Type: Application/MANSCDP+xml\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    )
 }
 
 fn build_catalog_body(
