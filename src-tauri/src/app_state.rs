@@ -13,10 +13,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(core: CoreService) -> Self {
+    pub fn new(core: CoreService, registration: RegistrationHandle) -> Self {
         Self {
             core: Arc::new(RwLock::new(core)),
-            registration: RegistrationHandle::start(),
+            registration,
             operation_gate: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
         }

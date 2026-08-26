@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    future::Future,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -174,28 +175,32 @@ pub struct RegistrationHandle {
 }
 
 impl RegistrationHandle {
-    /// 启动单所有者注册运行时。
-    #[must_use]
-    pub fn start() -> Self {
+    /// 创建注册句柄和待调度的单所有者监督器。
+    ///
+    /// 调用方必须将返回的 `Future` 提交给自身的异步运行时执行。
+    pub fn prepare() -> (Self, impl Future<Output = ()> + Send + 'static) {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_EVENT_QUEUE_CAPACITY);
         let (snapshot_tx, snapshot_rx) = watch::channel(RegistrationSnapshot::default());
         let (event_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         let shutdown = CancellationToken::new();
-        tokio::spawn(run_supervisor(
+        let supervisor = run_supervisor(
             command_rx,
             internal_rx,
             internal_tx,
             snapshot_tx,
             event_tx.clone(),
             shutdown.clone(),
-        ));
-        Self {
-            command_tx,
-            snapshot_rx,
-            event_tx,
-            shutdown,
-        }
+        );
+        (
+            Self {
+                command_tx,
+                snapshot_rx,
+                event_tx,
+                shutdown,
+            },
+            supervisor,
+        )
     }
 
     /// 发起全量注册并立即返回操作回执。

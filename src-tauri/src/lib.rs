@@ -7,7 +7,7 @@ mod commands;
 mod dto;
 
 use app_state::AppState;
-use gblab_core::CoreService;
+use gblab_core::{CoreService, runtime::RegistrationHandle};
 use tauri::{Emitter, Manager};
 
 const REGISTRATION_SNAPSHOT_EVENT: &str = "registration-snapshot";
@@ -24,7 +24,9 @@ pub fn run() -> Result<(), tauri::Error> {
             let app_data_dir = app.path().app_data_dir()?;
             let configuration_path = app_data_dir.join("gblab.config.json");
             let core = CoreService::open(&configuration_path)?;
-            let state = AppState::new(core);
+            let (registration, supervisor) = RegistrationHandle::prepare();
+            tauri::async_runtime::spawn(supervisor);
+            let state = AppState::new(core, registration);
             let mut registration_events = state.registration.subscribe();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
