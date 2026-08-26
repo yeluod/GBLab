@@ -7,6 +7,10 @@ use std::{
 };
 
 use serde::Serialize;
+use siprs::{
+    siprs_gb28181_codec::DeviceId as CodecDeviceId,
+    siprs_gb28181_xml::{AlarmInfo, Message as GbMessage, MobilePositionInfo, Notify, parse_xml},
+};
 use thiserror::Error;
 use tokio::{
     sync::{Semaphore, broadcast, mpsc, oneshot, watch},
@@ -17,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     SimulatedDevice, SipServiceConfiguration,
-    runtime::scheduler::{Scheduler, SchedulerTick},
+    runtime::scheduler::Scheduler,
     runtime::{
         PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionManager,
         SubscriptionSnapshot,
@@ -907,7 +911,7 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                     },
                     device_id: (!event.device_id.is_empty()).then_some(event.device_id.clone()),
                     channel_id: event.channel_id.clone(),
-                    sn: extract_xml_value(&event.message, "SN"),
+                    sn: xml_sn(&event.message),
                     call_id: event.call_id.clone(),
                     expires: event.expires,
                     from_tag: event.from_tag.clone(),
@@ -1092,6 +1096,10 @@ fn flush_events(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "单一 Runtime owner 统一编排注册、刷新、Keepalive、重试和注销"
+)]
 async fn run_registration_operation(
     configuration: SipServiceConfiguration,
     devices: Vec<SimulatedDevice>,
@@ -1150,20 +1158,93 @@ async fn run_registration_operation(
         .await;
 
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let mut sessions = JoinSet::new();
     let session_map = Arc::new(tokio::sync::Mutex::new(BTreeMap::new()));
-    for device in devices {
-        let session_map = Arc::clone(&session_map);
-        sessions.spawn(run_device_lifecycle(
-            device.id.to_string(),
-            configuration.clone(),
-            Arc::clone(&client),
-            Arc::clone(&semaphore),
-            cancellation.clone(),
-            internal_tx.clone(),
-            session_map,
-            scheduler.subscribe(),
-        ));
+    let mut runtime_devices = BTreeMap::new();
+    let mut device_queue = devices.into_iter();
+    let mut registration_tasks = JoinSet::new();
+    while registration_tasks.len() < concurrency.max(1) {
+        let Some(device) = device_queue.next() else {
+            break;
+        };
+        let _ = queue_initial_registration(
+            device,
+            &configuration,
+            &client,
+            &semaphore,
+            &cancellation,
+            &internal_tx,
+            &session_map,
+            &mut registration_tasks,
+        )
+        .await;
+    }
+    while let Some(joined) = registration_tasks.join_next().await {
+        let Ok((device_id, session, registration)) = joined else {
+            continue;
+        };
+        let now = now_millis();
+        match registration {
+            Ok(expires) => {
+                send_device_state(
+                    &internal_tx,
+                    &device_id,
+                    DeviceRegistrationStatus::Registered,
+                    None,
+                    Some(now.saturating_add(duration_millis(expires))),
+                )
+                .await;
+                runtime_devices.insert(
+                    device_id.clone(),
+                    RuntimeDeviceState {
+                        session,
+                        next_refresh_at: now
+                            .saturating_add(duration_millis_u64(refresh_delay(expires).as_secs())),
+                        next_keepalive_at: now.saturating_add(duration_millis(
+                            configuration.keepalive_interval.max(1),
+                        )),
+                        next_retry_at: None,
+                    },
+                );
+            }
+            Err(error) => {
+                send_device_state(
+                    &internal_tx,
+                    &device_id,
+                    DeviceRegistrationStatus::Failed,
+                    Some(error.to_string()),
+                    None,
+                )
+                .await;
+                runtime_devices.insert(
+                    device_id.clone(),
+                    RuntimeDeviceState {
+                        session,
+                        next_refresh_at: u64::MAX,
+                        next_keepalive_at: u64::MAX,
+                        next_retry_at: Some(
+                            now.saturating_add(duration_millis_u64(RETRY_CYCLE_DELAY.as_secs())),
+                        ),
+                    },
+                );
+            }
+        }
+        let _ = internal_tx.send(InternalEvent::InitialSettled).await;
+        while registration_tasks.len() < concurrency.max(1) {
+            let Some(device) = device_queue.next() else {
+                break;
+            };
+            let _ = queue_initial_registration(
+                device,
+                &configuration,
+                &client,
+                &semaphore,
+                &cancellation,
+                &internal_tx,
+                &session_map,
+                &mut registration_tasks,
+            )
+            .await;
+        }
     }
     let business_task = tokio::spawn(run_business_commands(
         business_rx,
@@ -1174,7 +1255,142 @@ async fn run_registration_operation(
         cancellation.clone(),
         internal_tx.clone(),
     ));
-    while sessions.join_next().await.is_some() {}
+
+    // 所有设备共享一个 owner loop：设备只保存会话和截止时间，不创建生命周期 task。
+    let mut scheduler_rx = scheduler.subscribe();
+    'runtime: loop {
+        tokio::select! {
+            () = cancellation.cancelled() => break,
+            tick = scheduler_rx.recv() => {
+                let Ok(tick) = tick else { break };
+                if tick.now_millis == 0 { continue; }
+                for (device_id, runtime_device) in &mut runtime_devices {
+                    if let Some(next_retry_at) = runtime_device.next_retry_at
+                        && tick.now_millis >= next_retry_at
+                    {
+                        let result = register_with_retry(
+                            &runtime_device.session,
+                            &client,
+                            &configuration,
+                            &semaphore,
+                            &cancellation,
+                        ).await;
+                        match result {
+                            Ok(expires) => {
+                                send_device_state(
+                                    &internal_tx,
+                                    device_id,
+                                    DeviceRegistrationStatus::Registered,
+                                    None,
+                                    Some(tick.now_millis.saturating_add(duration_millis(expires))),
+                                ).await;
+                                runtime_device.next_retry_at = None;
+                                runtime_device.next_refresh_at = tick.now_millis.saturating_add(
+                                    duration_millis_u64(refresh_delay(expires).as_secs()),
+                                );
+                                runtime_device.next_keepalive_at = tick.now_millis.saturating_add(
+                                    duration_millis(configuration.keepalive_interval.max(1)),
+                                );
+                            }
+                            Err(error) => {
+                                if matches!(error, SipRegistrationError::Cancelled) {
+                                    break 'runtime;
+                                }
+                                runtime_device.next_retry_at = Some(tick.now_millis.saturating_add(
+                                    duration_millis_u64(RETRY_CYCLE_DELAY.as_secs()),
+                                ));
+                                send_device_state(
+                                    &internal_tx,
+                                    device_id,
+                                    DeviceRegistrationStatus::Failed,
+                                    Some(error.to_string()),
+                                    None,
+                                ).await;
+                            }
+                        }
+                    }
+                    if runtime_device.next_retry_at.is_some() {
+                        continue;
+                    }
+                    if tick.now_millis >= runtime_device.next_refresh_at {
+                        let result = register_with_retry(
+                            &runtime_device.session,
+                            &client,
+                            &configuration,
+                            &semaphore,
+                            &cancellation,
+                        ).await;
+                        match result {
+                            Ok(expires) => {
+                                runtime_device.next_refresh_at = tick.now_millis.saturating_add(
+                                    duration_millis_u64(refresh_delay(expires).as_secs()),
+                                );
+                            }
+                            Err(error) => {
+                                if matches!(error, SipRegistrationError::Cancelled) {
+                                    break 'runtime;
+                                }
+                                runtime_device.next_retry_at = Some(tick.now_millis.saturating_add(
+                                    duration_millis_u64(RETRY_CYCLE_DELAY.as_secs()),
+                                ));
+                                send_device_state(
+                                    &internal_tx,
+                                    device_id,
+                                    DeviceRegistrationStatus::Failed,
+                                    Some(error.to_string()),
+                                    None,
+                                ).await;
+                            }
+                        }
+                    }
+                    if tick.now_millis >= runtime_device.next_keepalive_at {
+                        let Ok(codec_device_id) = CodecDeviceId::parse(device_id) else {
+                            continue;
+                        };
+                        let body = Notify::keepalive(1, codec_device_id).to_xml();
+                        let success = runtime_device
+                            .session
+                            .send_message(&client, body, &cancellation, None)
+                            .await
+                            .is_ok();
+                        let _ = internal_tx
+                            .send(InternalEvent::Heartbeat {
+                                device_id: device_id.clone(),
+                                success,
+                                timestamp: tick.now_millis,
+                            })
+                            .await;
+                        runtime_device.next_keepalive_at = tick.now_millis.saturating_add(
+                            duration_millis(configuration.keepalive_interval.max(1)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for (device_id, runtime_device) in runtime_devices {
+        send_device_state(
+            &internal_tx,
+            &device_id,
+            DeviceRegistrationStatus::Unregistering,
+            None,
+            None,
+        )
+        .await;
+        let result = runtime_device
+            .session
+            .unregister(&client, &configuration, &CancellationToken::new())
+            .await;
+        let (status, error) = match result {
+            Ok(()) => (DeviceRegistrationStatus::Unregistered, None),
+            Err(error) => (
+                DeviceRegistrationStatus::Failed,
+                Some(format!("注销失败: {error}")),
+            ),
+        };
+        send_device_state(&internal_tx, &device_id, status, error, None).await;
+    }
 
     transport_cancellation.cancel();
     let _ = receiver_task.await;
@@ -1187,24 +1403,28 @@ async fn run_registration_operation(
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "注册生命周期需要共享运行时资源与状态通道"
+    reason = "首轮注册槽位需要共享配置、会话表、取消令牌和统一事件通道"
 )]
-async fn run_device_lifecycle(
-    device_id: String,
-    configuration: SipServiceConfiguration,
-    client: Arc<SipRegistrationClient>,
-    semaphore: Arc<Semaphore>,
-    cancellation: CancellationToken,
-    internal_tx: mpsc::Sender<InternalEvent>,
-    session_map: SessionMap,
-    mut scheduler_rx: broadcast::Receiver<SchedulerTick>,
-) {
-    let session = match DeviceSipSession::new(device_id.clone(), &configuration, &client) {
-        Ok(session) => session,
+async fn queue_initial_registration(
+    device: SimulatedDevice,
+    configuration: &SipServiceConfiguration,
+    client: &Arc<SipRegistrationClient>,
+    semaphore: &Arc<Semaphore>,
+    cancellation: &CancellationToken,
+    internal_tx: &mpsc::Sender<InternalEvent>,
+    session_map: &SessionMap,
+    registration_tasks: &mut JoinSet<(
+        String,
+        Arc<DeviceSipSession>,
+        Result<u32, SipRegistrationError>,
+    )>,
+) -> bool {
+    let device_id = device.id.to_string();
+    let session = match DeviceSipSession::new(device_id.clone(), configuration, client) {
+        Ok(session) => Arc::new(session),
         Err(error) => {
             send_device_state(
-                &internal_tx,
+                internal_tx,
                 &device_id,
                 DeviceRegistrationStatus::Failed,
                 Some(error.to_string()),
@@ -1212,137 +1432,46 @@ async fn run_device_lifecycle(
             )
             .await;
             let _ = internal_tx.send(InternalEvent::InitialSettled).await;
-            return;
+            return false;
         }
     };
-    let mut initial_settled = false;
-    let session = Arc::new(session);
     session_map
         .lock()
         .await
         .insert(device_id.clone(), Arc::clone(&session));
-    loop {
-        send_device_state(
-            &internal_tx,
-            &device_id,
-            DeviceRegistrationStatus::Registering,
-            None,
-            None,
-        )
-        .await;
-        let result =
-            register_with_retry(&session, &client, &configuration, &semaphore, &cancellation).await;
-        if !initial_settled {
-            initial_settled = true;
-            let _ = internal_tx.send(InternalEvent::InitialSettled).await;
-        }
-        match result {
-            Ok(expires) => {
-                let refresh_after = refresh_delay(expires);
-                send_device_state(
-                    &internal_tx,
-                    &device_id,
-                    DeviceRegistrationStatus::Registered,
-                    None,
-                    Some(now_millis().saturating_add(duration_millis(expires))),
-                )
-                .await;
-                let refresh_at =
-                    now_millis().saturating_add(duration_millis_u64(refresh_after.as_secs()));
-                let keepalive_interval_millis =
-                    duration_millis(configuration.keepalive_interval.max(1));
-                let mut next_keepalive_at = now_millis().saturating_add(keepalive_interval_millis);
-                loop {
-                    let tick = tokio::select! {
-                        () = cancellation.cancelled() => break,
-                        tick = scheduler_rx.recv() => match tick {
-                            Ok(tick) => tick,
-                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(broadcast::error::RecvError::Closed) => break,
-                        },
-                    };
-                    if tick.now_millis >= refresh_at {
-                        break;
-                    }
-                    if tick.now_millis >= next_keepalive_at {
-                        let body = format!(
-                            "<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Status>OK</Status><Info>OK</Info></Notify>"
-                        );
-                        let success = session
-                            .send_message(&client, body, &cancellation, None)
-                            .await
-                            .is_ok();
-                        let _ = internal_tx
-                            .send(InternalEvent::Heartbeat {
-                                device_id: device_id.clone(),
-                                success,
-                                timestamp: tick.now_millis,
-                            })
-                            .await;
-                        next_keepalive_at =
-                            tick.now_millis.saturating_add(keepalive_interval_millis);
-                    }
-                }
-            }
-            Err(SipRegistrationError::Cancelled) => break,
-            Err(error) => {
-                send_device_state(
-                    &internal_tx,
-                    &device_id,
-                    DeviceRegistrationStatus::Failed,
-                    Some(error.to_string()),
-                    None,
-                )
-                .await;
-                tokio::select! {
-                    () = cancellation.cancelled() => break,
-                    () = sleep(RETRY_CYCLE_DELAY) => {}
-                }
-            }
-        }
-    }
-
     send_device_state(
-        &internal_tx,
+        internal_tx,
         &device_id,
-        DeviceRegistrationStatus::Unregistering,
+        DeviceRegistrationStatus::Registering,
         None,
         None,
     )
     .await;
-    let unregister_cancellation = CancellationToken::new();
-    let unregister_result = if let Ok(permit) = semaphore.acquire().await {
-        let result = session
-            .unregister(&client, &configuration, &unregister_cancellation)
-            .await;
-        drop(permit);
-        result
-    } else {
-        Err(SipRegistrationError::Cancelled)
-    };
-    match unregister_result {
-        Ok(()) => {
-            send_device_state(
-                &internal_tx,
-                &device_id,
-                DeviceRegistrationStatus::Unregistered,
-                None,
-                None,
-            )
-            .await;
-        }
-        Err(error) => {
-            send_device_state(
-                &internal_tx,
-                &device_id,
-                DeviceRegistrationStatus::Failed,
-                Some(format!("注销失败: {error}")),
-                None,
-            )
-            .await;
-        }
-    }
-    session_map.lock().await.remove(&device_id);
+    let device_id_for_task = device_id.clone();
+    let session_for_task = Arc::clone(&session);
+    let client_for_task = Arc::clone(client);
+    let configuration_for_task = configuration.clone();
+    let semaphore_for_task = Arc::clone(semaphore);
+    let cancellation_for_task = cancellation.clone();
+    registration_tasks.spawn(async move {
+        let registration = register_with_retry(
+            &session_for_task,
+            &client_for_task,
+            &configuration_for_task,
+            &semaphore_for_task,
+            &cancellation_for_task,
+        )
+        .await;
+        (device_id_for_task, session_for_task, registration)
+    });
+    true
+}
+
+struct RuntimeDeviceState {
+    session: Arc<DeviceSipSession>,
+    next_refresh_at: u64,
+    next_keepalive_at: u64,
+    next_retry_at: Option<u64>,
 }
 
 #[expect(
@@ -1372,8 +1501,21 @@ async fn run_business_commands(
                 subscription,
                 reply,
             } => {
-                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id), &subscription,
-                    format!("<Notify><CmdType>Alarm</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><AlarmMethod>1</AlarmMethod><AlarmType>{alarm_type}</AlarmType><AlarmDescription>{description}</AlarmDescription></Notify>")).await;
+                let result = match build_alarm_notify_body(&channel_id, &alarm_type, &description) {
+                    Ok(body) => {
+                        send_business_notify(
+                            &sessions,
+                            &client,
+                            cancellation.clone(),
+                            &device_id,
+                            Some(&channel_id),
+                            &subscription,
+                            body,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
                 let notification_error = result.as_ref().err().map(ToString::to_string);
                 let _ = internal_tx
                     .send(InternalEvent::SubscriptionNotification {
@@ -1406,8 +1548,22 @@ async fn run_business_commands(
                 subscription,
                 reply,
             } => {
-                let result = send_business_notify(&sessions, &client, cancellation.clone(), &device_id, Some(&channel_id), &subscription,
-                    format!("<Notify><CmdType>MobilePosition</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><Longitude>{longitude}</Longitude><Latitude>{latitude}</Latitude></Notify>")).await;
+                let result =
+                    match build_mobile_position_notify_body(&channel_id, longitude, latitude) {
+                        Ok(body) => {
+                            send_business_notify(
+                                &sessions,
+                                &client,
+                                cancellation.clone(),
+                                &device_id,
+                                Some(&channel_id),
+                                &subscription,
+                                body,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
                 let notification_error = result.as_ref().err().map(ToString::to_string);
                 let _ = internal_tx
                     .send(InternalEvent::SubscriptionNotification {
@@ -1545,12 +1701,10 @@ async fn send_subscription_notify(
     let body_device_id = channel_id.unwrap_or(device_id);
     let body = match command_type {
         PlatformCommandType::Catalog => build_catalog_notify_body(body_device_id, devices),
-        PlatformCommandType::Alarm => format!(
-            "<Notify><CmdType>Alarm</CmdType><SN>1</SN><DeviceID>{body_device_id}</DeviceID><AlarmMethod>1</AlarmMethod><AlarmType>0</AlarmType><AlarmDescription>订阅已建立</AlarmDescription></Notify>"
-        ),
-        PlatformCommandType::MobilePosition => format!(
-            "<Notify><CmdType>MobilePosition</CmdType><SN>1</SN><DeviceID>{body_device_id}</DeviceID><Longitude>0</Longitude><Latitude>0</Latitude></Notify>"
-        ),
+        PlatformCommandType::Alarm => build_alarm_notify_body(body_device_id, "0", "订阅已建立")?,
+        PlatformCommandType::MobilePosition => {
+            build_mobile_position_notify_body(body_device_id, 0.0, 0.0)?
+        }
         _ => return Err(RegistrationRuntimeError::BusinessUnavailable),
     };
     let session = sessions
@@ -1569,6 +1723,38 @@ async fn send_subscription_notify(
         )
         .await
         .map_err(|error| map_business_error(&error))
+}
+
+fn build_alarm_notify_body(
+    device_id: &str,
+    alarm_type: &str,
+    description: &str,
+) -> Result<String, RegistrationRuntimeError> {
+    let codec_device_id = CodecDeviceId::parse(device_id)
+        .map_err(|error| RegistrationRuntimeError::BusinessFailed(error.to_string()))?;
+    let mut alarm = AlarmInfo::new(
+        codec_device_id.to_string(),
+        alarm_type,
+        "1970-01-01T00:00:00",
+    );
+    alarm.alarm_description = Some(description.to_owned());
+    Ok(Notify::alarm(1, codec_device_id, vec![alarm]).to_xml())
+}
+
+fn build_mobile_position_notify_body(
+    device_id: &str,
+    longitude: f64,
+    latitude: f64,
+) -> Result<String, RegistrationRuntimeError> {
+    let codec_device_id = CodecDeviceId::parse(device_id)
+        .map_err(|error| RegistrationRuntimeError::BusinessFailed(error.to_string()))?;
+    let position = MobilePositionInfo::new(
+        codec_device_id.to_string(),
+        longitude,
+        latitude,
+        "1970-01-01T00:00:00",
+    );
+    Ok(Notify::mobile_position_notify(1, codec_device_id, vec![position]).to_xml())
 }
 
 fn build_catalog_notify_body(
@@ -1756,10 +1942,45 @@ fn now_millis() -> u64 {
         })
 }
 
-fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = message.find(&open)? + open.len();
-    let end = message[start..].find(&close)? + start;
-    Some(message[start..end].trim().to_owned())
+fn xml_sn(message: &str) -> Option<String> {
+    let body = message
+        .split_once("\r\n\r\n")
+        .or_else(|| message.split_once("\n\n"))
+        .map_or(message, |(_, body)| body)
+        .trim();
+    let parsed = parse_xml(body).ok()?;
+    let sn = match parsed {
+        GbMessage::Query(query) => query.sn,
+        GbMessage::Response(response) => response.sn,
+        GbMessage::Control(control) => control.sn,
+        GbMessage::Notify(notify) => notify.sn,
+        GbMessage::CascadingRegister(register) => register.sn,
+    };
+    Some(sn.to_string())
+}
+
+#[cfg(test)]
+mod xml_tests {
+    use siprs::siprs_gb28181_xml::{Message, Notify, parse_xml};
+
+    use super::{build_alarm_notify_body, build_mobile_position_notify_body};
+
+    #[test]
+    fn typed_alarm_notify_should_escape_special_characters_and_round_trip() {
+        let xml = build_alarm_notify_body("34020000001320000001", "1", "摄像机 <测试> & 报警").ok();
+        assert!(
+            xml.as_deref()
+                .is_some_and(|value| value.contains("&lt;测试&gt;"))
+        );
+        let Some(xml) = xml else { return };
+        let parsed = parse_xml(&xml).ok();
+        assert!(matches!(parsed, Some(Message::Notify(Notify { .. }))));
+    }
+
+    #[test]
+    fn typed_mobile_position_notify_should_round_trip() {
+        let xml = build_mobile_position_notify_body("34020000001320000001", 116.397, 39.908);
+        let parsed = xml.ok().and_then(|value| parse_xml(&value).ok());
+        assert!(matches!(parsed, Some(Message::Notify(Notify { .. }))));
+    }
 }

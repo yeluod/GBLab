@@ -1,10 +1,27 @@
 import { invokeCommand, listenEvent } from '@/infrastructure/tauri';
 
-import type { BatchOperationAccepted, InteractionLog, RegistrationSnapshot } from './types';
+import type {
+  BatchOperationAccepted,
+  InteractionLog,
+  InteractionLogPage,
+  RegistrationSnapshot,
+} from './types';
 
 /** 读取不落盘的注册运行时快照。 */
 export function getRegistrationSnapshot(): Promise<RegistrationSnapshot> {
   return invokeCommand<RegistrationSnapshot>('get_registration_snapshot');
+}
+
+/** 按条件分页读取运行时 SIP 交互日志。 */
+export function getInteractionLogPage(options: {
+  offset: number;
+  limit: number;
+  deviceId?: string;
+  direction?: 'send' | 'receive';
+  method?: string;
+  keyword?: string;
+}): Promise<InteractionLogPage> {
+  return invokeCommand<InteractionLogPage>('get_interaction_log_page', { query: options });
 }
 
 /** 发起当前全部设备的注册生命周期。 */

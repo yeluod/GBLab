@@ -11,7 +11,16 @@ const deviceApiMocks = vi.hoisted(() => ({
   deleteDeviceCommand: vi.fn(),
 }));
 
+const registrationApiMocks = vi.hoisted(() => ({
+  getRegistrationSnapshot: vi.fn(),
+  listenRegistrationSnapshot: vi.fn(),
+  listenInteractionLogs: vi.fn(),
+  registerAllDevicesCommand: vi.fn(),
+  stopAllDeviceRegistrationCommand: vi.fn(),
+}));
+
 vi.mock('./device-api', () => deviceApiMocks);
+vi.mock('./registration-api', () => registrationApiMocks);
 
 import { useSimulatorStore } from './simulator-store';
 
@@ -50,6 +59,23 @@ describe('useSimulatorStore', () => {
     vi.clearAllMocks();
     deviceApiMocks.getDeviceSnapshot.mockResolvedValue(initialSnapshot());
     deviceApiMocks.getDeviceChannels.mockResolvedValue(initialChannels());
+    registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
+      operationStatus: 'idle',
+      operationId: null,
+      devices: [],
+      interactionLogs: [],
+      subscriptions: [],
+    });
+    registrationApiMocks.listenRegistrationSnapshot.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenInteractionLogs.mockResolvedValue(() => undefined);
+    registrationApiMocks.registerAllDevicesCommand.mockResolvedValue({
+      operationId: '1',
+      total: 1,
+    });
+    registrationApiMocks.stopAllDeviceRegistrationCommand.mockResolvedValue({
+      operationId: '1',
+      total: 1,
+    });
   });
 
   it('应从桌面后端加载设备及派生通道', async () => {
@@ -118,7 +144,6 @@ describe('useSimulatorStore', () => {
   it('编辑持久化设备时应保留运行时注册状态', async () => {
     const store = useSimulatorStore();
     await store.loadDevices();
-    store.registerAllDevices();
     const next = initialSnapshot();
     const device = next.devices[0];
     if (device === undefined) throw new Error('测试设备未初始化');
@@ -148,7 +173,7 @@ describe('useSimulatorStore', () => {
     expect(store.devices[0]).toMatchObject({
       name: '重命名设备',
       channelCount: 4,
-      registrationStatus: 'registered',
+      registrationStatus: 'unregistered',
     });
     expect(store.channels).toHaveLength(4);
   });
@@ -171,14 +196,11 @@ describe('useSimulatorStore', () => {
     await store.loadDevices();
     await store.loadDeviceChannels('34020000001320000001');
 
-    expect(store.registerAllDevices()).toEqual({ ok: true });
-    expect(store.devices.every((device) => device.registrationStatus === 'registered')).toBe(true);
-    expect(store.interactionLogs.at(-1)?.channelId).toBe('34020000001320001001');
+    expect(await store.registerAllDevices()).toEqual({ ok: true });
+    expect(store.devices.every((device) => device.registrationStatus === 'queued')).toBe(true);
+    expect(store.interactionLogs).toHaveLength(0);
 
-    expect(store.stopAllDeviceRegistration()).toEqual({ ok: true });
-    expect(store.devices.every((device) => device.registrationStatus === 'unregistered')).toBe(
-      true,
-    );
-    expect(store.interactionLogs.at(-1)?.message).toContain('Expires: 0');
+    expect(await store.stopAllDeviceRegistration()).toEqual({ ok: true });
+    expect(store.registrationOperationStatus).toBe('stopping');
   });
 });

@@ -65,6 +65,14 @@ export interface InteractionLog {
   message: string;
 }
 
+/** Rust 侧交互日志分页查询结果。 */
+export interface InteractionLogPage {
+  items: InteractionLog[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 /** Rust 注册运行时返回的单设备状态。 */
 export interface DeviceRegistrationSnapshot {
   deviceId: string;
@@ -144,6 +152,15 @@ export interface BatchDeviceDraft {
 /** Rust 核心返回的持久化设备与运行时派生通道快照。 */
 export interface DeviceSnapshot {
   devices: SimulatedDevice[];
+  hasCompletedBatchAdd: boolean;
+}
+
+/** Rust 侧设备分页查询结果。 */
+export interface DevicePage {
+  devices: SimulatedDevice[];
+  total: number;
+  offset: number;
+  limit: number;
   hasCompletedBatchAdd: boolean;
 }
 

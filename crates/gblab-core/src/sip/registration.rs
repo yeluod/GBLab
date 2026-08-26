@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write,
     net::{IpAddr, SocketAddr},
     sync::{
@@ -11,6 +11,9 @@ use std::{
 
 use siprs::{
     siprs_core::{Host, SipVersion, TransportProtocol},
+    siprs_gb28181_xml::{
+        CmdType, DeviceItem, DeviceStatusInfo, Message as GbMessage, Query, Response, parse_xml,
+    },
     siprs_message::{
         AuthHeader, CSeqHeader, CallId, ContactHeader, FromToHeader, HeaderCollection, HeaderName,
         HeaderValue, MessageBuilder, MessageParser, Method, RequestLine, SipMessage, SipRequest,
@@ -30,6 +33,7 @@ use crate::{
     SimulatedDevice,
     configuration::{SipServiceConfiguration, SipTransport},
     domain::derive_channels_for_device,
+    sip::transaction::{TransactionContext, TransactionKey, TransactionManager, TransactionState},
 };
 
 const SIP_MESSAGE_LIMIT: usize = 65_536;
@@ -91,26 +95,6 @@ pub enum SipRegistrationError {
     EventChannelClosed,
 }
 
-struct PendingResponse {
-    device_id: String,
-    channel_id: Option<String>,
-    method: Option<String>,
-    command_type: Option<String>,
-    sender: oneshot::Sender<SipResponse>,
-}
-
-/// 出站 SIP 客户端事务的稳定匹配键。
-///
-/// Call-ID 标识对话，Via branch 标识事务，CSeq 序号和方法用于防止同一对话
-/// 中并发请求或异常重试被错误关联。
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct SipTransactionKey {
-    call_id: String,
-    cseq: u32,
-    method: Method,
-    branch: String,
-}
-
 pub struct SipRegistrationClient {
     socket: Arc<UdpSocket>,
     advertised_ip: IpAddr,
@@ -119,8 +103,10 @@ pub struct SipRegistrationClient {
     domain: String,
     platform_id: String,
     subscription_tags: Mutex<HashMap<String, String>>,
-    pending: Mutex<HashMap<SipTransactionKey, PendingResponse>>,
+    transactions: TransactionManager,
     event_tx: mpsc::Sender<SipTransportEvent>,
+    dialogs: Mutex<crate::runtime::DialogManager>,
+    invite_transactions: Mutex<HashSet<TransactionKey>>,
 }
 
 impl SipRegistrationClient {
@@ -183,8 +169,10 @@ impl SipRegistrationClient {
             domain: configuration.domain.clone(),
             platform_id: configuration.platform_id.clone(),
             subscription_tags: Mutex::new(HashMap::new()),
-            pending: Mutex::new(HashMap::new()),
+            transactions: TransactionManager::default(),
             event_tx,
+            dialogs: Mutex::new(crate::runtime::DialogManager::default()),
+            invite_transactions: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -212,22 +200,36 @@ impl SipRegistrationClient {
                 continue;
             };
             let SipMessage::Response(response) = message else {
+                let SipMessage::Request(request) = message else {
+                    continue;
+                };
                 let text = String::from_utf8_lossy(raw).into_owned();
-                let requested_id = extract_xml_value(&text, "DeviceID").unwrap_or_default();
+                let body = request_body_text(&request);
+                let (requested_id, parsed_command_type) = xml_metadata(&body);
+                let requested_id = requested_id.unwrap_or_default();
                 let (device_id, channel_id) =
                     resolve_device_and_channel(&requested_id, &catalog_devices);
-                let method = text
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().next())
-                    .map(str::to_owned);
+                let method = Some(request.request_line.method.to_string());
                 let is_subscribe = method.as_deref() == Some("SUBSCRIBE");
-                let command_type = extract_xml_value(&text, "CmdType");
-                let event = extract_header(&text, "Event");
-                let from_tag = extract_header_param(&text, "From", "tag");
-                let request_uri = extract_request_uri(&text);
-                let call_id = extract_header(&text, "Call-ID");
-                let expires = extract_header(&text, "Expires").and_then(|value| value.parse().ok());
+                let command_type = parsed_command_type;
+                let event =
+                    structured_header_value(&request, &HeaderName::Extension("Event".to_owned()));
+                let from_tag = request
+                    .headers
+                    .get(&HeaderName::From)
+                    .and_then(HeaderValue::as_from_to)
+                    .and_then(|header| header.tag.as_ref())
+                    .map(ToString::to_string);
+                let request_uri = Some(request.request_line.request_uri.to_string());
+                let call_id = request
+                    .headers
+                    .get(&HeaderName::CallId)
+                    .and_then(HeaderValue::as_call_id)
+                    .map(|value| value.0.clone());
+                let expires = request
+                    .headers
+                    .get(&HeaderName::Expires)
+                    .and_then(header_u32_value);
                 let local_tag = if is_subscribe {
                     if let Some(call_id) = call_id.as_ref() {
                         let mut tags = self.subscription_tags.lock().await;
@@ -261,8 +263,9 @@ impl SipRegistrationClient {
                         expires,
                     })
                     .await;
-                let disposition =
-                    dispatch_inbound_request(&text, method.as_deref(), &catalog_devices);
+                let disposition = self
+                    .dispatch_inbound_request(&request, &text, method.as_deref(), &catalog_devices)
+                    .await;
                 let response = disposition.response().map(|(status, reason)| {
                     build_request_response(
                         &text,
@@ -317,7 +320,7 @@ impl SipRegistrationClient {
                             channel_id: None,
                             is_request: false,
                             method: Some("MESSAGE".to_owned()),
-                            command_type: extract_xml_value(&body, "CmdType"),
+                            command_type: xml_command_type(&body),
                             event: None,
                             local_tag: None,
                             from_tag: None,
@@ -339,37 +342,22 @@ impl SipRegistrationClient {
             };
             let transaction_key = transaction_key_from_response(&response);
             let is_final = response_class(response.status_line.status_code.0).is_final();
-            let pending_context = {
-                let mut pending = self.pending.lock().await;
-                let context = transaction_key
-                    .as_ref()
-                    .and_then(|key| pending.get(key))
-                    .map(|entry| {
-                        (
-                            entry.device_id.clone(),
-                            entry.channel_id.clone(),
-                            entry.method.clone(),
-                            entry.command_type.clone(),
-                        )
-                    });
-                let sender = is_final
-                    .then(|| transaction_key.as_ref().and_then(|key| pending.remove(key)))
-                    .flatten();
-                drop(pending);
-                (context, sender)
+            let context = match transaction_key.as_ref() {
+                Some(key) => self.transactions.context(key).await,
+                None => None,
             };
-            if let Some((device_id, channel_id, method, command_type)) = pending_context.0 {
+            if let Some(context) = context {
                 let _ = self
                     .event_tx
                     .send(SipTransportEvent {
                         timestamp_millis: now_millis(),
-                        device_id,
+                        device_id: context.device_id,
                         direction: SipLogDirection::Receive,
                         message: String::from_utf8_lossy(raw).into_owned(),
-                        channel_id,
+                        channel_id: context.channel_id,
                         is_request: false,
-                        method,
-                        command_type,
+                        method: context.method,
+                        command_type: context.command_type,
                         event: None,
                         local_tag: None,
                         from_tag: None,
@@ -380,15 +368,22 @@ impl SipRegistrationClient {
                     .await;
             } else {
                 let response_text = String::from_utf8_lossy(raw).into_owned();
-                let requested_id = extract_header(&response_text, "To")
-                    .or_else(|| extract_header(&response_text, "From"))
-                    .and_then(|value| extract_sip_uri_user(&value));
+                let requested_id = response
+                    .headers
+                    .get(&HeaderName::To)
+                    .or_else(|| response.headers.get(&HeaderName::From))
+                    .and_then(HeaderValue::as_from_to)
+                    .and_then(|header| header.uri.user_info.as_ref())
+                    .map(|user| user.user.clone());
                 let (device_id, channel_id) = requested_id
                     .as_deref()
                     .map(|value| resolve_device_and_channel(value, &catalog_devices))
                     .unwrap_or_default();
-                let method = extract_header(&response_text, "CSeq")
-                    .and_then(|value| value.split_whitespace().nth(1).map(str::to_owned));
+                let method = response
+                    .headers
+                    .get(&HeaderName::CSeq)
+                    .and_then(HeaderValue::as_cseq)
+                    .map(|cseq| cseq.method.to_string());
                 let _ = self
                     .event_tx
                     .send(SipTransportEvent {
@@ -409,8 +404,10 @@ impl SipRegistrationClient {
                     })
                     .await;
             }
-            if let Some(pending) = pending_context.1 {
-                let _ = pending.sender.send(response);
+            if is_final
+                && let Some(sender) = self.transactions.take_final(transaction_key.as_ref()).await
+            {
+                let _ = sender.send(response);
             }
         }
     }
@@ -449,19 +446,18 @@ impl SipRegistrationClient {
             .build(&SipMessage::Request(request))
             .map_err(|error| SipRegistrationError::Build(error.to_string()))?;
         let (sender, mut receiver) = oneshot::channel();
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(
+        self.transactions
+            .register(
                 transaction_key.clone(),
-                PendingResponse {
+                TransactionContext {
                     device_id: device_id.to_owned(),
                     channel_id: channel_id.clone(),
                     method: Some(request_method_name),
-                    command_type: extract_xml_value(&String::from_utf8_lossy(&payload), "CmdType"),
-                    sender,
+                    command_type: payload_command_type(&payload),
                 },
-            );
-        }
+                sender,
+            )
+            .await;
 
         let deadline = Instant::now() + TRANSACTION_TIMEOUT;
         let mut delay = FIRST_RETRANSMIT_DELAY;
@@ -480,7 +476,7 @@ impl SipRegistrationClient {
                     channel_id: channel_id.clone(),
                     is_request: true,
                     method: request_method(&payload),
-                    command_type: extract_xml_value(&String::from_utf8_lossy(&payload), "CmdType"),
+                    command_type: payload_command_type(&payload),
                     event: None,
                     local_tag: None,
                     from_tag: None,
@@ -503,15 +499,102 @@ impl SipRegistrationClient {
                 }
                 () = sleep_until(wake_at) => {
                     if Instant::now() >= deadline {
+                        let _ = self
+                            .transactions
+                            .finish_without_response(&transaction_key, TransactionState::TimedOut)
+                            .await;
                         break Err(SipRegistrationError::Timeout);
                     }
+                    let _ = self.transactions.record_retransmission(&transaction_key).await;
                     delay = delay.saturating_mul(2);
                 }
             }
         };
 
-        self.pending.lock().await.remove(&transaction_key);
+        if matches!(result, Err(SipRegistrationError::Cancelled)) {
+            let _ = self
+                .transactions
+                .finish_without_response(&transaction_key, TransactionState::Cancelled)
+                .await;
+        } else {
+            self.transactions.remove(&transaction_key).await;
+        }
         result
+    }
+
+    async fn dispatch_inbound_request(
+        &self,
+        request: &SipRequest,
+        raw: &str,
+        method: Option<&str>,
+        devices: &HashMap<String, SimulatedDevice>,
+    ) -> InboundRequestDisposition {
+        let method_name = method.unwrap_or_default().to_ascii_uppercase();
+        match method_name.as_str() {
+            "CANCEL" => {
+                let Some(call_id) = request_call_id(request) else {
+                    return InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    };
+                };
+                let mut invites = self.invite_transactions.lock().await;
+                let key = invites.iter().find(|key| key.call_id == call_id).cloned();
+                let disposition = key.map_or(
+                    InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    },
+                    |key| {
+                        invites.remove(&key);
+                        InboundRequestDisposition::Respond {
+                            status: 200,
+                            reason: "OK",
+                        }
+                    },
+                );
+                drop(invites);
+                disposition
+            }
+            "BYE" => {
+                let Some(dialog_id) = request_dialog_id(request) else {
+                    return InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    };
+                };
+                if self.dialogs.lock().await.terminate(&dialog_id) {
+                    InboundRequestDisposition::Respond {
+                        status: 200,
+                        reason: "OK",
+                    }
+                } else {
+                    InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    }
+                }
+            }
+            "ACK" => {
+                if let Some(dialog_id) = request_dialog_id(request)
+                    && let Some(cseq) = request_cseq(request)
+                {
+                    let _ = self.dialogs.lock().await.confirm(&dialog_id, cseq);
+                }
+                InboundRequestDisposition::NoResponse
+            }
+            "INVITE" => {
+                if let Some(key) = transaction_key_from_request(request) {
+                    self.invite_transactions.lock().await.insert(key);
+                }
+                // 媒体能力尚未启用，明确拒绝而不是伪造 200/SDP。
+                InboundRequestDisposition::Respond {
+                    status: 488,
+                    reason: "Not Acceptable Here",
+                }
+            }
+            _ => dispatch_inbound_request(raw, method, devices),
+        }
     }
 
     const fn endpoint_host(&self) -> Host {
@@ -522,7 +605,10 @@ impl SipRegistrationClient {
     }
 
     fn build_query_response(&self, request: &str, body: &str) -> String {
-        let device_id = extract_xml_value(request, "DeviceID").unwrap_or_default();
+        let device_id = sip_body(request)
+            .map(xml_metadata)
+            .and_then(|(device_id, _)| device_id)
+            .unwrap_or_default();
         let call_id = CallId::with_host(&self.endpoint_host().to_string());
         let branch = format!("z9hG4bK{}", now_millis());
         let from = format!("<sip:{device_id}@{}>", self.domain);
@@ -875,12 +961,33 @@ impl DeviceSipSession {
     }
 }
 
-fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = message.find(&open)? + open.len();
-    let end = message[start..].find(&close)? + start;
-    Some(message[start..end].trim().to_owned())
+fn payload_command_type(payload: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(payload);
+    sip_body(&text).and_then(xml_command_type)
+}
+
+fn request_body_text(request: &SipRequest) -> String {
+    request
+        .body
+        .as_ref()
+        .map(|body| String::from_utf8_lossy(&body.content).into_owned())
+        .unwrap_or_default()
+}
+
+fn structured_header_value(request: &SipRequest, name: &HeaderName) -> Option<String> {
+    request.headers.get(name).and_then(|value| match value {
+        HeaderValue::Raw(value) | HeaderValue::ContentType(value) => Some(value.clone()),
+        HeaderValue::Expires(value) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn header_u32_value(value: &HeaderValue) -> Option<u32> {
+    match value {
+        HeaderValue::Expires(value) => Some(*value),
+        HeaderValue::Raw(value) => value.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -920,7 +1027,7 @@ fn accept_sip_success(response: SipResponse) -> Result<SipResponse, SipRegistrat
     }
 }
 
-fn transaction_key_from_request(request: &SipRequest) -> Option<SipTransactionKey> {
+fn transaction_key_from_request(request: &SipRequest) -> Option<TransactionKey> {
     let call_id = request
         .headers
         .get(&HeaderName::CallId)
@@ -938,7 +1045,7 @@ fn transaction_key_from_request(request: &SipRequest) -> Option<SipTransactionKe
         .branch
         .0
         .clone();
-    Some(SipTransactionKey {
+    Some(TransactionKey {
         call_id,
         cseq: cseq.sequence.0,
         method: cseq.method.clone(),
@@ -946,7 +1053,7 @@ fn transaction_key_from_request(request: &SipRequest) -> Option<SipTransactionKe
     })
 }
 
-fn transaction_key_from_response(response: &SipResponse) -> Option<SipTransactionKey> {
+fn transaction_key_from_response(response: &SipResponse) -> Option<TransactionKey> {
     let call_id = response
         .headers
         .get(&HeaderName::CallId)
@@ -964,12 +1071,47 @@ fn transaction_key_from_response(response: &SipResponse) -> Option<SipTransactio
         .branch
         .0
         .clone();
-    Some(SipTransactionKey {
+    Some(TransactionKey {
         call_id,
         cseq: cseq.sequence.0,
         method: cseq.method.clone(),
         branch,
     })
+}
+
+fn request_call_id(request: &SipRequest) -> Option<String> {
+    request
+        .headers
+        .get(&HeaderName::CallId)
+        .and_then(HeaderValue::as_call_id)
+        .map(|value| value.0.clone())
+}
+
+fn request_cseq(request: &SipRequest) -> Option<u32> {
+    request
+        .headers
+        .get(&HeaderName::CSeq)
+        .and_then(HeaderValue::as_cseq)
+        .map(|value| value.sequence.0)
+}
+
+fn request_dialog_id(request: &SipRequest) -> Option<crate::runtime::DialogId> {
+    let call_id = request_call_id(request)?;
+    let local_tag = request
+        .headers
+        .get(&HeaderName::To)
+        .and_then(HeaderValue::as_from_to)
+        .and_then(|header| header.tag.as_ref())
+        .map(ToString::to_string)?;
+    let remote_tag = request
+        .headers
+        .get(&HeaderName::From)
+        .and_then(HeaderValue::as_from_to)
+        .and_then(|header| header.tag.as_ref())
+        .map(ToString::to_string)?;
+    Some(crate::runtime::DialogId::new(
+        call_id, local_tag, remote_tag,
+    ))
 }
 
 fn extract_header(message: &str, name: &str) -> Option<String> {
@@ -978,38 +1120,6 @@ fn extract_header(message: &str, name: &str) -> Option<String> {
         .lines()
         .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
         .map(|line| line[prefix.len()..].trim().to_owned())
-}
-
-fn extract_header_param(message: &str, name: &str, parameter: &str) -> Option<String> {
-    let value = extract_header(message, name)?;
-    let marker = format!("{parameter}=");
-    let start = value.to_ascii_lowercase().find(&marker)? + marker.len();
-    let remaining = &value[start..];
-    let end = remaining
-        .find(';')
-        .or_else(|| remaining.find('>'))
-        .unwrap_or(remaining.len());
-    Some(remaining[..end].trim_matches('"').to_owned())
-}
-
-fn extract_request_uri(message: &str) -> Option<String> {
-    message
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .map(str::to_owned)
-}
-
-fn extract_sip_uri_user(value: &str) -> Option<String> {
-    let start = value.to_ascii_lowercase().find("sip:")? + 4;
-    let remaining = &value[start..];
-    let end = remaining
-        .find('@')
-        .or_else(|| remaining.find('>'))
-        .or_else(|| remaining.find(';'))
-        .unwrap_or(remaining.len());
-    let user = remaining[..end].trim();
-    (!user.is_empty()).then(|| user.to_owned())
 }
 
 fn request_method(payload: &[u8]) -> Option<String> {
@@ -1142,45 +1252,12 @@ fn build_request_response(
     if status == 405 {
         response.push_str("Allow: MESSAGE, SUBSCRIBE, OPTIONS, INVITE, ACK, BYE, CANCEL\r\n");
     }
+    if method == "OPTIONS" && status / 100 == 2 {
+        response.push_str("Allow: MESSAGE, SUBSCRIBE, OPTIONS, INVITE, ACK, BYE, CANCEL\r\n");
+        response.push_str("Supported: 100rel, timer\r\n");
+    }
     response.push_str("Content-Length: 0\r\n\r\n");
     response
-}
-
-fn build_catalog_body(
-    device_id: &str,
-    sn: &str,
-    devices: &HashMap<String, SimulatedDevice>,
-) -> String {
-    let Some(device) = devices.get(device_id) else {
-        return format!(
-            "<Response><CmdType>Catalog</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><DeviceList Num=\"0\"></DeviceList></Response>"
-        );
-    };
-    let channels = derive_channels_for_device(device).unwrap_or_default();
-    let mut items = format!(
-        "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
-        xml_escape(&device.id.to_string()),
-        xml_escape(&device.name),
-        xml_escape(&device.manufacturer),
-        xml_escape(&device.model),
-        xml_escape(&device.id.to_string())
-    );
-    for channel in &channels {
-        let _ = write!(
-            items,
-            "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
-            xml_escape(&channel.id.to_string()),
-            xml_escape(&channel.name),
-            xml_escape(&device.manufacturer),
-            xml_escape(&device.model),
-            xml_escape(&device.id.to_string())
-        );
-    }
-    format!(
-        "<Response><CmdType>Catalog</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><SumNum>{}</SumNum><DeviceList Num=\"{}\">{items}</DeviceList></Response>",
-        channels.len() + 1,
-        channels.len() + 1
-    )
 }
 
 fn dispatch_platform_request(
@@ -1191,18 +1268,34 @@ fn dispatch_platform_request(
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().next())?;
-    let command_type = extract_xml_value(request, "CmdType")?;
     if method != "MESSAGE" {
         return None;
     }
-    let device_id = extract_xml_value(request, "DeviceID").unwrap_or_default();
-    let sn = extract_xml_value(request, "SN").unwrap_or_else(|| "1".to_owned());
-    match command_type.as_str() {
-        "Catalog" => Some(build_catalog_body(&device_id, &sn, devices)),
-        "DeviceInfo" => Some(build_device_info_body(&device_id, &sn, devices)),
-        "DeviceStatus" => Some(build_device_status_body(&device_id, &sn)),
-        "DeviceControl" => Some(build_device_control_body(&device_id, &sn)),
-        "RecordInfo" => Some(build_record_info_body(&device_id, &sn)),
+    let body = sip_body(request)?;
+    match parse_xml(body).ok()? {
+        GbMessage::Query(query) => match query.cmd_type {
+            CmdType::Catalog => Some(build_catalog_body(&query, devices)),
+            CmdType::DeviceInfo => Some(build_device_info_body(
+                query.device_id.as_str(),
+                &query.sn.to_string(),
+                devices,
+            )),
+            CmdType::DeviceStatus => {
+                Some(build_device_status_body(query.device_id.as_str(), query.sn))
+            }
+            CmdType::RecordQuery => Some(build_record_info_body(
+                query.device_id.as_str(),
+                &query.sn.to_string(),
+            )),
+            CmdType::Other(value) if value == "RecordInfo" => Some(build_record_info_body(
+                query.device_id.as_str(),
+                &query.sn.to_string(),
+            )),
+            _ => None,
+        },
+        GbMessage::Control(control) if control.cmd_type == CmdType::DeviceControl => Some(
+            build_device_control_body(control.device_id.as_str(), &control.sn.to_string()),
+        ),
         _ => None,
     }
 }
@@ -1226,10 +1319,13 @@ fn build_device_info_body(
     )
 }
 
-fn build_device_status_body(device_id: &str, sn: &str) -> String {
-    format!(
-        "<Response><CmdType>DeviceStatus</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><Online>ON</Online><Status>OK</Status><Result>OK</Result></Response>"
-    )
+fn build_device_status_body(device_id: &str, sn: u32) -> String {
+    let Ok(device_id) = siprs::siprs_gb28181_codec::DeviceId::parse(device_id) else {
+        return format!(
+            "<Response><CmdType>DeviceStatus</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><Result>ERROR</Result></Response>"
+        );
+    };
+    Response::device_status(sn, device_id, DeviceStatusInfo::new(true, "OK")).to_xml()
 }
 
 fn build_device_control_body(device_id: &str, sn: &str) -> String {
@@ -1242,6 +1338,80 @@ fn build_record_info_body(device_id: &str, sn: &str) -> String {
     format!(
         "<Response><CmdType>RecordInfo</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><RecordList Num=\"0\"></RecordList></Response>"
     )
+}
+
+fn build_catalog_body(query: &Query, devices: &HashMap<String, SimulatedDevice>) -> String {
+    let device_id = query.device_id.as_str();
+    let Some(device) = devices.get(device_id) else {
+        return Response::catalog(query.sn, query.device_id.clone(), 0, Vec::new()).to_xml();
+    };
+    let mut items = Vec::with_capacity(device.channel_count as usize + 1);
+    let mut root = DeviceItem::new(query.device_id.clone());
+    root.name = Some(device.name.clone());
+    root.manufacturer = Some(device.manufacturer.clone());
+    root.model = Some(device.model.clone());
+    root.parent_id = Some(device.id.to_string());
+    root.status = Some("ON".to_owned());
+    items.push(root);
+    if let Ok(channels) = derive_channels_for_device(device) {
+        for channel in channels {
+            let Ok(channel_id) = siprs::siprs_gb28181_codec::DeviceId::parse(channel.id.as_str())
+            else {
+                continue;
+            };
+            let mut item = DeviceItem::new(channel_id);
+            item.name = Some(channel.name);
+            item.manufacturer = Some(device.manufacturer.clone());
+            item.model = Some(device.model.clone());
+            item.parent_id = Some(device.id.to_string());
+            item.status = Some("ON".to_owned());
+            items.push(item);
+        }
+    }
+    Response::catalog(
+        query.sn,
+        query.device_id.clone(),
+        u32::try_from(items.len()).unwrap_or(u32::MAX),
+        items,
+    )
+    .to_xml()
+}
+
+fn sip_body(request: &str) -> Option<&str> {
+    request
+        .split_once("\r\n\r\n")
+        .or_else(|| request.split_once("\n\n"))
+        .map(|(_, body)| body.trim())
+        .filter(|body| !body.is_empty())
+}
+
+fn xml_metadata(xml: &str) -> (Option<String>, Option<String>) {
+    let Ok(message) = parse_xml(xml) else {
+        return (None, None);
+    };
+    match message {
+        GbMessage::Query(query) => (
+            Some(query.device_id.to_string()),
+            Some(query.cmd_type.to_string()),
+        ),
+        GbMessage::Response(response) => (
+            Some(response.device_id.to_string()),
+            Some(response.cmd_type.to_string()),
+        ),
+        GbMessage::Control(control) => (
+            Some(control.device_id.to_string()),
+            Some(control.cmd_type.to_string()),
+        ),
+        GbMessage::Notify(notify) => (
+            Some(notify.device_id.to_string()),
+            Some(notify.cmd_type.to_string()),
+        ),
+        GbMessage::CascadingRegister(_) => (None, None),
+    }
+}
+
+fn xml_command_type(xml: &str) -> Option<String> {
+    xml_metadata(xml).1
 }
 
 fn xml_escape(value: &str) -> String {

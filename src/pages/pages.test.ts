@@ -23,9 +23,17 @@ const deviceApiMocks = vi.hoisted(() => ({
   updateDeviceCommand: vi.fn(),
   deleteDeviceCommand: vi.fn(),
 }));
+const registrationApiMocks = vi.hoisted(() => ({
+  getRegistrationSnapshot: vi.fn(),
+  listenRegistrationSnapshot: vi.fn(),
+  listenInteractionLogs: vi.fn(),
+  registerAllDevicesCommand: vi.fn(),
+  stopAllDeviceRegistrationCommand: vi.fn(),
+}));
 
 vi.mock('@/features/settings', () => settingsMocks);
 vi.mock('@/features/simulator/device-api', () => deviceApiMocks);
+vi.mock('@/features/simulator/registration-api', () => registrationApiMocks);
 
 import DevicesPage from './devices-page.vue';
 import SipServicePage from './sip-service-page.vue';
@@ -116,6 +124,23 @@ describe('静态演示页面', () => {
       deviceChannels().filter((channel) => channel.deviceId === deviceId),
     );
     deviceApiMocks.addDevicesInBatchCommand.mockResolvedValue(deviceSnapshot(true));
+    registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
+      operationStatus: 'idle',
+      operationId: null,
+      devices: [],
+      interactionLogs: [],
+      subscriptions: [],
+    });
+    registrationApiMocks.listenRegistrationSnapshot.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenInteractionLogs.mockResolvedValue(() => undefined);
+    registrationApiMocks.registerAllDevicesCommand.mockResolvedValue({
+      operationId: '1',
+      total: 2,
+    });
+    registrationApiMocks.stopAllDeviceRegistrationCommand.mockResolvedValue({
+      operationId: '1',
+      total: 2,
+    });
   });
 
   it('设备管理页应按关键字筛选设备', async () => {
@@ -126,10 +151,7 @@ describe('静态演示页面', () => {
 
     expect(wrapper.text()).toContain('园区球机-001');
     expect(wrapper.text()).not.toContain('模拟摄像机-001');
-    expect(wrapper.text()).toContain('交互日志');
-    expect(wrapper.text()).toContain('SIP / GB28181');
     expect(wrapper.find('.device-table-scroll').exists()).toBe(true);
-    expect(wrapper.find('.interaction-log-scroll').exists()).toBe(true);
     expect(wrapper.find('.device-pagination').exists()).toBe(true);
     expect(wrapper.findAll('.n-pagination')).toHaveLength(1);
   });
@@ -177,9 +199,7 @@ describe('静态演示页面', () => {
     await findButtonByText(wrapper, '通道').trigger('click');
     await flushPromises();
 
-    expect(document.body.textContent).toContain('通道列表');
-    expect(document.body.textContent).toContain('平台订阅项');
-    expect(document.body.textContent).toContain('不写入配置文件');
+    expect(document.body.textContent).toContain('平台订阅');
     expect(document.body.textContent).toContain('未订阅');
   });
 
@@ -189,18 +209,15 @@ describe('静态演示页面', () => {
     await flushPromises();
 
     await findButtonByText(wrapper, '全量注册').trigger('click');
-    await nextTick();
+    await flushPromises();
 
-    expect(store.devices.every((device) => device.registrationStatus === 'registered')).toBe(true);
-    expect(store.interactionLogs.at(-1)?.message).toContain('设备已请求注册');
+    expect(store.devices.every((device) => device.registrationStatus === 'queued')).toBe(true);
+    expect(store.interactionLogs).toHaveLength(0);
 
     await findButtonByText(wrapper, '全量停止注册').trigger('click');
     await nextTick();
 
-    expect(store.devices.every((device) => device.registrationStatus === 'unregistered')).toBe(
-      true,
-    );
-    expect(store.interactionLogs.at(-1)?.message).toContain('Expires: 0');
+    expect(store.registrationOperationStatus).toBe('stopping');
   });
 
   it('SIP 服务页应加载密码配置并通过桌面后端保存', async () => {

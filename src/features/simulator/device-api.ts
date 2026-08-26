@@ -2,6 +2,7 @@ import { invokeCommand } from '@/infrastructure/tauri';
 
 import type {
   BatchDeviceDraft,
+  DevicePage,
   DeviceSnapshot,
   DeviceUpdateDraft,
   SimulatedChannel,
@@ -10,6 +11,16 @@ import type {
 /** 读取持久化设备及其即时派生通道。 */
 export function getDeviceSnapshot(): Promise<DeviceSnapshot> {
   return invokeCommand<DeviceSnapshot>('get_device_snapshot');
+}
+
+/** 按条件分页读取设备，过滤和排序由 Rust 侧执行。 */
+export function getDevicePage(options: {
+  offset: number;
+  limit: number;
+  filter?: string;
+  sort?: string;
+}): Promise<DevicePage> {
+  return invokeCommand<DevicePage>('get_device_page', options);
 }
 
 /** 按需读取单台设备的运行时派生通道。 */

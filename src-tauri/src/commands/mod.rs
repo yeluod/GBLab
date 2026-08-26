@@ -5,8 +5,9 @@ use tauri::State;
 use crate::{
     app_state::AppState,
     dto::{
-        AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto,
-        DeviceSnapshotDto, DeviceUpdateDraftDto, SimulatedChannelDto, SipServiceConfigurationDto,
+        AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
+        DeviceSnapshotDto, DeviceUpdateDraftDto, InteractionLogPageDto, InteractionLogQueryDto,
+        SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
 
@@ -83,6 +84,32 @@ pub fn get_device_snapshot(
     let snapshot = core.device_snapshot();
     drop(core);
     Ok(DeviceSnapshotDto::from_core(snapshot))
+}
+
+/// 按条件分页查询设备配置，避免把完整设备集合绑定到 UI 查询模型。
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command 参数提取器要求按值接收 State"
+)]
+pub fn get_device_page(
+    offset: usize,
+    limit: usize,
+    filter: Option<String>,
+    sort: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<DevicePageDto, CommandErrorDto> {
+    let core = state
+        .core
+        .read()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    Ok(DevicePageDto::from_snapshot(
+        core.device_snapshot(),
+        offset,
+        limit,
+        filter.as_deref(),
+        sort.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -354,4 +381,17 @@ pub fn get_registration_snapshot(
     state: State<'_, AppState>,
 ) -> gblab_core::runtime::RegistrationSnapshot {
     state.registration.snapshot()
+}
+
+/// 按方向、设备、方法和关键字分页查询运行时 SIP 交互日志。
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command 参数提取器要求按值接收 State"
+)]
+pub fn get_interaction_log_page(
+    query: InteractionLogQueryDto,
+    state: State<'_, AppState>,
+) -> InteractionLogPageDto {
+    InteractionLogPageDto::from_logs(state.registration.snapshot().interaction_logs, &query)
 }

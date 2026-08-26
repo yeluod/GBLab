@@ -1,9 +1,11 @@
 //! Tokio task 监督、调度、限流与关闭机制。
 
+mod dialog;
 mod platform;
 mod registration;
 mod scheduler;
 
+pub use dialog::{Dialog, DialogId, DialogManager, DialogState};
 pub use platform::{
     PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionManager,
     SubscriptionRuntimeStatus, SubscriptionSnapshot,
@@ -14,6 +16,13 @@ pub use registration::{
     RegistrationHandle, RegistrationOperationStatus, RegistrationRuntimeError,
     RegistrationSnapshot,
 };
+
+/// 面向整个模拟器运行时的公开句柄。
+pub type SimulatorHandle = RegistrationHandle;
+/// 面向整个模拟器运行时的事件流。
+pub type SimulatorEvent = RegistrationEvent;
+/// 面向整个模拟器运行时的错误类型。
+pub type SimulatorRuntimeError = RegistrationRuntimeError;
 
 /// 核心运行时的有界资源配置。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

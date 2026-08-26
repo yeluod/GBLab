@@ -1,6 +1,7 @@
 //! `siprs` 的 GB28181 设备端隔离层。
 
 mod registration;
+pub(crate) mod transaction;
 
 pub(crate) use registration::{
     DeviceSipSession, SipLogDirection, SipRegistrationClient, SipRegistrationError,

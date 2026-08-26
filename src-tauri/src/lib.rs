@@ -51,6 +51,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::get_sip_service_configuration,
             commands::save_sip_service_configuration,
             commands::get_device_snapshot,
+            commands::get_device_page,
             commands::get_device_channels,
             commands::add_devices_in_batch,
             commands::clear_devices,
@@ -62,7 +63,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::trigger_mobile_position,
             commands::control_device,
             commands::control_ptz,
-            commands::get_registration_snapshot
+            commands::get_registration_snapshot,
+            commands::get_interaction_log_page
         ])
         .build(tauri::generate_context!())?;
     app.run(|app_handle, event| {
