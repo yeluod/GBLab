@@ -2,6 +2,7 @@
 
 mod platform;
 mod registration;
+mod scheduler;
 
 pub use platform::{
     PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionManager,

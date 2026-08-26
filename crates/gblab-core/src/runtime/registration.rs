@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     SimulatedDevice, SipServiceConfiguration,
+    runtime::scheduler::{Scheduler, SchedulerTick},
     runtime::{
         PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionManager,
         SubscriptionSnapshot,
@@ -190,6 +191,9 @@ pub enum RegistrationRuntimeError {
     /// 业务触发时设备会话不存在或运行时不可用。
     #[error("设备未注册或业务运行时不可用")]
     BusinessUnavailable,
+    /// 业务 SIP 事务已完成，但平台返回了失败状态或传输失败。
+    #[error("业务 SIP 事务失败: {0}")]
+    BusinessFailed(String),
 }
 
 /// 可模拟的设备控制动作。
@@ -1116,6 +1120,7 @@ async fn run_registration_operation(
     };
 
     let transport_cancellation = CancellationToken::new();
+    let scheduler = Scheduler::start(cancellation.clone());
     let catalog_devices = Arc::new(
         devices
             .iter()
@@ -1157,6 +1162,7 @@ async fn run_registration_operation(
             cancellation.clone(),
             internal_tx.clone(),
             session_map,
+            scheduler.subscribe(),
         ));
     }
     let business_task = tokio::spawn(run_business_commands(
@@ -1174,6 +1180,7 @@ async fn run_registration_operation(
     let _ = receiver_task.await;
     drop(client);
     let _ = transport_forward_task.await;
+    scheduler.join().await;
     business_task.abort();
     let _ = internal_tx.send(InternalEvent::OperationFinished).await;
 }
@@ -1191,6 +1198,7 @@ async fn run_device_lifecycle(
     cancellation: CancellationToken,
     internal_tx: mpsc::Sender<InternalEvent>,
     session_map: SessionMap,
+    mut scheduler_rx: broadcast::Receiver<SchedulerTick>,
 ) {
     let session = match DeviceSipSession::new(device_id.clone(), &configuration, &client) {
         Ok(session) => session,
@@ -1208,7 +1216,7 @@ async fn run_device_lifecycle(
         }
     };
     let mut initial_settled = false;
-    let session = Arc::new(tokio::sync::Mutex::new(session));
+    let session = Arc::new(session);
     session_map
         .lock()
         .await
@@ -1222,16 +1230,8 @@ async fn run_device_lifecycle(
             None,
         )
         .await;
-        let mut session_guard = session.lock().await;
-        let result = register_with_retry(
-            &mut session_guard,
-            &client,
-            &configuration,
-            &semaphore,
-            &cancellation,
-        )
-        .await;
-        drop(session_guard);
+        let result =
+            register_with_retry(&session, &client, &configuration, &semaphore, &cancellation).await;
         if !initial_settled {
             initial_settled = true;
             let _ = internal_tx.send(InternalEvent::InitialSettled).await;
@@ -1247,27 +1247,40 @@ async fn run_device_lifecycle(
                     Some(now_millis().saturating_add(duration_millis(expires))),
                 )
                 .await;
-                let refresh_sleep = sleep(refresh_after);
-                tokio::pin!(refresh_sleep);
-                let mut keepalive = interval(Duration::from_secs(u64::from(
-                    configuration.keepalive_interval.max(1),
-                )));
+                let refresh_at =
+                    now_millis().saturating_add(duration_millis_u64(refresh_after.as_secs()));
+                let keepalive_interval_millis =
+                    duration_millis(configuration.keepalive_interval.max(1));
+                let mut next_keepalive_at = now_millis().saturating_add(keepalive_interval_millis);
                 loop {
-                    tokio::select! {
+                    let tick = tokio::select! {
                         () = cancellation.cancelled() => break,
-                        () = &mut refresh_sleep => break,
-                        _ = keepalive.tick() => {
-                            let body = format!("<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Status>OK</Status><Info>OK</Info></Notify>");
-                            let success = session.lock().await.send_message(&client, body, &cancellation, None).await.is_ok();
-                            let _ = internal_tx.send(InternalEvent::Heartbeat {
+                        tick = scheduler_rx.recv() => match tick {
+                            Ok(tick) => tick,
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        },
+                    };
+                    if tick.now_millis >= refresh_at {
+                        break;
+                    }
+                    if tick.now_millis >= next_keepalive_at {
+                        let body = format!(
+                            "<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Status>OK</Status><Info>OK</Info></Notify>"
+                        );
+                        let success = session
+                            .send_message(&client, body, &cancellation, None)
+                            .await
+                            .is_ok();
+                        let _ = internal_tx
+                            .send(InternalEvent::Heartbeat {
                                 device_id: device_id.clone(),
                                 success,
-                                timestamp: now_millis(),
-                            }).await;
-                        }
-                    }
-                    if cancellation.is_cancelled() {
-                        break;
+                                timestamp: tick.now_millis,
+                            })
+                            .await;
+                        next_keepalive_at =
+                            tick.now_millis.saturating_add(keepalive_interval_millis);
                     }
                 }
             }
@@ -1300,8 +1313,6 @@ async fn run_device_lifecycle(
     let unregister_cancellation = CancellationToken::new();
     let unregister_result = if let Ok(permit) = semaphore.acquire().await {
         let result = session
-            .lock()
-            .await
             .unregister(&client, &configuration, &unregister_cancellation)
             .await;
         drop(permit);
@@ -1341,7 +1352,7 @@ async fn run_device_lifecycle(
 )]
 async fn run_business_commands(
     mut rx: mpsc::Receiver<BusinessCommand>,
-    sessions: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<DeviceSipSession>>>>>,
+    sessions: SessionMap,
     client: Arc<SipRegistrationClient>,
     catalog_devices: Arc<std::collections::HashMap<String, SimulatedDevice>>,
     configuration: SipServiceConfiguration,
@@ -1549,8 +1560,6 @@ async fn send_subscription_notify(
         .cloned()
         .ok_or(RegistrationRuntimeError::BusinessUnavailable)?;
     session
-        .lock()
-        .await
         .send_notify(
             client,
             body,
@@ -1559,7 +1568,7 @@ async fn send_subscription_notify(
             subscription,
         )
         .await
-        .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
+        .map_err(|error| map_business_error(&error))
 }
 
 fn build_catalog_notify_body(
@@ -1606,8 +1615,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-type SessionMap =
-    Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<DeviceSipSession>>>>>;
+type SessionMap = Arc<tokio::sync::Mutex<BTreeMap<String, Arc<DeviceSipSession>>>>;
 
 #[expect(
     clippy::too_many_arguments,
@@ -1629,11 +1637,9 @@ async fn send_business_message(
         .cloned()
         .ok_or(RegistrationRuntimeError::BusinessUnavailable)?;
     session
-        .lock()
-        .await
         .send_message(client, body, &cancellation, channel_id.map(str::to_owned))
         .await
-        .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
+        .map_err(|error| map_business_error(&error))
 }
 
 #[expect(
@@ -1656,8 +1662,6 @@ async fn send_business_notify(
         .cloned()
         .ok_or(RegistrationRuntimeError::BusinessUnavailable)?;
     session
-        .lock()
-        .await
         .send_notify(
             client,
             body,
@@ -1666,11 +1670,15 @@ async fn send_business_notify(
             subscription,
         )
         .await
-        .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
+        .map_err(|error| map_business_error(&error))
+}
+
+fn map_business_error(error: &SipRegistrationError) -> RegistrationRuntimeError {
+    RegistrationRuntimeError::BusinessFailed(error.to_string())
 }
 
 async fn register_with_retry(
-    session: &mut DeviceSipSession,
+    session: &DeviceSipSession,
     client: &SipRegistrationClient,
     configuration: &SipServiceConfiguration,
     semaphore: &Semaphore,
@@ -1734,6 +1742,10 @@ fn refresh_delay(expires: u32) -> Duration {
 
 fn duration_millis(seconds: u32) -> u64 {
     u64::from(seconds).saturating_mul(1_000)
+}
+
+const fn duration_millis_u64(seconds: u64) -> u64 {
+    seconds.saturating_mul(1_000)
 }
 
 fn now_millis() -> u64 {

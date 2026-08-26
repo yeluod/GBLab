@@ -20,6 +20,8 @@ GBLab 是面向开发联调与压测的 GB28181 多设备模拟器桌面应用�
 - `Media Adapter`：按需启动并管理 FFmpeg 媒体任务。
 - `Configuration`：加载并保存应用配置；不承担运行时状态持久化。
 
+运行时 SIP 核心使用共享 `SipRegistrationClient`、明确的入站 Method Dispatcher 和事务键匹配；出站交换区分原始事务响应与仅接受 2xx 的业务交换。事务键由 Call-ID、CSeq 序号、CSeq Method 和 Via branch 组成。设备会话的 CSeq、Digest nonce count 使用原子计数器，网络等待期间不持有设备状态锁。注册刷新和 Keepalive 由单一 Scheduler tick 驱动，设备生命周期根据截止时间消费节拍。
+
 ## 设备与订阅展示约束
 
 - 应用只配置一份 SIP 服务，全部模拟设备共享平台地址、传输协议、平台 ID、域、Digest 认证密码、本地监听地址、对外通信地址、本地 SIP 端口、注册有效期和心跳间隔；配置由 Rust 核心校验并写入应用数据目录下的 JSON 文件。对外通信地址为空时，运行时根据到平台的本地路由自动探测。

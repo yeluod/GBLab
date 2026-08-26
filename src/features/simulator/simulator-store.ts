@@ -94,6 +94,9 @@ function validateDeviceDraft(draft: DeviceUpdateDraft): OperationResult {
 }
 
 function validateSipServiceConfig(config: SipServiceConfig): OperationResult {
+  if (config.transport !== 'UDP') {
+    return { ok: false, message: '当前真实 SIP 传输仅支持 UDP。' };
+  }
   if (!config.uri.trim().startsWith('sip:')) {
     return { ok: false, message: 'SIP 地址必须以 sip: 开头。' };
   }

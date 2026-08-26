@@ -1,7 +1,8 @@
 /** 全部模拟设备共享的唯一 SIP 服务配置。 */
 export interface SipServiceConfig {
   uri: string;
-  transport: 'UDP' | 'TCP';
+  /** 当前版本实际实现的信令传输，仅支持 UDP。 */
+  transport: 'UDP';
   platformId: string;
   domain: string;
   password: string;

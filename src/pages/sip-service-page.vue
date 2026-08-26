@@ -1,26 +1,12 @@
 <script setup lang="ts">
   import { onMounted, reactive, watch } from 'vue';
-  import {
-    NButton,
-    NCard,
-    NForm,
-    NFormItem,
-    NInput,
-    NInputNumber,
-    NSelect,
-    useMessage,
-  } from 'naive-ui';
+  import { NButton, NCard, NForm, NFormItem, NInput, NInputNumber, useMessage } from 'naive-ui';
 
   import { useSimulatorStore, type SipServiceConfig } from '@/features/simulator';
 
   const store = useSimulatorStore();
   const message = useMessage();
   const formModel = reactive<SipServiceConfig>({ ...store.sipService });
-  const transportOptions = [
-    { label: 'UDP', value: 'UDP' },
-    { label: 'TCP', value: 'TCP' },
-  ];
-
   watch(
     () => store.sipService,
     (config) => Object.assign(formModel, config),
@@ -71,8 +57,8 @@
           <NFormItem label="SIP 地址" path="uri">
             <NInput v-model:value="formModel.uri" placeholder="sip:192.168.1.100:5060" />
           </NFormItem>
-          <NFormItem label="传输协议" path="transport">
-            <NSelect v-model:value="formModel.transport" :options="transportOptions" />
+          <NFormItem label="传输协议">
+            <NInput value="UDP（当前唯一支持）" readonly />
           </NFormItem>
           <NFormItem label="平台 ID" path="platformId">
             <NInput v-model:value="formModel.platformId" maxlength="20" />

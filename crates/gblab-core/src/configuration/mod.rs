@@ -124,6 +124,12 @@ impl SipServiceConfiguration {
         self.local_bind_address = self.local_bind_address.trim().to_owned();
         self.advertised_address = self.advertised_address.trim().to_owned();
 
+        if self.transport != SipTransport::Udp {
+            return Err(ConfigurationError::invalid_field(
+                "transport",
+                "当前真实 SIP 传输仅支持 UDP",
+            ));
+        }
         validate_sip_uri(&self.uri)?;
         validate_twenty_digit_id("platformId", &self.platform_id)?;
         validate_domain(&self.domain)?;
@@ -411,7 +417,7 @@ mod tests {
     fn valid_sip_service() -> SipServiceConfiguration {
         SipServiceConfiguration {
             uri: "sip:10.0.0.8:5060".to_owned(),
-            transport: SipTransport::Tcp,
+            transport: SipTransport::Udp,
             platform_id: "34020000002000000001".to_owned(),
             domain: "3402000000".to_owned(),
             password: "test-only-password".to_owned(),
@@ -469,6 +475,27 @@ mod tests {
             })
         ));
         assert_eq!(fs::read_to_string(&configuration_path)?, original_contents);
+        Ok(())
+    }
+
+    #[test]
+    fn save_sip_service_should_reject_tcp_until_transport_is_implemented()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+        let mut configuration = valid_sip_service();
+        configuration.transport = SipTransport::Tcp;
+
+        let error = store.save_sip_service(configuration).err();
+
+        assert!(matches!(
+            error,
+            Some(ConfigurationError::InvalidField {
+                field: "transport",
+                ..
+            })
+        ));
         Ok(())
     }
 

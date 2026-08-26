@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     fmt::Write,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -96,6 +99,18 @@ struct PendingResponse {
     sender: oneshot::Sender<SipResponse>,
 }
 
+/// 出站 SIP 客户端事务的稳定匹配键。
+///
+/// Call-ID 标识对话，Via branch 标识事务，CSeq 序号和方法用于防止同一对话
+/// 中并发请求或异常重试被错误关联。
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SipTransactionKey {
+    call_id: String,
+    cseq: u32,
+    method: Method,
+    branch: String,
+}
+
 pub struct SipRegistrationClient {
     socket: Arc<UdpSocket>,
     advertised_ip: IpAddr,
@@ -104,7 +119,7 @@ pub struct SipRegistrationClient {
     domain: String,
     platform_id: String,
     subscription_tags: Mutex<HashMap<String, String>>,
-    pending: Mutex<HashMap<String, PendingResponse>>,
+    pending: Mutex<HashMap<SipTransactionKey, PendingResponse>>,
     event_tx: mpsc::Sender<SipTransportEvent>,
 }
 
@@ -236,7 +251,7 @@ impl SipRegistrationClient {
                         message: text.clone(),
                         channel_id,
                         is_request: true,
-                        method,
+                        method: method.clone(),
                         command_type,
                         event,
                         local_tag: local_tag.clone(),
@@ -246,14 +261,20 @@ impl SipRegistrationClient {
                         expires,
                     })
                     .await;
-                let response = build_stateless_ok_response(
-                    &text,
-                    local_tag.as_deref(),
-                    &device_id,
-                    self.advertised_ip,
-                    self.local_port,
-                );
-                if !response.is_empty() {
+                let disposition =
+                    dispatch_inbound_request(&text, method.as_deref(), &catalog_devices);
+                let response = disposition.response().map(|(status, reason)| {
+                    build_request_response(
+                        &text,
+                        status,
+                        reason,
+                        local_tag.as_deref(),
+                        &device_id,
+                        self.advertised_ip,
+                        self.local_port,
+                    )
+                });
+                if let Some(response) = response {
                     let response_call_id = extract_header(&response, "Call-ID");
                     let _ = self.socket.send(response.as_bytes()).await;
                     let _ = self
@@ -282,7 +303,7 @@ impl SipRegistrationClient {
                         self.subscription_tags.lock().await.remove(call_id);
                     }
                 }
-                if let Some(body) = dispatch_platform_request(&text, &catalog_devices) {
+                if let InboundRequestDisposition::RespondAndQuery { body } = disposition {
                     let response_message = self.build_query_response(&text, &body);
                     let response_call_id = extract_header(&response_message, "Call-ID");
                     let _ = self.socket.send(response_message.as_bytes()).await;
@@ -316,18 +337,24 @@ impl SipRegistrationClient {
             else {
                 continue;
             };
-            let is_final = response.status_line.status_code.0 >= 200;
+            let transaction_key = transaction_key_from_response(&response);
+            let is_final = response_class(response.status_line.status_code.0).is_final();
             let pending_context = {
                 let mut pending = self.pending.lock().await;
-                let context = pending.get(&call_id).map(|entry| {
-                    (
-                        entry.device_id.clone(),
-                        entry.channel_id.clone(),
-                        entry.method.clone(),
-                        entry.command_type.clone(),
-                    )
-                });
-                let sender = is_final.then(|| pending.remove(&call_id)).flatten();
+                let context = transaction_key
+                    .as_ref()
+                    .and_then(|key| pending.get(key))
+                    .map(|entry| {
+                        (
+                            entry.device_id.clone(),
+                            entry.channel_id.clone(),
+                            entry.method.clone(),
+                            entry.command_type.clone(),
+                        )
+                    });
+                let sender = is_final
+                    .then(|| transaction_key.as_ref().and_then(|key| pending.remove(key)))
+                    .flatten();
                 drop(pending);
                 (context, sender)
             };
@@ -388,16 +415,7 @@ impl SipRegistrationClient {
         }
     }
 
-    async fn exchange(
-        &self,
-        device_id: &str,
-        request: SipRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<SipResponse, SipRegistrationError> {
-        self.exchange_with_channel(device_id, request, cancellation, None)
-            .await
-    }
-
+    /// 执行带通道上下文的业务交换，并只接受 SIP 2xx。
     async fn exchange_with_channel(
         &self,
         device_id: &str,
@@ -405,6 +423,22 @@ impl SipRegistrationClient {
         cancellation: &CancellationToken,
         channel_id: Option<String>,
     ) -> Result<SipResponse, SipRegistrationError> {
+        let response = self
+            .exchange_raw(device_id, request, cancellation, channel_id)
+            .await?;
+        accept_sip_success(response)
+    }
+
+    async fn exchange_raw(
+        &self,
+        device_id: &str,
+        request: SipRequest,
+        cancellation: &CancellationToken,
+        channel_id: Option<String>,
+    ) -> Result<SipResponse, SipRegistrationError> {
+        let transaction_key = transaction_key_from_request(&request)
+            .ok_or_else(|| SipRegistrationError::Build("SIP 请求缺少事务头部".to_owned()))?;
+        let request_method_name = request.request_line.method.to_string();
         let call_id = request
             .headers
             .get(&HeaderName::CallId)
@@ -418,11 +452,11 @@ impl SipRegistrationClient {
         {
             let mut pending = self.pending.lock().await;
             pending.insert(
-                call_id.clone(),
+                transaction_key.clone(),
                 PendingResponse {
                     device_id: device_id.to_owned(),
                     channel_id: channel_id.clone(),
-                    method: request_method(&payload),
+                    method: Some(request_method_name),
                     command_type: extract_xml_value(&String::from_utf8_lossy(&payload), "CmdType"),
                     sender,
                 },
@@ -444,7 +478,7 @@ impl SipRegistrationClient {
                     direction: SipLogDirection::Send,
                     message: String::from_utf8_lossy(&payload).into_owned(),
                     channel_id: channel_id.clone(),
-                    is_request: false,
+                    is_request: true,
                     method: request_method(&payload),
                     command_type: extract_xml_value(&String::from_utf8_lossy(&payload), "CmdType"),
                     event: None,
@@ -476,7 +510,7 @@ impl SipRegistrationClient {
             }
         };
 
-        self.pending.lock().await.remove(&call_id);
+        self.pending.lock().await.remove(&transaction_key);
         result
     }
 
@@ -512,8 +546,8 @@ pub struct DeviceSipSession {
     contact: SipUri,
     call_id: CallId,
     from_tag: Tag,
-    cseq: u32,
-    nonce_count: u32,
+    cseq: AtomicU32,
+    nonce_count: AtomicU32,
 }
 
 impl DeviceSipSession {
@@ -547,13 +581,13 @@ impl DeviceSipSession {
             contact,
             call_id: CallId::with_host(&client.endpoint_host().to_string()),
             from_tag: Tag::new(),
-            cseq: 0,
-            nonce_count: 0,
+            cseq: AtomicU32::new(0),
+            nonce_count: AtomicU32::new(0),
         })
     }
 
     pub(crate) async fn register(
-        &mut self,
+        &self,
         client: &SipRegistrationClient,
         configuration: &SipServiceConfiguration,
         cancellation: &CancellationToken,
@@ -568,7 +602,7 @@ impl DeviceSipSession {
     }
 
     pub(crate) async fn unregister(
-        &mut self,
+        &self,
         client: &SipRegistrationClient,
         configuration: &SipServiceConfiguration,
         cancellation: &CancellationToken,
@@ -579,17 +613,17 @@ impl DeviceSipSession {
     }
 
     pub(crate) async fn send_message(
-        &mut self,
+        &self,
         client: &SipRegistrationClient,
         body: String,
         cancellation: &CancellationToken,
         channel_id: Option<String>,
     ) -> Result<(), SipRegistrationError> {
-        self.cseq = self.cseq.saturating_add(1);
+        let cseq = self.next_cseq();
         client
             .exchange_with_channel(
                 &self.device_id,
-                self.build_message_request(Method::Message, body),
+                self.build_message_request(Method::Message, cseq, body),
                 cancellation,
                 channel_id,
             )
@@ -598,14 +632,13 @@ impl DeviceSipSession {
     }
 
     pub(crate) async fn send_notify(
-        &mut self,
+        &self,
         client: &SipRegistrationClient,
         body: String,
         cancellation: &CancellationToken,
         channel_id: Option<String>,
         subscription: &crate::runtime::SubscriptionSnapshot,
     ) -> Result<(), SipRegistrationError> {
-        self.cseq = self.cseq.saturating_add(1);
         client
             .exchange_with_channel(
                 &self.device_id,
@@ -618,7 +651,7 @@ impl DeviceSipSession {
     }
 
     async fn perform_register(
-        &mut self,
+        &self,
         client: &SipRegistrationClient,
         configuration: &SipServiceConfiguration,
         mut expires: u32,
@@ -626,10 +659,12 @@ impl DeviceSipSession {
     ) -> Result<u32, SipRegistrationError> {
         let mut authorization: Option<(HeaderName, AuthHeader)> = None;
         for _ in 0..3 {
-            self.cseq = self.cseq.saturating_add(1);
-            let request = self.build_request(expires, authorization.as_ref());
+            let cseq = self.next_cseq();
+            let request = self.build_request(cseq, expires, authorization.as_ref());
             let response = client
-                .exchange(&self.device_id, request, cancellation)
+                // REGISTER 的 401/407/423 是认证与有效期协商的一部分，不能经过
+                // 仅接受 2xx 的业务交换，否则 Digest 重试永远不会执行。
+                .exchange_raw(&self.device_id, request, cancellation, None)
                 .await?;
             let status = response.status_line.status_code.0;
             match status {
@@ -650,14 +685,14 @@ impl DeviceSipSession {
                         .cloned()
                         .ok_or(SipRegistrationError::MissingChallenge)?;
                     normalize_qop(&mut challenge);
-                    self.nonce_count = self.nonce_count.saturating_add(1);
+                    let nonce_count = self.nonce_count.fetch_add(1, Ordering::Relaxed) + 1;
                     let auth = build_auth_header(
                         &challenge,
                         &self.device_id,
                         &configuration.password,
                         &self.registrar.to_string(),
                         "REGISTER",
-                        self.nonce_count,
+                        nonce_count,
                         &DigestAuthHandler,
                     )
                     .map_err(|error| SipRegistrationError::Authentication(error.to_string()))?;
@@ -683,6 +718,7 @@ impl DeviceSipSession {
 
     fn build_request(
         &self,
+        cseq: u32,
         expires: u32,
         authorization: Option<&(HeaderName, AuthHeader)>,
     ) -> SipRequest {
@@ -711,7 +747,7 @@ impl DeviceSipSession {
         );
         headers.insert(
             HeaderName::CSeq,
-            HeaderValue::CSeq(CSeqHeader::new(self.cseq, Method::Register)),
+            HeaderValue::CSeq(CSeqHeader::new(cseq, Method::Register)),
         );
         headers.insert(
             HeaderName::Contact,
@@ -737,7 +773,7 @@ impl DeviceSipSession {
         }
     }
 
-    fn build_message_request(&self, method: Method, body: String) -> SipRequest {
+    fn build_message_request(&self, method: Method, cseq: u32, body: String) -> SipRequest {
         let mut headers = HeaderCollection::new();
         headers.insert(
             HeaderName::Via,
@@ -763,7 +799,7 @@ impl DeviceSipSession {
         );
         headers.insert(
             HeaderName::CSeq,
-            HeaderValue::CSeq(CSeqHeader::new(self.cseq, method.clone())),
+            HeaderValue::CSeq(CSeqHeader::new(cseq, method.clone())),
         );
         headers.insert(HeaderName::MaxForwards, HeaderValue::MaxForwards(70));
         headers.insert(
@@ -799,7 +835,8 @@ impl DeviceSipSession {
         body: String,
         subscription: &crate::runtime::SubscriptionSnapshot,
     ) -> SipRequest {
-        let mut request = self.build_message_request(Method::Notify, body);
+        let mut request =
+            self.build_message_request(Method::Notify, subscription.notify_cseq, body);
         if let Some(call_id) = subscription.call_id.as_ref() {
             request.headers.insert(
                 HeaderName::CallId,
@@ -832,6 +869,10 @@ impl DeviceSipSession {
         }
         request
     }
+
+    fn next_cseq(&self) -> u32 {
+        self.cseq.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+    }
 }
 
 fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
@@ -840,6 +881,95 @@ fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
     let start = message.find(&open)? + open.len();
     let end = message[start..].find(&close)? + start;
     Some(message[start..end].trim().to_owned())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SipResponseClass {
+    Provisional,
+    Success,
+    Redirection,
+    ClientFailure,
+    ServerFailure,
+    GlobalFailure,
+}
+
+impl SipResponseClass {
+    const fn is_final(self) -> bool {
+        !matches!(self, Self::Provisional)
+    }
+}
+
+const fn response_class(status_code: u16) -> SipResponseClass {
+    match status_code {
+        100..=199 => SipResponseClass::Provisional,
+        200..=299 => SipResponseClass::Success,
+        300..=399 => SipResponseClass::Redirection,
+        400..=499 => SipResponseClass::ClientFailure,
+        500..=599 => SipResponseClass::ServerFailure,
+        _ => SipResponseClass::GlobalFailure,
+    }
+}
+
+fn accept_sip_success(response: SipResponse) -> Result<SipResponse, SipRegistrationError> {
+    match response_class(response.status_line.status_code.0) {
+        SipResponseClass::Success => Ok(response),
+        _ => Err(SipRegistrationError::Rejected {
+            code: response.status_line.status_code.0,
+            reason: response.status_line.reason_phrase,
+        }),
+    }
+}
+
+fn transaction_key_from_request(request: &SipRequest) -> Option<SipTransactionKey> {
+    let call_id = request
+        .headers
+        .get(&HeaderName::CallId)
+        .and_then(HeaderValue::as_call_id)?
+        .0
+        .clone();
+    let cseq = request
+        .headers
+        .get(&HeaderName::CSeq)
+        .and_then(HeaderValue::as_cseq)?;
+    let branch = request
+        .headers
+        .get(&HeaderName::Via)
+        .and_then(HeaderValue::as_via)?
+        .branch
+        .0
+        .clone();
+    Some(SipTransactionKey {
+        call_id,
+        cseq: cseq.sequence.0,
+        method: cseq.method.clone(),
+        branch,
+    })
+}
+
+fn transaction_key_from_response(response: &SipResponse) -> Option<SipTransactionKey> {
+    let call_id = response
+        .headers
+        .get(&HeaderName::CallId)
+        .and_then(HeaderValue::as_call_id)?
+        .0
+        .clone();
+    let cseq = response
+        .headers
+        .get(&HeaderName::CSeq)
+        .and_then(HeaderValue::as_cseq)?;
+    let branch = response
+        .headers
+        .get(&HeaderName::Via)
+        .and_then(HeaderValue::as_via)?
+        .branch
+        .0
+        .clone();
+    Some(SipTransactionKey {
+        call_id,
+        cseq: cseq.sequence.0,
+        method: cseq.method.clone(),
+        branch,
+    })
 }
 
 fn extract_header(message: &str, name: &str) -> Option<String> {
@@ -909,14 +1039,73 @@ fn resolve_device_and_channel(
     (requested_id.to_owned(), None)
 }
 
-fn build_stateless_ok_response(
+enum InboundRequestDisposition {
+    NoResponse,
+    Respond { status: u16, reason: &'static str },
+    RespondAndQuery { body: String },
+}
+
+impl InboundRequestDisposition {
+    const fn response(&self) -> Option<(u16, &'static str)> {
+        match self {
+            Self::NoResponse => None,
+            Self::Respond { status, reason } => Some((*status, reason)),
+            Self::RespondAndQuery { .. } => Some((200, "OK")),
+        }
+    }
+}
+
+fn dispatch_inbound_request(
     request: &str,
+    method: Option<&str>,
+    devices: &HashMap<String, SimulatedDevice>,
+) -> InboundRequestDisposition {
+    match method.unwrap_or_default().to_ascii_uppercase().as_str() {
+        "MESSAGE" => dispatch_platform_request(request, devices).map_or(
+            InboundRequestDisposition::Respond {
+                status: 489,
+                reason: "Bad Event",
+            },
+            |body| InboundRequestDisposition::RespondAndQuery { body },
+        ),
+        "SUBSCRIBE" | "OPTIONS" => InboundRequestDisposition::Respond {
+            status: 200,
+            reason: "OK",
+        },
+        "ACK" => InboundRequestDisposition::NoResponse,
+        "BYE" | "CANCEL" => InboundRequestDisposition::Respond {
+            status: 481,
+            reason: "Call/Transaction Does Not Exist",
+        },
+        "INVITE" => InboundRequestDisposition::Respond {
+            status: 488,
+            reason: "Not Acceptable Here",
+        },
+        "NOTIFY" => InboundRequestDisposition::Respond {
+            status: 489,
+            reason: "Bad Event",
+        },
+        _ => InboundRequestDisposition::Respond {
+            status: 405,
+            reason: "Method Not Allowed",
+        },
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "无状态 SIP 响应需要复用请求头和本地传输上下文"
+)]
+fn build_request_response(
+    request: &str,
+    status: u16,
+    reason: &str,
     local_tag: Option<&str>,
     device_id: &str,
     advertised_ip: IpAddr,
     local_port: u16,
 ) -> String {
-    let mut response = String::from("SIP/2.0 200 OK\r\n");
+    let mut response = format!("SIP/2.0 {status} {reason}\r\n");
     let method = request
         .lines()
         .next()
@@ -929,6 +1118,7 @@ fn build_stateless_ok_response(
             .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
         {
             let line = if name == "To"
+                && status / 100 == 2
                 && local_tag.is_some()
                 && !line.to_ascii_lowercase().contains(";tag=")
             {
@@ -948,6 +1138,9 @@ fn build_stateless_ok_response(
             response,
             "Contact: <sip:{device_id}@{advertised_ip}:{local_port}>\r\n"
         );
+    }
+    if status == 405 {
+        response.push_str("Allow: MESSAGE, SUBSCRIBE, OPTIONS, INVITE, ACK, BYE, CANCEL\r\n");
     }
     response.push_str("Content-Length: 0\r\n\r\n");
     response
@@ -1096,4 +1289,111 @@ fn now_millis() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use siprs::{
+        siprs_core::{SipVersion, StatusCode},
+        siprs_message::{HeaderCollection, MessageParser, SipMessage, SipResponse, StatusLine},
+    };
+
+    use super::{
+        InboundRequestDisposition, SipResponseClass, accept_sip_success, dispatch_inbound_request,
+        response_class, transaction_key_from_request,
+    };
+
+    #[test]
+    fn response_class_should_distinguish_provisional_success_and_failures() {
+        assert_eq!(response_class(180), SipResponseClass::Provisional);
+        assert_eq!(response_class(200), SipResponseClass::Success);
+        assert_eq!(response_class(302), SipResponseClass::Redirection);
+        assert_eq!(response_class(401), SipResponseClass::ClientFailure);
+        assert_eq!(response_class(503), SipResponseClass::ServerFailure);
+        assert_eq!(response_class(699), SipResponseClass::GlobalFailure);
+    }
+
+    #[test]
+    fn business_exchange_should_accept_only_2xx_responses() {
+        let response = |code: StatusCode, reason: &str| SipResponse {
+            status_line: StatusLine {
+                version: SipVersion,
+                status_code: code,
+                reason_phrase: reason.to_owned(),
+            },
+            headers: HeaderCollection::new(),
+            body: None,
+        };
+
+        assert!(accept_sip_success(response(StatusCode::OK, "OK")).is_ok());
+        assert!(accept_sip_success(response(StatusCode::UNAUTHORIZED, "Unauthorized")).is_err());
+        assert!(accept_sip_success(response(StatusCode(500), "Error")).is_err());
+    }
+
+    #[test]
+    fn dispatcher_should_route_supported_and_unsupported_methods_explicitly() {
+        let devices = HashMap::new();
+        let options =
+            dispatch_inbound_request("OPTIONS sip:p SIP/2.0\r\n", Some("OPTIONS"), &devices);
+        assert!(matches!(
+            options,
+            InboundRequestDisposition::Respond { status: 200, .. }
+        ));
+
+        let ack = dispatch_inbound_request("ACK sip:p SIP/2.0\r\n", Some("ACK"), &devices);
+        assert!(matches!(ack, InboundRequestDisposition::NoResponse));
+
+        let invite = dispatch_inbound_request("INVITE sip:p SIP/2.0\r\n", Some("INVITE"), &devices);
+        assert!(matches!(
+            invite,
+            InboundRequestDisposition::Respond { status: 488, .. }
+        ));
+
+        let bye = dispatch_inbound_request("BYE sip:p SIP/2.0\r\n", Some("BYE"), &devices);
+        assert!(matches!(
+            bye,
+            InboundRequestDisposition::Respond { status: 481, .. }
+        ));
+
+        let unknown =
+            dispatch_inbound_request("PUBLISH sip:p SIP/2.0\r\n", Some("PUBLISH"), &devices);
+        assert!(matches!(
+            unknown,
+            InboundRequestDisposition::Respond { status: 405, .. }
+        ));
+    }
+
+    #[test]
+    fn dispatcher_should_reject_unknown_message_command_without_pseudo_success() {
+        let devices = HashMap::new();
+        let request =
+            "MESSAGE sip:p SIP/2.0\r\n\r\n<Notify><CmdType>Unsupported</CmdType></Notify>";
+        let result = dispatch_inbound_request(request, Some("MESSAGE"), &devices);
+        assert!(matches!(
+            result,
+            InboundRequestDisposition::Respond { status: 489, .. }
+        ));
+    }
+
+    #[test]
+    fn transaction_key_should_include_call_id_cseq_method_and_branch() {
+        let raw = b"MESSAGE sip:p SIP/2.0\r\n\
+                    Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-test\r\n\
+                    Call-ID: call-1\r\n\
+                    CSeq: 42 MESSAGE\r\n\
+                    Content-Length: 0\r\n\r\n";
+        let parser = MessageParser::new(65_536);
+        let Some(SipMessage::Request(request)) = parser.parse(raw).ok() else {
+            return;
+        };
+        let Some(key) = transaction_key_from_request(&request) else {
+            return;
+        };
+        assert_eq!(key.call_id, "call-1");
+        assert_eq!(key.cseq, 42);
+        assert_eq!(key.method.to_string(), "MESSAGE");
+        assert_eq!(key.branch, "z9hG4bK-test");
+    }
 }
