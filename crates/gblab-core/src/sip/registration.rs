@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Write,
     net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -22,7 +23,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::configuration::{SipServiceConfiguration, SipTransport};
+use crate::{
+    SimulatedDevice,
+    configuration::{SipServiceConfiguration, SipTransport},
+    domain::derive_channels_for_device,
+};
 
 const SIP_MESSAGE_LIMIT: usize = 65_536;
 const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(8);
@@ -41,6 +46,7 @@ pub struct SipTransportEvent {
     pub(crate) device_id: String,
     pub(crate) direction: SipLogDirection,
     pub(crate) message: String,
+    pub(crate) channel_id: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -142,7 +148,11 @@ impl SipRegistrationClient {
         }))
     }
 
-    pub(crate) async fn receive_loop(self: Arc<Self>, cancellation: CancellationToken) {
+    pub(crate) async fn receive_loop(
+        self: Arc<Self>,
+        cancellation: CancellationToken,
+        catalog_devices: Arc<HashMap<String, SimulatedDevice>>,
+    ) {
         let parser = MessageParser::new(SIP_MESSAGE_LIMIT);
         let mut buffer = vec![0_u8; SIP_MESSAGE_LIMIT];
         loop {
@@ -154,7 +164,76 @@ impl SipRegistrationClient {
                 break;
             };
             let raw = &buffer[..size];
-            let Ok(SipMessage::Response(response)) = parser.parse(raw) else {
+            let Ok(message) = parser.parse(raw) else {
+                continue;
+            };
+            let SipMessage::Response(response) = message else {
+                let text = String::from_utf8_lossy(raw).into_owned();
+                let device_id = extract_xml_value(&text, "DeviceID").unwrap_or_default();
+                let _ = self
+                    .event_tx
+                    .send(SipTransportEvent {
+                        timestamp_millis: now_millis(),
+                        device_id,
+                        direction: SipLogDirection::Receive,
+                        message: text.clone(),
+                        channel_id: extract_xml_value(&text, "DeviceID"),
+                    })
+                    .await;
+                let response = build_stateless_ok_response(&text);
+                if !response.is_empty() {
+                    let _ = self.socket.send(response.as_bytes()).await;
+                    let _ = self
+                        .event_tx
+                        .send(SipTransportEvent {
+                            timestamp_millis: now_millis(),
+                            device_id: extract_xml_value(&text, "DeviceID").unwrap_or_default(),
+                            direction: SipLogDirection::Send,
+                            message: response,
+                            channel_id: None,
+                        })
+                        .await;
+                }
+                if text.contains("<CmdType>Catalog</CmdType>") {
+                    let requested_id = extract_xml_value(&text, "DeviceID").unwrap_or_default();
+                    let catalog = build_catalog_body(&requested_id, &catalog_devices);
+                    let catalog_message = build_catalog_message(&text, &catalog);
+                    let _ = self.socket.send(catalog_message.as_bytes()).await;
+                    let _ = self
+                        .event_tx
+                        .send(SipTransportEvent {
+                            timestamp_millis: now_millis(),
+                            device_id: extract_xml_value(&text, "DeviceID").unwrap_or_default(),
+                            direction: SipLogDirection::Send,
+                            message: catalog_message,
+                            channel_id: None,
+                        })
+                        .await;
+                }
+                if let Some(cmd_type) = extract_xml_value(&text, "CmdType") {
+                    let requested_id = extract_xml_value(&text, "DeviceID").unwrap_or_default();
+                    let body = match cmd_type.as_str() {
+                        "DeviceInfo" => build_device_info_body(&requested_id, &catalog_devices),
+                        "DeviceStatus" => build_device_status_body(&requested_id),
+                        "DeviceControl" => build_device_control_body(&requested_id),
+                        "RecordInfo" => build_record_info_body(&requested_id),
+                        _ => String::new(),
+                    };
+                    if !body.is_empty() {
+                        let response_message = build_catalog_message(&text, &body);
+                        let _ = self.socket.send(response_message.as_bytes()).await;
+                        let _ = self
+                            .event_tx
+                            .send(SipTransportEvent {
+                                timestamp_millis: now_millis(),
+                                device_id: requested_id,
+                                direction: SipLogDirection::Send,
+                                message: response_message,
+                                channel_id: None,
+                            })
+                            .await;
+                    }
+                }
                 continue;
             };
             let Some(call_id) = response
@@ -181,6 +260,7 @@ impl SipRegistrationClient {
                         device_id,
                         direction: SipLogDirection::Receive,
                         message: String::from_utf8_lossy(raw).into_owned(),
+                        channel_id: None,
                     })
                     .await;
             }
@@ -195,6 +275,17 @@ impl SipRegistrationClient {
         device_id: &str,
         request: SipRequest,
         cancellation: &CancellationToken,
+    ) -> Result<SipResponse, SipRegistrationError> {
+        self.exchange_with_channel(device_id, request, cancellation, None)
+            .await
+    }
+
+    async fn exchange_with_channel(
+        &self,
+        device_id: &str,
+        request: SipRequest,
+        cancellation: &CancellationToken,
+        channel_id: Option<String>,
     ) -> Result<SipResponse, SipRegistrationError> {
         let call_id = request
             .headers
@@ -231,6 +322,7 @@ impl SipRegistrationClient {
                     device_id: device_id.to_owned(),
                     direction: SipLogDirection::Send,
                     message: String::from_utf8_lossy(&payload).into_owned(),
+                    channel_id: channel_id.clone(),
                 })
                 .await
                 .map_err(|_| SipRegistrationError::EventChannelClosed)?;
@@ -335,6 +427,25 @@ impl DeviceSipSession {
         cancellation: &CancellationToken,
     ) -> Result<(), SipRegistrationError> {
         self.perform_register(client, configuration, 0, cancellation)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn send_message(
+        &mut self,
+        client: &SipRegistrationClient,
+        body: String,
+        cancellation: &CancellationToken,
+        channel_id: Option<String>,
+    ) -> Result<(), SipRegistrationError> {
+        self.cseq = self.cseq.saturating_add(1);
+        client
+            .exchange_with_channel(
+                &self.device_id,
+                self.build_message_request(body),
+                cancellation,
+                channel_id,
+            )
             .await
             .map(|_| ())
     }
@@ -458,6 +569,142 @@ impl DeviceSipSession {
             body: None,
         }
     }
+
+    fn build_message_request(&self, body: String) -> SipRequest {
+        let mut headers = HeaderCollection::new();
+        headers.insert(
+            HeaderName::Via,
+            HeaderValue::Via(ViaHeader::new(
+                TransportProtocol::Udp,
+                self.contact.host.clone(),
+                self.contact.port,
+            )),
+        );
+        headers.insert(
+            HeaderName::From,
+            HeaderValue::FromTo(
+                FromToHeader::new(self.aor.clone()).with_tag(self.from_tag.clone()),
+            ),
+        );
+        headers.insert(
+            HeaderName::To,
+            HeaderValue::FromTo(FromToHeader::new(self.registrar.clone())),
+        );
+        headers.insert(
+            HeaderName::CallId,
+            HeaderValue::CallId(self.call_id.clone()),
+        );
+        headers.insert(
+            HeaderName::CSeq,
+            HeaderValue::CSeq(CSeqHeader::new(self.cseq, Method::Message)),
+        );
+        headers.insert(HeaderName::MaxForwards, HeaderValue::MaxForwards(70));
+        headers.insert(
+            HeaderName::ContentType,
+            HeaderValue::ContentType("Application/MANSCDP+xml".to_owned()),
+        );
+        SipRequest {
+            request_line: RequestLine {
+                method: Method::Message,
+                request_uri: self.registrar.clone(),
+                version: SipVersion,
+            },
+            headers,
+            body: Some(siprs::siprs_message::Body::new(
+                "Application/MANSCDP+xml",
+                body.into_bytes(),
+            )),
+        }
+    }
+}
+
+fn extract_xml_value(message: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = message.find(&open)? + open.len();
+    let end = message[start..].find(&close)? + start;
+    Some(message[start..end].trim().to_owned())
+}
+
+fn build_stateless_ok_response(request: &str) -> String {
+    let mut response = String::from("SIP/2.0 200 OK\r\n");
+    for name in ["Via", "From", "To", "Call-ID", "CSeq"] {
+        let prefix = format!("{}:", name.to_ascii_lowercase());
+        if let Some(line) = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
+        {
+            response.push_str(line.trim_end());
+            response.push_str("\r\n");
+        }
+    }
+    response.push_str("Content-Length: 0\r\n\r\n");
+    response
+}
+
+fn build_catalog_message(request: &str, body: &str) -> String {
+    let device_id =
+        extract_xml_value(request, "DeviceID").unwrap_or_else(|| "00000000000000000000".to_owned());
+    let call_id = format!("gblab-catalog-{}", now_millis());
+    format!(
+        "MESSAGE sip:{device_id} SIP/2.0\r\nFrom: <sip:{device_id}>\r\nTo: <sip:{device_id}>\r\nCall-ID: {call_id}\r\nCSeq: 1 MESSAGE\r\nContent-Type: Application/MANSCDP+xml\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn build_catalog_body(device_id: &str, devices: &HashMap<String, SimulatedDevice>) -> String {
+    let Some(device) = devices.get(device_id) else {
+        return format!(
+            "<Response><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><DeviceList Num=\"0\"></DeviceList></Response>"
+        );
+    };
+    let channels = derive_channels_for_device(device).unwrap_or_default();
+    let mut items = format!(
+        "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
+        device.id, device.name, device.manufacturer, device.model, device.id
+    );
+    for channel in &channels {
+        let _ = write!(
+            items,
+            "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
+            channel.id, channel.name, device.manufacturer, device.model, device.id
+        );
+    }
+    format!(
+        "<Response><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><SumNum>{}</SumNum><DeviceList Num=\"{}\">{items}</DeviceList></Response>",
+        channels.len() + 1,
+        channels.len() + 1
+    )
+}
+
+fn build_device_info_body(device_id: &str, devices: &HashMap<String, SimulatedDevice>) -> String {
+    let Some(device) = devices.get(device_id) else {
+        return format!(
+            "<Response><CmdType>DeviceInfo</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Result>ERROR</Result></Response>"
+        );
+    };
+    format!(
+        "<Response><CmdType>DeviceInfo</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><DeviceName>{}</DeviceName><Manufacturer>{}</Manufacturer><Model>{}</Model><Firmware>{}</Firmware><Result>OK</Result></Response>",
+        device.name, device.manufacturer, device.model, device.firmware_version
+    )
+}
+
+fn build_device_status_body(device_id: &str) -> String {
+    format!(
+        "<Response><CmdType>DeviceStatus</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Online>ON</Online><Status>OK</Status><Result>OK</Result></Response>"
+    )
+}
+
+fn build_device_control_body(device_id: &str) -> String {
+    format!(
+        "<Response><CmdType>DeviceControl</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Result>OK</Result></Response>"
+    )
+}
+
+fn build_record_info_body(device_id: &str) -> String {
+    format!(
+        "<Response><CmdType>RecordInfo</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><RecordList Num=\"0\"></RecordList></Response>"
+    )
 }
 
 fn effective_expires(response: &SipResponse, fallback: u32) -> u32 {

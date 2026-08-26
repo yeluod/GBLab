@@ -21,6 +21,8 @@ import {
   listenRegistrationSnapshot,
   registerAllDevicesCommand,
   stopAllDeviceRegistrationCommand,
+  triggerAlarmCommand,
+  triggerMobilePositionCommand,
 } from './registration-api';
 
 import type {
@@ -163,6 +165,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const isRegistrationActive = computed(() => registrationOperationStatus.value !== 'idle');
 
   let registrationListenersPromise: Promise<void> | null = null;
+  let hasHydratedInteractionLogSnapshot = false;
+  let interactionLogsCleared = false;
 
   function mapInteractionLog(
     log: Omit<InteractionLog, 'id'> & { sequence: number },
@@ -183,8 +187,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
     devices.value.forEach((device) => {
       device.registrationStatus = registrationStatusByDevice.value.get(device.id) ?? 'unregistered';
     });
-    if (snapshot.interactionLogs.length > 0) {
+    if (!hasHydratedInteractionLogSnapshot && !interactionLogsCleared) {
       interactionLogs.value = snapshot.interactionLogs.map(mapInteractionLog);
+      hasHydratedInteractionLogSnapshot = true;
     }
   }
 
@@ -229,6 +234,11 @@ export const useSimulatorStore = defineStore('simulator', () => {
     if (interactionLogs.value.length > MAX_INTERACTION_LOG_COUNT) {
       interactionLogs.value.splice(0, interactionLogs.value.length - MAX_INTERACTION_LOG_COUNT);
     }
+  }
+
+  function clearInteractionLogs(): void {
+    interactionLogsCleared = true;
+    interactionLogs.value = [];
   }
 
   function updateSipService(config: SipServiceConfig): OperationResult {
@@ -499,6 +509,46 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
   }
 
+  async function triggerAlarm(
+    deviceId: string,
+    channelId: string,
+    alarmType = '1',
+    description = '模拟报警',
+  ): Promise<OperationResult> {
+    if (
+      !isRegistrationActive.value ||
+      devices.value.find((device) => device.id === deviceId)?.registrationStatus !== 'registered'
+    ) {
+      return { ok: false, message: '设备尚未注册，无法触发报警。' };
+    }
+    try {
+      await triggerAlarmCommand(deviceId, channelId, alarmType, description);
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    }
+  }
+
+  async function triggerMobilePosition(
+    deviceId: string,
+    channelId: string,
+    longitude = 116.397,
+    latitude = 39.908,
+  ): Promise<OperationResult> {
+    if (
+      !isRegistrationActive.value ||
+      devices.value.find((device) => device.id === deviceId)?.registrationStatus !== 'registered'
+    ) {
+      return { ok: false, message: '设备尚未注册，无法上报移动位置。' };
+    }
+    try {
+      await triggerMobilePositionCommand(deviceId, channelId, longitude, latitude);
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, message: getConfigurationErrorMessage(error) };
+    }
+  }
+
   return {
     sipService,
     isSipServiceLoading,
@@ -513,6 +563,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     subscriptions,
     channels,
     interactionLogs,
+    clearInteractionLogs,
     hasCompletedBatchAdd,
     registeredDeviceCount,
     activeSubscriptionCount,
@@ -527,5 +578,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     deleteDevice,
     registerAllDevices,
     stopAllDeviceRegistration,
+    triggerAlarm,
+    triggerMobilePosition,
   };
 });

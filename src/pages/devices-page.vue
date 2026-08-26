@@ -39,7 +39,14 @@
   const isDetailOpen = ref(false);
   const isDeviceModalOpen = ref(false);
   const isBatchModalOpen = ref(false);
-  const isChannelsModalOpen = ref(false);
+  const isChannelsDrawerOpen = ref(false);
+  const isTriggerModalOpen = ref(false);
+  const triggerKind = ref<'alarm' | 'mobile-position'>('alarm');
+  const triggerChannelId = ref('');
+  const alarmType = ref('1');
+  const alarmDescription = ref('模拟报警');
+  const longitude = ref(116.397);
+  const latitude = ref(39.908);
   const editingDeviceId = ref<string | null>(null);
   const channelDeviceId = ref<string | null>(null);
   const deviceTypeOptions = ['摄像机', '球机', 'NVR', '门禁设备'].map((value) => ({
@@ -216,7 +223,41 @@
       message.error(result.message);
       return;
     }
-    isChannelsModalOpen.value = true;
+    isChannelsDrawerOpen.value = true;
+  }
+
+  function openAlarmTrigger(channel: SimulatedChannel): void {
+    triggerKind.value = 'alarm';
+    triggerChannelId.value = channel.id;
+    isTriggerModalOpen.value = true;
+  }
+
+  function openMobilePositionTrigger(channel: SimulatedChannel): void {
+    triggerKind.value = 'mobile-position';
+    triggerChannelId.value = channel.id;
+    isTriggerModalOpen.value = true;
+  }
+
+  async function submitTrigger(): Promise<void> {
+    if (channelDevice.value === null) return;
+    const result =
+      triggerKind.value === 'alarm'
+        ? await store.triggerAlarm(
+            channelDevice.value.id,
+            triggerChannelId.value,
+            alarmType.value,
+            alarmDescription.value,
+          )
+        : await store.triggerMobilePosition(
+            channelDevice.value.id,
+            triggerChannelId.value,
+            longitude.value,
+            latitude.value,
+          );
+    if (result.ok)
+      message.success(triggerKind.value === 'alarm' ? '报警已发送。' : '移动位置已发送。');
+    if (!result.ok) message.error(result.message);
+    else isTriggerModalOpen.value = false;
   }
 
   function getSubscriptionLabel(kind: SimulatedChannel['platformSubscriptions'][number]): string {
@@ -263,7 +304,7 @@
         selectedDeviceId.value = null;
         channelDeviceId.value = null;
         isDetailOpen.value = false;
-        isChannelsModalOpen.value = false;
+        isChannelsDrawerOpen.value = false;
         message.success('设备配置已清空，可以重新批量添加。');
       },
     });
@@ -585,49 +626,102 @@
       </template>
     </NModal>
 
+    <NDrawer v-model:show="isChannelsDrawerOpen" placement="right" :width="560">
+      <NDrawerContent
+        v-if="channelDevice !== null"
+        :title="`${channelDevice.name} · 通道`"
+        closable
+      >
+        <p class="form-hint">
+          {{ channelDevice.id }} · {{ channelDevice.channelCount }} 路通道；通道按规则实时生成。
+        </p>
+        <div class="channel-card-list">
+          <NCard
+            v-for="channel in selectedChannels"
+            :key="channel.id"
+            class="channel-card"
+            :bordered="false"
+          >
+            <div class="channel-card-header">
+              <div>
+                <strong>{{ channel.name }}</strong>
+                <span>{{ channel.id }}</span>
+              </div>
+              <NTag
+                size="small"
+                :type="channelDevice.registrationStatus === 'registered' ? 'success' : 'default'"
+              >
+                {{ channelDevice.registrationStatus === 'registered' ? '可触发' : '未注册' }}
+              </NTag>
+            </div>
+            <div class="channel-card-subscriptions">
+              <span>平台订阅</span>
+              <template v-if="channel.platformSubscriptions.length">
+                <NTag
+                  v-for="kind in channel.platformSubscriptions"
+                  :key="kind"
+                  size="small"
+                  type="info"
+                  :bordered="false"
+                  >{{ getSubscriptionLabel(kind) }}</NTag
+                >
+              </template>
+              <span v-else class="channel-subscription-empty">未订阅</span>
+            </div>
+            <div class="channel-card-actions">
+              <NButton
+                size="small"
+                type="warning"
+                secondary
+                :disabled="channelDevice.registrationStatus !== 'registered'"
+                @click="openAlarmTrigger(channel)"
+                >报警模拟</NButton
+              >
+              <NButton
+                size="small"
+                type="info"
+                secondary
+                :disabled="channelDevice.registrationStatus !== 'registered'"
+                @click="openMobilePositionTrigger(channel)"
+                >移动位置</NButton
+              >
+            </div>
+          </NCard>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
+
     <NModal
-      v-model:show="isChannelsModalOpen"
+      v-model:show="isTriggerModalOpen"
       preset="card"
-      :title="channelDevice === null ? '通道列表' : `${channelDevice.name} · 通道列表`"
-      style="width: min(920px, calc(100vw - 48px))"
+      :title="triggerKind === 'alarm' ? '报警模拟' : '移动位置上报'"
+      style="width: min(520px, calc(100vw - 48px))"
     >
-      <p v-if="channelDevice !== null" class="form-hint">
-        {{ channelDevice.id }} ·
-        {{ channelDevice.channelCount }} 路通道；通道由设备编号与通道数量实时生成，不写入配置文件。
-      </p>
-      <NDataTable
-        :columns="[
-          { title: '通道 ID', key: 'id', minWidth: 260, align: 'center' },
-          { title: '通道名称', key: 'name', minWidth: 210, align: 'center' },
-          { title: '序号', key: 'index', width: 82, align: 'center' },
-          {
-            title: '平台订阅项',
-            key: 'platformSubscriptions',
-            minWidth: 240,
-            align: 'center',
-            render: (channel: SimulatedChannel) =>
-              channel.platformSubscriptions.length === 0
-                ? h('span', { class: 'channel-subscription-empty' }, '未订阅')
-                : h(
-                    'div',
-                    { class: 'channel-subscription-list' },
-                    channel.platformSubscriptions.map((kind) =>
-                      h(
-                        NTag,
-                        { type: 'info', size: 'small', bordered: false },
-                        { default: () => getSubscriptionLabel(kind) },
-                      ),
-                    ),
-                  ),
-          },
-        ]"
-        :data="selectedChannels"
-        :pagination="false"
-        :row-key="(channel: SimulatedChannel) => channel.id"
-      />
+      <p class="form-hint">通道 ID：{{ triggerChannelId }}</p>
+      <NForm label-placement="top">
+        <template v-if="triggerKind === 'alarm'">
+          <NFormItem label="报警类型">
+            <NInput v-model:value="alarmType" />
+          </NFormItem>
+          <NFormItem label="报警描述">
+            <NInput v-model:value="alarmDescription" />
+          </NFormItem>
+        </template>
+        <template v-else>
+          <div class="form-grid">
+            <NFormItem label="经度">
+              <NInputNumber v-model:value="longitude" :show-button="false" />
+            </NFormItem>
+            <NFormItem label="纬度">
+              <NInputNumber v-model:value="latitude" :show-button="false" />
+            </NFormItem>
+          </div>
+        </template>
+      </NForm>
       <template #footer>
         <div class="modal-actions">
-          <NButton @click="isChannelsModalOpen = false">关闭</NButton>
+          <NButton @click="isTriggerModalOpen = false">取消</NButton>
+          <NButton type="primary" @click="submitTrigger">发送</NButton>
         </div>
       </template>
     </NModal>

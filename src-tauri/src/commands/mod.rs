@@ -264,6 +264,36 @@ pub async fn stop_all_device_registration(
 }
 
 #[tauri::command]
+pub async fn trigger_alarm(
+    device_id: String,
+    channel_id: String,
+    alarm_type: String,
+    description: String,
+    state: State<'_, AppState>,
+) -> Result<(), CommandErrorDto> {
+    state
+        .registration
+        .trigger_alarm(device_id, channel_id, alarm_type, description)
+        .await
+        .map_err(|error| CommandErrorDto::registration(&error))
+}
+
+#[tauri::command]
+pub async fn trigger_mobile_position(
+    device_id: String,
+    channel_id: String,
+    longitude: f64,
+    latitude: f64,
+    state: State<'_, AppState>,
+) -> Result<(), CommandErrorDto> {
+    state
+        .registration
+        .trigger_mobile_position(device_id, channel_id, longitude, latitude)
+        .await
+        .map_err(|error| CommandErrorDto::registration(&error))
+}
+
+#[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Tauri command 参数提取器要求按值接收 State"

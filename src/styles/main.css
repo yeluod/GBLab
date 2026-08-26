@@ -384,6 +384,12 @@ select {
   margin-bottom: 18px;
 }
 
+.log-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
 .section-card-header h2 {
   margin: 0;
   color: #edf5ff;
@@ -443,6 +449,63 @@ select {
 .channel-subscription-empty {
   color: #7f8b9d;
   font-size: 0.84rem;
+}
+
+.channel-card-list {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 2px 16px;
+}
+
+.channel-card {
+  border: 1px solid rgb(148 163 184 / 14%);
+  background: rgb(20 31 48 / 72%);
+}
+
+.channel-card-header,
+.channel-card-subscriptions,
+.channel-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.channel-card-header {
+  justify-content: space-between;
+}
+
+.channel-card-header div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.channel-card-header strong {
+  color: #e8f5ff;
+}
+
+.channel-card-header span,
+.channel-card-subscriptions > span:first-child {
+  color: #8191a7;
+  font-size: 0.78rem;
+}
+
+.channel-card-header div span {
+  overflow-wrap: anywhere;
+  color: #8fa8c3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.channel-card-subscriptions {
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.channel-card-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .form-grid {

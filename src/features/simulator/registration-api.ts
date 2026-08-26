@@ -17,6 +17,29 @@ export function stopAllDeviceRegistrationCommand(): Promise<BatchOperationAccept
   return invokeCommand<BatchOperationAccepted>('stop_all_device_registration');
 }
 
+export function triggerAlarmCommand(
+  deviceId: string,
+  channelId: string,
+  alarmType: string,
+  description: string,
+): Promise<void> {
+  return invokeCommand('trigger_alarm', { deviceId, channelId, alarmType, description });
+}
+
+export function triggerMobilePositionCommand(
+  deviceId: string,
+  channelId: string,
+  longitude: number,
+  latitude: number,
+): Promise<void> {
+  return invokeCommand('trigger_mobile_position', {
+    deviceId,
+    channelId,
+    longitude,
+    latitude,
+  });
+}
+
 /** 订阅降频后的注册状态快照。 */
 export function listenRegistrationSnapshot(
   handler: (snapshot: RegistrationSnapshot) => void,

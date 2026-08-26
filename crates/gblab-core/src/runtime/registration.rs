@@ -163,6 +163,9 @@ pub enum RegistrationRuntimeError {
     /// 命令队列已经关闭。
     #[error("注册运行时不可用")]
     Unavailable,
+    /// 业务触发时设备会话不存在或运行时不可用。
+    #[error("设备未注册或业务运行时不可用")]
+    BusinessUnavailable,
 }
 
 /// 注册运行时的克隆句柄。
@@ -245,6 +248,62 @@ impl RegistrationHandle {
             .map_err(|_| RegistrationRuntimeError::Unavailable)?
     }
 
+    /// 向指定设备通道发送一次 Alarm 通知。
+    ///
+    /// # Errors
+    ///
+    /// 设备未注册或业务运行时不可用时返回错误。
+    pub async fn trigger_alarm(
+        &self,
+        device_id: String,
+        channel_id: String,
+        alarm_type: String,
+        description: String,
+    ) -> Result<(), RegistrationRuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RegistrationCommand::TriggerAlarm {
+                device_id,
+                channel_id,
+                alarm_type,
+                description,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RegistrationRuntimeError::Unavailable)?;
+        reply_rx
+            .await
+            .map_err(|_| RegistrationRuntimeError::Unavailable)?
+    }
+
+    /// 向指定设备通道发送一次移动位置通知。
+    ///
+    /// # Errors
+    ///
+    /// 设备未注册或业务运行时不可用时返回错误。
+    pub async fn trigger_mobile_position(
+        &self,
+        device_id: String,
+        channel_id: String,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<(), RegistrationRuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RegistrationCommand::TriggerMobilePosition {
+                device_id,
+                channel_id,
+                longitude,
+                latitude,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RegistrationRuntimeError::Unavailable)?;
+        reply_rx
+            .await
+            .map_err(|_| RegistrationRuntimeError::Unavailable)?
+    }
+
     /// 返回当前内存快照。
     #[must_use]
     pub fn snapshot(&self) -> RegistrationSnapshot {
@@ -282,6 +341,20 @@ enum RegistrationCommand {
     StopAll {
         reply: oneshot::Sender<Result<BatchOperationAccepted, RegistrationRuntimeError>>,
     },
+    TriggerAlarm {
+        device_id: String,
+        channel_id: String,
+        alarm_type: String,
+        description: String,
+        reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
+    },
+    TriggerMobilePosition {
+        device_id: String,
+        channel_id: String,
+        longitude: f64,
+        latitude: f64,
+        reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
+    },
 }
 
 enum InternalEvent {
@@ -294,6 +367,24 @@ enum InternalEvent {
     Sip(SipTransportEvent),
     InitialSettled,
     OperationFinished,
+    BusinessChannel(mpsc::Sender<BusinessCommand>),
+}
+
+enum BusinessCommand {
+    Alarm {
+        device_id: String,
+        channel_id: String,
+        alarm_type: String,
+        description: String,
+        reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
+    },
+    MobilePosition {
+        device_id: String,
+        channel_id: String,
+        longitude: f64,
+        latitude: f64,
+        reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
+    },
 }
 
 struct SupervisorState {
@@ -307,6 +398,7 @@ struct SupervisorState {
     next_log_sequence: u64,
     snapshot_dirty: bool,
     pending_logs: Vec<InteractionLog>,
+    business_tx: Option<mpsc::Sender<BusinessCommand>>,
 }
 
 impl SupervisorState {
@@ -322,6 +414,7 @@ impl SupervisorState {
             next_log_sequence: 1,
             snapshot_dirty: false,
             pending_logs: Vec::new(),
+            business_tx: None,
         }
     }
 
@@ -439,6 +532,44 @@ fn handle_command(
                 total: state.operation_total,
             }));
         }
+        RegistrationCommand::TriggerAlarm {
+            device_id,
+            channel_id,
+            alarm_type,
+            description,
+            reply,
+        } => {
+            let Some(tx) = state.business_tx.clone() else {
+                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                return;
+            };
+            let _ = tx.try_send(BusinessCommand::Alarm {
+                device_id,
+                channel_id,
+                alarm_type,
+                description,
+                reply,
+            });
+        }
+        RegistrationCommand::TriggerMobilePosition {
+            device_id,
+            channel_id,
+            longitude,
+            latitude,
+            reply,
+        } => {
+            let Some(tx) = state.business_tx.clone() else {
+                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                return;
+            };
+            let _ = tx.try_send(BusinessCommand::MobilePosition {
+                device_id,
+                channel_id,
+                longitude,
+                latitude,
+                reply,
+            });
+        }
     }
 }
 
@@ -462,7 +593,7 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                 sequence: state.next_log_sequence,
                 timestamp: event.timestamp_millis,
                 device_id: event.device_id,
-                channel_id: None,
+                channel_id: event.channel_id,
                 direction: match event.direction {
                     SipLogDirection::Send => InteractionDirection::Send,
                     SipLogDirection::Receive => InteractionDirection::Receive,
@@ -491,8 +622,10 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
             state.operation_cancellation = None;
             state.operation_total = 0;
             state.initial_settled = 0;
+            state.business_tx = None;
             state.snapshot_dirty = true;
         }
+        InternalEvent::BusinessChannel(tx) => state.business_tx = Some(tx),
     }
 }
 
@@ -546,8 +679,15 @@ async fn run_registration_operation(
     };
 
     let transport_cancellation = CancellationToken::new();
-    let receiver_task =
-        tokio::spawn(Arc::clone(&client).receive_loop(transport_cancellation.clone()));
+    let catalog_devices = Arc::new(
+        devices
+            .iter()
+            .map(|device| (device.id.to_string(), device.clone()))
+            .collect::<std::collections::HashMap<_, _>>(),
+    );
+    let receiver_task = tokio::spawn(
+        Arc::clone(&client).receive_loop(transport_cancellation.clone(), catalog_devices),
+    );
     let transport_forward_tx = internal_tx.clone();
     let transport_forward_task = tokio::spawn(async move {
         while let Some(event) = transport_event_rx.recv().await {
@@ -561,9 +701,16 @@ async fn run_registration_operation(
         }
     });
 
+    let (business_tx, business_rx) = mpsc::channel(32);
+    let _ = internal_tx
+        .send(InternalEvent::BusinessChannel(business_tx))
+        .await;
+
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let mut sessions = JoinSet::new();
+    let session_map = Arc::new(tokio::sync::Mutex::new(BTreeMap::new()));
     for device in devices {
+        let session_map = Arc::clone(&session_map);
         sessions.spawn(run_device_lifecycle(
             device.id.to_string(),
             configuration.clone(),
@@ -571,17 +718,32 @@ async fn run_registration_operation(
             Arc::clone(&semaphore),
             cancellation.clone(),
             internal_tx.clone(),
+            session_map,
         ));
     }
+    let business_task = tokio::spawn(run_business_commands(
+        business_rx,
+        Arc::clone(&session_map),
+        Arc::clone(&client),
+        configuration.clone(),
+        cancellation.clone(),
+        internal_tx.clone(),
+    ));
     while sessions.join_next().await.is_some() {}
 
     transport_cancellation.cancel();
     let _ = receiver_task.await;
     drop(client);
     let _ = transport_forward_task.await;
+    business_task.abort();
     let _ = internal_tx.send(InternalEvent::OperationFinished).await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "注册生命周期需要共享运行时资源与状态通道"
+)]
 async fn run_device_lifecycle(
     device_id: String,
     configuration: SipServiceConfiguration,
@@ -589,8 +751,9 @@ async fn run_device_lifecycle(
     semaphore: Arc<Semaphore>,
     cancellation: CancellationToken,
     internal_tx: mpsc::Sender<InternalEvent>,
+    session_map: SessionMap,
 ) {
-    let mut session = match DeviceSipSession::new(device_id.clone(), &configuration, &client) {
+    let session = match DeviceSipSession::new(device_id.clone(), &configuration, &client) {
         Ok(session) => session,
         Err(error) => {
             send_device_state(
@@ -606,6 +769,11 @@ async fn run_device_lifecycle(
         }
     };
     let mut initial_settled = false;
+    let session = Arc::new(tokio::sync::Mutex::new(session));
+    session_map
+        .lock()
+        .await
+        .insert(device_id.clone(), Arc::clone(&session));
     loop {
         send_device_state(
             &internal_tx,
@@ -615,14 +783,16 @@ async fn run_device_lifecycle(
             None,
         )
         .await;
+        let mut session_guard = session.lock().await;
         let result = register_with_retry(
-            &mut session,
+            &mut session_guard,
             &client,
             &configuration,
             &semaphore,
             &cancellation,
         )
         .await;
+        drop(session_guard);
         if !initial_settled {
             initial_settled = true;
             let _ = internal_tx.send(InternalEvent::InitialSettled).await;
@@ -638,9 +808,23 @@ async fn run_device_lifecycle(
                     Some(now_millis().saturating_add(duration_millis(expires))),
                 )
                 .await;
-                tokio::select! {
-                    () = cancellation.cancelled() => break,
-                    () = sleep(refresh_after) => {}
+                let refresh_sleep = sleep(refresh_after);
+                tokio::pin!(refresh_sleep);
+                let mut keepalive = interval(Duration::from_secs(u64::from(
+                    configuration.keepalive_interval.max(1),
+                )));
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => break,
+                        () = &mut refresh_sleep => break,
+                        _ = keepalive.tick() => {
+                            let body = format!("<Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>{device_id}</DeviceID><Status>OK</Status><Info>OK</Info></Notify>");
+                            let _ = session.lock().await.send_message(&client, body, &cancellation, None).await;
+                        }
+                    }
+                    if cancellation.is_cancelled() {
+                        break;
+                    }
                 }
             }
             Err(SipRegistrationError::Cancelled) => break,
@@ -672,6 +856,8 @@ async fn run_device_lifecycle(
     let unregister_cancellation = CancellationToken::new();
     let unregister_result = if let Ok(permit) = semaphore.acquire().await {
         let result = session
+            .lock()
+            .await
             .unregister(&client, &configuration, &unregister_cancellation)
             .await;
         drop(permit);
@@ -701,6 +887,76 @@ async fn run_device_lifecycle(
             .await;
         }
     }
+    session_map.lock().await.remove(&device_id);
+}
+
+async fn run_business_commands(
+    mut rx: mpsc::Receiver<BusinessCommand>,
+    sessions: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<DeviceSipSession>>>>>,
+    client: Arc<SipRegistrationClient>,
+    configuration: SipServiceConfiguration,
+    cancellation: CancellationToken,
+    _internal_tx: mpsc::Sender<InternalEvent>,
+) {
+    while let Some(command) = tokio::select! {
+        command = rx.recv() => command,
+        () = cancellation.cancelled() => None,
+    } {
+        match command {
+            BusinessCommand::Alarm {
+                device_id,
+                channel_id,
+                alarm_type,
+                description,
+                reply,
+            } => {
+                let result = send_business_message(&sessions, &client, &configuration, cancellation.clone(), &device_id, &channel_id,
+                    format!("<Notify><CmdType>Alarm</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><AlarmMethod>1</AlarmMethod><AlarmType>{alarm_type}</AlarmType><AlarmDescription>{description}</AlarmDescription></Notify>")).await;
+                let _ = reply.send(result);
+            }
+            BusinessCommand::MobilePosition {
+                device_id,
+                channel_id,
+                longitude,
+                latitude,
+                reply,
+            } => {
+                let result = send_business_message(&sessions, &client, &configuration, cancellation.clone(), &device_id, &channel_id,
+                    format!("<Notify><CmdType>MobilePosition</CmdType><SN>1</SN><DeviceID>{channel_id}</DeviceID><Longitude>{longitude}</Longitude><Latitude>{latitude}</Latitude></Notify>")).await;
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+type SessionMap =
+    Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<DeviceSipSession>>>>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "业务消息需要完整的设备、通道与传输上下文"
+)]
+async fn send_business_message(
+    sessions: &SessionMap,
+    client: &Arc<SipRegistrationClient>,
+    _configuration: &SipServiceConfiguration,
+    cancellation: CancellationToken,
+    device_id: &str,
+    channel_id: &str,
+    body: String,
+) -> Result<(), RegistrationRuntimeError> {
+    let session = sessions
+        .lock()
+        .await
+        .get(device_id)
+        .cloned()
+        .ok_or(RegistrationRuntimeError::BusinessUnavailable)?;
+    session
+        .lock()
+        .await
+        .send_message(client, body, &cancellation, Some(channel_id.to_owned()))
+        .await
+        .map_err(|_| RegistrationRuntimeError::BusinessUnavailable)
 }
 
 async fn register_with_retry(

@@ -3,10 +3,12 @@
   import {
     NButton,
     NCard,
+    NCheckbox,
     NDataTable,
     NInput,
     NSelect,
     NTag,
+    useDialog,
     useMessage,
     type DataTableColumns,
     type DataTableInst,
@@ -16,11 +18,13 @@
 
   const store = useSimulatorStore();
   const message = useMessage();
+  const dialog = useDialog();
   const interactionLogTableRef = ref<DataTableInst | null>(null);
   const directionFilter = ref<'all' | InteractionLog['direction']>('all');
   const deviceKeyword = ref('');
   const channelKeyword = ref('');
   const messageKeyword = ref('');
+  const selectedLogIds = ref<Set<string>>(new Set());
 
   const directionOptions = [
     { label: '全部方向', value: 'all' },
@@ -43,6 +47,109 @@
     });
   });
 
+  const selectedLogs = computed(() =>
+    store.interactionLogs.filter((log) => selectedLogIds.value.has(log.id)),
+  );
+  const isAllFilteredSelected = computed(
+    () =>
+      filteredLogs.value.length > 0 &&
+      filteredLogs.value.every((log) => selectedLogIds.value.has(log.id)),
+  );
+  const isSomeFilteredSelected = computed(
+    () =>
+      filteredLogs.value.some((log) => selectedLogIds.value.has(log.id)) &&
+      !isAllFilteredSelected.value,
+  );
+
+  function updateSelectedLog(logId: string, checked: boolean): void {
+    const next = new Set(selectedLogIds.value);
+    if (checked) {
+      next.add(logId);
+    } else {
+      next.delete(logId);
+    }
+    selectedLogIds.value = next;
+  }
+
+  function updateFilteredSelection(checked: boolean): void {
+    const next = new Set(selectedLogIds.value);
+    filteredLogs.value.forEach((log) => {
+      if (checked) {
+        next.add(log.id);
+      } else {
+        next.delete(log.id);
+      }
+    });
+    selectedLogIds.value = next;
+  }
+
+  function clearSelection(): void {
+    selectedLogIds.value = new Set();
+  }
+
+  function directionLabel(direction: InteractionLog['direction']): string {
+    return direction === 'send' ? '设备 → 服务' : '服务 → 设备';
+  }
+
+  function formatLogForCopy(log: InteractionLog): string {
+    return [
+      formatTimestamp(log.timestamp),
+      directionLabel(log.direction),
+      log.deviceId,
+      log.channelId ?? '—',
+      log.message,
+    ].join('\t');
+  }
+
+  async function copyText(text: string): Promise<void> {
+    if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) {
+      throw new Error('clipboard unavailable');
+    }
+  }
+
+  async function copySelectedLogs(): Promise<void> {
+    if (selectedLogs.value.length === 0) {
+      return;
+    }
+    const content = [
+      ['时间', '方向', '设备 ID', '通道 ID', '消息'].join('\t'),
+      ...selectedLogs.value.map(formatLogForCopy),
+    ].join('\n');
+    try {
+      await copyText(content);
+      message.success(`已复制 ${selectedLogs.value.length} 条日志。`);
+    } catch {
+      message.error('系统剪贴板不可用，复制失败。');
+    }
+  }
+
+  function confirmClearLogs(): void {
+    dialog.warning({
+      title: '清空交互日志',
+      content: '确定清空当前运行时内的全部交互日志吗？不会影响设备、SIP 配置或注册生命周期。',
+      positiveText: '清空日志',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        store.clearInteractionLogs();
+        clearSelection();
+        message.success('交互日志已清空。');
+      },
+    });
+  }
+
   async function scrollToLatest(): Promise<void> {
     await nextTick();
     const table = interactionLogTableRef.value;
@@ -55,6 +162,14 @@
     () => store.interactionLogs.length,
     () => {
       void scrollToLatest();
+    },
+  );
+
+  watch(
+    () => store.interactionLogs.map((log) => log.id),
+    (ids) => {
+      const validIds = new Set(ids);
+      selectedLogIds.value = new Set([...selectedLogIds.value].filter((id) => validIds.has(id)));
     },
   );
 
@@ -81,6 +196,24 @@
   }
 
   const columns: DataTableColumns<InteractionLog> = [
+    {
+      title: () =>
+        h(NCheckbox, {
+          checked: isAllFilteredSelected.value,
+          indeterminate: isSomeFilteredSelected.value,
+          disabled: filteredLogs.value.length === 0,
+          'onUpdate:checked': updateFilteredSelection,
+        }),
+      key: 'selection',
+      width: 58,
+      align: 'center',
+      render: (log) =>
+        h(NCheckbox, {
+          checked: selectedLogIds.value.has(log.id),
+          'onUpdate:checked': (checked: boolean) => updateSelectedLog(log.id, checked),
+          onClick: (event: MouseEvent) => event.stopPropagation(),
+        }),
+    },
     {
       title: '时间',
       key: 'timestamp',
@@ -129,7 +262,19 @@
         <h1 id="interaction-logs-title">交互日志</h1>
         <p>实时查看模拟设备与共享 SIP 服务之间的完整 SIP / GB28181 交互内容。</p>
       </div>
-      <NButton secondary @click="scrollToLatest">回到底部</NButton>
+      <div class="log-header-actions">
+        <NButton secondary :disabled="selectedLogs.length === 0" @click="copySelectedLogs"
+          >复制选中</NButton
+        >
+        <NButton
+          secondary
+          type="error"
+          :disabled="store.interactionLogs.length === 0"
+          @click="confirmClearLogs"
+          >清空日志</NButton
+        >
+        <NButton secondary @click="scrollToLatest">回到底部</NButton>
+      </div>
     </header>
 
     <NCard class="data-surface interaction-logs-surface" :bordered="false">
