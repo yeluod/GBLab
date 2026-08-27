@@ -1,5 +1,7 @@
 Cargo.lock
 pnpm-lock.yaml
+CHANGELOG.md
+README.md
 .codex/
 coverage/
 dist/
