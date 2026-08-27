@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "gblab-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "gblab-desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "gblab-core",
  "serde",
