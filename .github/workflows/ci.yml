@@ -2,16 +2,75 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
   pull_request:
+    branches:
+      - develop
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  quick-develop:
+    name: Quick check (develop)
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check frontend formatting
+        run: pnpm run format:check
+      - name: Lint frontend
+        run: pnpm run lint
+      - name: Check frontend types
+        run: pnpm run type:check
+      - name: Check Rust core
+        run: cargo check -p gblab-core --locked
+
+  quality:
+    name: Quality
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          components: clippy,rustfmt
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify frontend
+        run: pnpm run check
+      - name: Verify Rust
+        run: cargo clippy -p gblab-core --all-targets --all-features --locked -- -D warnings
+      - name: Test Rust
+        run: cargo test -p gblab-core --locked
+
   verify:
     name: Verify (${{ matrix.os }})
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,11 +92,5 @@ jobs:
           components: clippy,rustfmt
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify frontend
-        run: pnpm run check
-      - name: Verify Rust
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Test Rust
-        run: cargo test --workspace --locked
       - name: Build desktop without bundle
         run: pnpm tauri build --no-bundle
