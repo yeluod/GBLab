@@ -7,12 +7,12 @@ GBLab 使用 Release Please 和 GitHub Actions 自动维护版本并发布桌面
 `.github/workflows/release.yml` 在每次推送 `main` 后运行：
 
 1. 普通功能提交只创建或更新 Release PR，不立即创建 Tag 或构建安装包。
-2. Release PR 根据 Conventional Commits 更新 Rust workspace、`package.json`、`src-tauri/tauri.conf.json`、`Cargo.lock` 和 `CHANGELOG.md`。
+2. Release Please 根据 Conventional Commits 更新 Rust workspace、`package.json`、`src-tauri/tauri.conf.json` 和 `CHANGELOG.md`，随后发布工作流在 Release PR 分支运行 Cargo，同步并提交 `Cargo.lock`。
 3. 合并 Release PR 后，Release Please 创建 `v<version>` Tag 和草稿 GitHub Release。
 4. macOS runner 构建 DMG，Windows runner 构建 NSIS 和 MSI，并将安装包上传至该草稿 Release。
 5. 两个平台全部成功后发布 Release；任一平台失败时草稿保持未发布状态，避免提供不完整版本。
 
-项目只维护一个应用版本。根 `package.json` 是 Release Please 的发布组件，配置中的 `extra-files` 同步 Cargo workspace、`Cargo.lock` 中的本地 crate 和 Tauri 配置版本。
+项目只维护一个应用版本。根 `package.json` 是 Release Please 的发布组件，配置中的 `extra-files` 同步 Cargo workspace 和 Tauri 配置版本。根 Cargo 清单是虚拟 workspace，成员 crate 使用 `version.workspace = true`；Release Please 创建或更新 Release PR 后，工作流使用 `cargo metadata` 生成与 workspace 版本一致的 `Cargo.lock`，只在锁文件确有变化时向 Release PR 分支追加提交。
 
 版本变化由提交类型决定：
 

@@ -18,11 +18,6 @@
           "jsonpath": "$.workspace.package.version"
         },
         {
-          "type": "toml",
-          "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'gblab-core' || @.name == 'gblab-desktop')].version"
-        },
-        {
           "type": "json",
           "path": "src-tauri/tauri.conf.json",
           "jsonpath": "$.version"

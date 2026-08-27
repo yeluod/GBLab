@@ -31,6 +31,40 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+      - name: Checkout release pull request branch
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          fetch-depth: 0
+      - name: Set up Rust for lockfile synchronization
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+      - name: Synchronize Cargo lockfile
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          RELEASE_PR_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo metadata --format-version 1 >/dev/null
+          cargo metadata --format-version 1 --locked >/dev/null
+
+          if git diff --quiet -- Cargo.lock; then
+            printf 'Cargo.lock is already synchronized.\n'
+            exit 0
+          fi
+
+          git diff --exit-code -- . ':(exclude)Cargo.lock'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock
+          git commit -m 'chore(release): synchronize Cargo.lock'
+          git push origin "HEAD:refs/heads/${RELEASE_PR_BRANCH}"
 
   build-macos:
     name: Build macOS application
