@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::Deserialize;
 use tauri::State;
 
 use crate::{
@@ -9,6 +10,36 @@ use crate::{
         DeviceSnapshotDto, DeviceUpdateDraftDto, SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlarmTriggerDto {
+    device_id: String,
+    channel_id: String,
+    alarm_priority: String,
+    alarm_method: String,
+    alarm_type: String,
+    alarm_status: String,
+    description: String,
+    longitude: f64,
+    latitude: f64,
+}
+
+impl AlarmTriggerDto {
+    fn into_core(self) -> gblab_core::runtime::AlarmTrigger {
+        gblab_core::runtime::AlarmTrigger {
+            device_id: self.device_id,
+            channel_id: self.channel_id,
+            alarm_priority: self.alarm_priority,
+            alarm_method: self.alarm_method,
+            alarm_type: self.alarm_type,
+            alarm_status: self.alarm_status,
+            description: self.description,
+            longitude: self.longitude,
+            latitude: self.latitude,
+        }
+    }
+}
 
 #[tauri::command]
 #[expect(
@@ -290,15 +321,12 @@ pub async fn stop_all_device_registration(
 
 #[tauri::command]
 pub async fn trigger_alarm(
-    device_id: String,
-    channel_id: String,
-    alarm_type: String,
-    description: String,
+    alarm: AlarmTriggerDto,
     state: State<'_, AppState>,
 ) -> Result<(), CommandErrorDto> {
     state
         .registration
-        .trigger_alarm(device_id, channel_id, alarm_type, description)
+        .trigger_alarm(alarm.into_core())
         .await
         .map_err(|error| CommandErrorDto::registration(&error))
 }

@@ -13,8 +13,8 @@ use super::{
         RegistrationCommand, run_supervisor,
     },
     types::{
-        BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot, PtzAction,
-        RegistrationEvent, RegistrationOperationStatus, RegistrationRuntimeError,
+        AlarmTrigger, BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
+        PtzAction, RegistrationEvent, RegistrationOperationStatus, RegistrationRuntimeError,
         RegistrationSnapshot,
     },
 };
@@ -104,20 +104,11 @@ impl RegistrationHandle {
     /// # Errors
     ///
     /// 设备未注册或业务运行时不可用时返回错误。
-    pub async fn trigger_alarm(
-        &self,
-        device_id: String,
-        channel_id: String,
-        alarm_type: String,
-        description: String,
-    ) -> Result<(), RegistrationRuntimeError> {
+    pub async fn trigger_alarm(&self, alarm: AlarmTrigger) -> Result<(), RegistrationRuntimeError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
             .send(RegistrationCommand::TriggerAlarm {
-                device_id,
-                channel_id,
-                alarm_type,
-                description,
+                alarm,
                 reply: reply_tx,
             })
             .await

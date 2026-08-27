@@ -255,4 +255,53 @@ describe('useSimulatorStore', () => {
     expect(store.channels[0]?.platformSubscriptions).toEqual(['alarm', 'mobile-position']);
     expect(store.channels[1]?.platformSubscriptions).toEqual(['alarm']);
   });
+
+  it('触发报警应提交平台要求的完整字段', async () => {
+    registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
+      operationStatus: 'running',
+      operationId: 'registration-1',
+      totalDevices: 1,
+      registeredCount: 1,
+      failedCount: 0,
+      activeSubscriptions: 1,
+      droppedLogs: 0,
+    });
+    registrationApiMocks.getRegistrationDeviceStates.mockResolvedValue([
+      {
+        deviceId: '34020000001320000001',
+        status: 'registered',
+        lastError: null,
+        expiresAt: Date.now() + 60_000,
+      },
+    ]);
+    registrationApiMocks.triggerAlarmCommand.mockResolvedValue(undefined);
+    const store = useSimulatorStore();
+
+    await store.loadDevices();
+
+    expect(
+      await store.triggerAlarm(
+        '34020000001320000001',
+        '34020000001320001001',
+        '1',
+        '2',
+        '3',
+        'Occur',
+        '模拟报警',
+        116.397,
+        39.908,
+      ),
+    ).toEqual({ ok: true });
+    expect(registrationApiMocks.triggerAlarmCommand).toHaveBeenCalledWith(
+      '34020000001320000001',
+      '34020000001320001001',
+      '1',
+      '2',
+      '3',
+      'Occur',
+      '模拟报警',
+      116.397,
+      39.908,
+    );
+  });
 });

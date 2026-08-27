@@ -178,6 +178,29 @@ pub enum RegistrationRuntimeError {
     BusinessFailed(String),
 }
 
+/// 一次手动 Alarm 通知需要的业务字段。
+#[derive(Clone, Debug)]
+pub struct AlarmTrigger {
+    /// 所属设备国标编号。
+    pub device_id: String,
+    /// 报警通道国标编号。
+    pub channel_id: String,
+    /// 报警优先级。
+    pub alarm_priority: String,
+    /// 报警方式。
+    pub alarm_method: String,
+    /// 报警扩展类型。
+    pub alarm_type: String,
+    /// 报警扩展状态。
+    pub alarm_status: String,
+    /// 报警描述。
+    pub description: String,
+    /// 报警经度。
+    pub longitude: f64,
+    /// 报警纬度。
+    pub latitude: f64,
+}
+
 /// 可模拟的设备控制动作。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceControlAction {

@@ -30,10 +30,27 @@ export function stopAllDeviceRegistrationCommand(): Promise<BatchOperationAccept
 export function triggerAlarmCommand(
   deviceId: string,
   channelId: string,
+  alarmPriority: string,
+  alarmMethod: string,
   alarmType: string,
+  alarmStatus: string,
   description: string,
+  longitude: number,
+  latitude: number,
 ): Promise<void> {
-  return invokeCommand('trigger_alarm', { deviceId, channelId, alarmType, description });
+  return invokeCommand('trigger_alarm', {
+    alarm: {
+      deviceId,
+      channelId,
+      alarmPriority,
+      alarmMethod,
+      alarmType,
+      alarmStatus,
+      description,
+      longitude,
+      latitude,
+    },
+  });
 }
 
 export function triggerMobilePositionCommand(

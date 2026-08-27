@@ -16,7 +16,7 @@ pub use platform::{
     SubscriptionRuntimeStatus, SubscriptionSnapshot,
 };
 pub use types::{
-    BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
+    AlarmTrigger, BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
     DeviceRegistrationStatus, InteractionDirection, InteractionLog, PtzAction, RegistrationEvent,
     RegistrationOperationStatus, RegistrationRuntimeError, RegistrationSnapshot,
 };

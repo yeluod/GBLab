@@ -43,7 +43,10 @@
   const isTriggerModalOpen = ref(false);
   const triggerKind = ref<'alarm' | 'mobile-position'>('alarm');
   const triggerChannelId = ref('');
+  const alarmPriority = ref('1');
+  const alarmMethod = ref('1');
   const alarmType = ref('1');
+  const alarmStatus = ref('Occur');
   const alarmDescription = ref('模拟报警');
   const longitude = ref(116.397);
   const latitude = ref(39.908);
@@ -259,8 +262,13 @@
         ? await store.triggerAlarm(
             channelDevice.value.id,
             triggerChannelId.value,
+            alarmPriority.value,
+            alarmMethod.value,
             alarmType.value,
+            alarmStatus.value,
             alarmDescription.value,
+            longitude.value,
+            latitude.value,
           )
         : await store.triggerMobilePosition(
             channelDevice.value.id,
@@ -808,12 +816,39 @@
       <p class="form-hint">通道 ID：{{ triggerChannelId }}</p>
       <NForm label-placement="top">
         <template v-if="triggerKind === 'alarm'">
-          <NFormItem label="报警类型">
-            <NInput v-model:value="alarmType" />
-          </NFormItem>
+          <div class="form-grid">
+            <NFormItem label="报警级别" required>
+              <NInput v-model:value="alarmPriority" />
+            </NFormItem>
+            <NFormItem label="报警方式" required>
+              <NInput v-model:value="alarmMethod" />
+            </NFormItem>
+          </div>
+          <div class="form-grid">
+            <NFormItem label="报警类型">
+              <NInput v-model:value="alarmType" />
+            </NFormItem>
+            <NFormItem label="报警状态">
+              <NSelect
+                v-model:value="alarmStatus"
+                :options="[
+                  { label: '发生', value: 'Occur' },
+                  { label: '恢复', value: 'Restore' },
+                ]"
+              />
+            </NFormItem>
+          </div>
           <NFormItem label="报警描述">
             <NInput v-model:value="alarmDescription" />
           </NFormItem>
+          <div class="form-grid">
+            <NFormItem label="经度">
+              <NInputNumber v-model:value="longitude" :show-button="false" />
+            </NFormItem>
+            <NFormItem label="纬度">
+              <NInputNumber v-model:value="latitude" :show-button="false" />
+            </NFormItem>
+          </div>
         </template>
         <template v-else>
           <div class="form-grid">

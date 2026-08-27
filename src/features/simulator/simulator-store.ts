@@ -587,8 +587,13 @@ export const useSimulatorStore = defineStore('simulator', () => {
   async function triggerAlarm(
     deviceId: string,
     channelId: string,
+    alarmPriority = '1',
+    alarmMethod = '1',
     alarmType = '1',
+    alarmStatus = 'Occur',
     description = '模拟报警',
+    longitude = 116.397,
+    latitude = 39.908,
   ): Promise<OperationResult> {
     if (
       !isRegistrationActive.value ||
@@ -596,8 +601,26 @@ export const useSimulatorStore = defineStore('simulator', () => {
     ) {
       return { ok: false, message: '设备尚未注册，无法触发报警。' };
     }
+    if (
+      alarmPriority.trim() === '' ||
+      alarmMethod.trim() === '' ||
+      !Number.isFinite(longitude) ||
+      !Number.isFinite(latitude)
+    ) {
+      return { ok: false, message: '请填写报警级别、报警方式以及有效的经纬度。' };
+    }
     try {
-      await triggerAlarmCommand(deviceId, channelId, alarmType, description);
+      await triggerAlarmCommand(
+        deviceId,
+        channelId,
+        alarmPriority,
+        alarmMethod,
+        alarmType,
+        alarmStatus,
+        description,
+        longitude,
+        latitude,
+      );
       return { ok: true };
     } catch (error: unknown) {
       return { ok: false, message: getConfigurationErrorMessage(error) };

@@ -2,10 +2,7 @@
 
 use std::{collections::BTreeMap, fmt::Write, sync::Arc};
 
-use siprs::{
-    siprs_gb28181_codec::DeviceId as CodecDeviceId,
-    siprs_gb28181_xml::{AlarmInfo, MobilePositionInfo, Notify},
-};
+use siprs::siprs_gb28181_codec::DeviceId as CodecDeviceId;
 use tokio::{
     sync::{Semaphore, mpsc},
     task::JoinSet,
@@ -21,7 +18,7 @@ use crate::{
 use super::{
     registration::{BusinessCommand, InternalEvent},
     time::now_millis,
-    types::{DeviceControlAction, RegistrationRuntimeError},
+    types::{AlarmTrigger, DeviceControlAction, RegistrationRuntimeError},
 };
 
 #[expect(
@@ -61,26 +58,23 @@ pub(super) async fn run_business_commands(
             let _permit = permit;
             match command {
             BusinessCommand::Alarm {
-                device_id,
-                channel_id,
-                alarm_type,
-                description,
+                alarm,
                 subscription,
                 reply,
             } => {
                 let sn = sessions
                     .lock()
                     .await
-                    .get(&device_id)
+                    .get(&alarm.device_id)
                     .map_or(1, |session| session.next_sn());
-                let result = match build_alarm_notify_body(&channel_id, &alarm_type, &description, sn) {
+                let result = match build_alarm_notify_body(&alarm, sn) {
                     Ok(body) => {
                         send_business_notify(
                             &sessions,
                             &client,
                             cancellation.clone(),
-                            &device_id,
-                            Some(&channel_id),
+                            &alarm.device_id,
+                            Some(&alarm.channel_id),
                             &subscription,
                             body,
                         )
@@ -91,8 +85,8 @@ pub(super) async fn run_business_commands(
                 let notification_error = result.as_ref().err().map(ToString::to_string);
                 let _ = internal_tx
                     .send(InternalEvent::SubscriptionNotification {
-                        device_id: device_id.clone(),
-                        channel_id: Some(channel_id.clone()),
+                        device_id: alarm.device_id.clone(),
+                        channel_id: Some(alarm.channel_id.clone()),
                         command_type: PlatformCommandType::Alarm,
                         success: result.is_ok(),
                         error: notification_error,
@@ -102,7 +96,7 @@ pub(super) async fn run_business_commands(
                 if result.is_ok() {
                     let _ = internal_tx
                         .send(InternalEvent::ControlState {
-                            device_id: device_id.clone(),
+                            device_id: alarm.device_id.clone(),
                             action: None,
                             ptz_action: None,
                             guarded: None,
@@ -289,12 +283,6 @@ async fn send_subscription_notify(
     let sn = session.next_sn();
     let body = match command_type {
         PlatformCommandType::Catalog => build_catalog_notify_body(body_device_id, devices, sn),
-        PlatformCommandType::Alarm => {
-            build_alarm_notify_body(body_device_id, "0", "订阅已建立", sn)?
-        }
-        PlatformCommandType::MobilePosition => {
-            build_mobile_position_notify_body(body_device_id, 0.0, 0.0, sn)?
-        }
         _ => return Err(RegistrationRuntimeError::BusinessUnavailable),
     };
     session
@@ -310,20 +298,23 @@ async fn send_subscription_notify(
 }
 
 fn build_alarm_notify_body(
-    device_id: &str,
-    alarm_type: &str,
-    description: &str,
+    alarm: &AlarmTrigger,
     sn: u32,
 ) -> Result<String, RegistrationRuntimeError> {
-    let codec_device_id = CodecDeviceId::parse(device_id)
+    let codec_device_id = CodecDeviceId::parse(&alarm.channel_id)
         .map_err(|error| RegistrationRuntimeError::BusinessFailed(error.to_string()))?;
-    let mut alarm = AlarmInfo::new(
-        codec_device_id.to_string(),
-        alarm_type,
+    Ok(format!(
+        "<Notify><CmdType>Alarm</CmdType><SN>{sn}</SN><DeviceID>{}</DeviceID><AlarmPriority>{}</AlarmPriority><AlarmMethod>{}</AlarmMethod><AlarmTime>{}</AlarmTime><AlarmDescription>{}</AlarmDescription><Longitude>{:.6}</Longitude><Latitude>{:.6}</Latitude><Info><AlarmType>{}</AlarmType><AlarmStatus>{}</AlarmStatus></Info></Notify>",
+        xml_escape(codec_device_id.as_ref()),
+        xml_escape(&alarm.alarm_priority),
+        xml_escape(&alarm.alarm_method),
         simulation_timestamp(),
-    );
-    alarm.alarm_description = Some(description.to_owned());
-    Ok(Notify::alarm(sn, codec_device_id, vec![alarm]).to_xml())
+        xml_escape(&alarm.description),
+        alarm.longitude,
+        alarm.latitude,
+        xml_escape(&alarm.alarm_type),
+        xml_escape(&alarm.alarm_status),
+    ))
 }
 
 fn build_mobile_position_notify_body(
@@ -334,13 +325,11 @@ fn build_mobile_position_notify_body(
 ) -> Result<String, RegistrationRuntimeError> {
     let codec_device_id = CodecDeviceId::parse(device_id)
         .map_err(|error| RegistrationRuntimeError::BusinessFailed(error.to_string()))?;
-    let position = MobilePositionInfo::new(
-        codec_device_id.to_string(),
-        longitude,
-        latitude,
+    Ok(format!(
+        "<Notify><CmdType>MobilePosition</CmdType><SN>{sn}</SN><DeviceID>{}</DeviceID><Time>{}</Time><Longitude>{longitude:.6}</Longitude><Latitude>{latitude:.6}</Latitude><Speed>0.0</Speed><Direction>0.0</Direction><Altitude>0.0</Altitude></Notify>",
+        xml_escape(codec_device_id.as_ref()),
         simulation_timestamp(),
-    );
-    Ok(Notify::mobile_position_notify(sn, codec_device_id, vec![position]).to_xml())
+    ))
 }
 
 fn simulation_timestamp() -> String {
@@ -485,35 +474,58 @@ fn notify_dialog_context(subscription: &SubscriptionSnapshot) -> NotifyDialogCon
 mod tests {
     use std::collections::HashMap;
 
-    use siprs::siprs_gb28181_xml::{Message, Notify, parse_xml};
-
     use crate::{
         DeviceKind, SimulatedDevice,
         domain::{DeviceId, DeviceIdError},
     };
 
     use super::{
-        build_alarm_notify_body, build_catalog_notify_body, build_mobile_position_notify_body,
+        AlarmTrigger, RegistrationRuntimeError, build_alarm_notify_body, build_catalog_notify_body,
+        build_mobile_position_notify_body,
     };
 
     #[test]
-    fn typed_alarm_notify_should_escape_special_characters_and_round_trip() {
-        let xml =
-            build_alarm_notify_body("34020000001320000001", "1", "摄像机 <测试> & 报警", 7).ok();
+    fn flat_alarm_notify_should_include_platform_required_root_fields()
+    -> Result<(), RegistrationRuntimeError> {
+        let xml = build_alarm_notify_body(
+            &AlarmTrigger {
+                device_id: "34020000001320000001".to_owned(),
+                channel_id: "34020000001320000001".to_owned(),
+                alarm_priority: "1".to_owned(),
+                alarm_method: "2".to_owned(),
+                alarm_type: "1".to_owned(),
+                alarm_status: "Occur".to_owned(),
+                description: "摄像机 <测试> & 报警".to_owned(),
+                longitude: 116.397,
+                latitude: 39.908,
+            },
+            7,
+        )?;
+
+        assert!(xml.contains("<AlarmPriority>1</AlarmPriority>"));
+        assert!(xml.contains("<AlarmMethod>2</AlarmMethod>"));
+        assert!(xml.contains("<AlarmTime>"));
         assert!(
-            xml.as_deref()
-                .is_some_and(|value| value.contains("&lt;测试&gt;"))
+            xml.contains("<AlarmDescription>摄像机 &lt;测试&gt; &amp; 报警</AlarmDescription>")
         );
-        let Some(xml) = xml else { return };
-        let parsed = parse_xml(&xml).ok();
-        assert!(matches!(parsed, Some(Message::Notify(Notify { .. }))));
+        assert!(
+            xml.contains("<Info><AlarmType>1</AlarmType><AlarmStatus>Occur</AlarmStatus></Info>")
+        );
+        assert!(!xml.contains("<AlarmList"));
+        Ok(())
     }
 
     #[test]
-    fn typed_mobile_position_notify_should_round_trip() {
-        let xml = build_mobile_position_notify_body("34020000001320000001", 116.397, 39.908, 8);
-        let parsed = xml.ok().and_then(|value| parse_xml(&value).ok());
-        assert!(matches!(parsed, Some(Message::Notify(Notify { .. }))));
+    fn flat_mobile_position_notify_should_include_root_fields()
+    -> Result<(), RegistrationRuntimeError> {
+        let xml = build_mobile_position_notify_body("34020000001320000001", 116.397, 39.908, 8)?;
+
+        assert!(xml.contains("<CmdType>MobilePosition</CmdType>"));
+        assert!(xml.contains("<Time>"));
+        assert!(xml.contains("<Longitude>116.397000</Longitude>"));
+        assert!(xml.contains("<Latitude>39.908000</Latitude>"));
+        assert!(!xml.contains("<DeviceList"));
+        Ok(())
     }
 
     #[test]

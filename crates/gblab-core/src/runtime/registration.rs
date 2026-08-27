@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::types::{
-    BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
+    AlarmTrigger, BatchOperationAccepted, DeviceControlAction, DeviceRegistrationSnapshot,
     DeviceRegistrationStatus, InteractionDirection, InteractionLog, PtzAction, RegistrationEvent,
     RegistrationOperationStatus, RegistrationRuntimeError, RegistrationSnapshot,
 };
@@ -40,10 +40,7 @@ pub(super) enum RegistrationCommand {
         reply: oneshot::Sender<Result<BatchOperationAccepted, RegistrationRuntimeError>>,
     },
     TriggerAlarm {
-        device_id: String,
-        channel_id: String,
-        alarm_type: String,
-        description: String,
+        alarm: AlarmTrigger,
         reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
     },
     TriggerMobilePosition {
@@ -105,10 +102,7 @@ pub(super) enum InternalEvent {
 
 pub(super) enum BusinessCommand {
     Alarm {
-        device_id: String,
-        channel_id: String,
-        alarm_type: String,
-        description: String,
+        alarm: AlarmTrigger,
         subscription: SubscriptionSnapshot,
         reply: oneshot::Sender<Result<(), RegistrationRuntimeError>>,
     },
@@ -256,20 +250,14 @@ fn handle_command(
                 total: state.operation_total,
             }));
         }
-        RegistrationCommand::TriggerAlarm {
-            device_id,
-            channel_id,
-            alarm_type,
-            description,
-            reply,
-        } => {
+        RegistrationCommand::TriggerAlarm { alarm, reply } => {
             let Some(tx) = state.business_tx.clone() else {
                 let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
                 return;
             };
             let Some(subscription) = state.subscriptions.next_notify(
-                &device_id,
-                Some(&channel_id),
+                &alarm.device_id,
+                Some(&alarm.channel_id),
                 PlatformCommandType::Alarm,
                 now_millis(),
             ) else {
@@ -279,10 +267,7 @@ fn handle_command(
                 return;
             };
             let command = BusinessCommand::Alarm {
-                device_id,
-                channel_id,
-                alarm_type,
-                description,
+                alarm,
                 subscription,
                 reply,
             };
@@ -452,6 +437,7 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                     if request.expires == Some(0) {
                         state.subscriptions.cancel(&request);
                     } else if state.subscriptions.subscribe(&request, now).is_some()
+                        && should_send_initial_subscription_notify(request.command_type)
                         && let Some(subscription) = state.subscriptions.next_notify(
                             &event.device_id,
                             event.channel_id.as_deref(),
@@ -595,6 +581,10 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
     }
 }
 
+const fn should_send_initial_subscription_notify(command_type: PlatformCommandType) -> bool {
+    matches!(command_type, PlatformCommandType::Catalog)
+}
+
 fn flush_events(
     state: &mut SupervisorState,
     snapshot_tx: &watch::Sender<RegistrationSnapshot>,
@@ -643,4 +633,24 @@ fn xml_sn(message: &str) -> Option<String> {
         GbMessage::CascadingRegister(register) => register.sn,
     };
     Some(sn.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::PlatformCommandType;
+
+    use super::should_send_initial_subscription_notify;
+
+    #[test]
+    fn only_catalog_subscription_should_send_an_initial_notify() {
+        assert!(should_send_initial_subscription_notify(
+            PlatformCommandType::Catalog
+        ));
+        assert!(!should_send_initial_subscription_notify(
+            PlatformCommandType::Alarm
+        ));
+        assert!(!should_send_initial_subscription_notify(
+            PlatformCommandType::MobilePosition
+        ));
+    }
 }
