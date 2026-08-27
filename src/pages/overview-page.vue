@@ -13,7 +13,7 @@
     await store.loadDevices();
   });
 
-  function navigateTo(name: 'Devices' | 'SipService'): void {
+  function navigateTo(name: 'Devices' | 'GlobalSettings'): void {
     void router.push({ name });
   }
 </script>
@@ -52,7 +52,7 @@
           <strong>{{ store.sipService.uri }}</strong>
           <span>{{ store.sipService.transport }} · 平台 {{ store.sipService.platformId }}</span>
         </div>
-        <NButton secondary @click="navigateTo('SipService')">查看 SIP 服务</NButton>
+        <NButton secondary @click="navigateTo('GlobalSettings')">查看全局配置</NButton>
       </div>
     </NCard>
 

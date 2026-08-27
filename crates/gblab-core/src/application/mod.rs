@@ -258,7 +258,7 @@ mod tests {
 
     use super::CoreService;
     use crate::{
-        configuration::{SipServiceConfiguration, SipTransport},
+        configuration::{SignalCharset, SipServiceConfiguration, SipTransport},
         domain::{BatchDeviceDraft, DeviceKind, DeviceUpdateDraft},
     };
 
@@ -292,6 +292,7 @@ mod tests {
             local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
+            signal_charset: SignalCharset::Gb2312,
         };
 
         service.save_sip_service_configuration(configuration)?;

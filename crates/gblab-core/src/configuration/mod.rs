@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::domain::SimulatedDevice;
 
-const CURRENT_SCHEMA_VERSION: u8 = 1;
+const CURRENT_SCHEMA_VERSION: u8 = 2;
 const MAX_SIP_URI_LENGTH: usize = 256;
 const MAX_PASSWORD_LENGTH: usize = 128;
 const MAX_DOMAIN_LENGTH: usize = 64;
@@ -66,6 +66,33 @@ pub enum SipTransport {
     Tcp,
 }
 
+/// 全部模拟设备共享的 GB28181 XML 信令字符集。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SignalCharset {
+    /// GB2312。为兼容多数国标平台，作为默认字符集。
+    #[default]
+    #[serde(rename = "GB2312")]
+    Gb2312,
+    /// GBK。
+    #[serde(rename = "GBK")]
+    Gbk,
+    /// UTF-8。
+    #[serde(rename = "UTF-8")]
+    Utf8,
+}
+
+impl SignalCharset {
+    /// 返回用于 XML 声明和 Content-Type 的标准标签。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Gb2312 => "GB2312",
+            Self::Gbk => "GBK",
+            Self::Utf8 => "UTF-8",
+        }
+    }
+}
+
 /// 全部模拟设备共享的 SIP 服务配置。
 ///
 /// 密码作为模拟器配置明文读取、传输并写入 JSON。
@@ -92,6 +119,8 @@ pub struct SipServiceConfiguration {
     pub register_expires: u32,
     /// 心跳间隔，单位为秒。
     pub keepalive_interval: u32,
+    /// 全部设备共享的 GB28181 XML 信令字符集。
+    pub signal_charset: SignalCharset,
 }
 
 impl Default for SipServiceConfiguration {
@@ -107,6 +136,7 @@ impl Default for SipServiceConfiguration {
             local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
+            signal_charset: SignalCharset::Gb2312,
         }
     }
 }
@@ -410,7 +440,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration,
+        ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration, SignalCharset,
         SipServiceConfiguration, SipTransport,
     };
 
@@ -426,6 +456,7 @@ mod tests {
             local_port: 5_060,
             register_expires: 3_600,
             keepalive_interval: 60,
+            signal_charset: SignalCharset::Gb2312,
         }
     }
 
@@ -509,7 +540,23 @@ mod tests {
         let store = ConfigurationStore::open(&configuration_path)?;
 
         assert!(store.sip_service().password.is_empty());
+        assert_eq!(store.sip_service().signal_charset, SignalCharset::Gb2312);
         assert!(store.device_collection().devices.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn save_sip_service_should_persist_signal_charset() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+        let mut configuration = valid_sip_service();
+        configuration.signal_charset = SignalCharset::Utf8;
+
+        store.save_sip_service(configuration)?;
+        let reloaded = ConfigurationStore::open(&configuration_path)?;
+
+        assert_eq!(reloaded.sip_service().signal_charset, SignalCharset::Utf8);
         Ok(())
     }
 

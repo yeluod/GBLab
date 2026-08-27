@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use siprs::siprs_gb28181_xml::{Message as GbMessage, parse_xml};
+use siprs::siprs_gb28181_xml::Message as GbMessage;
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
     time::interval,
@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     SimulatedDevice, SipServiceConfiguration,
     runtime::{PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionSnapshot},
-    sip::{SipLogDirection, SipTransportEvent},
+    sip::{SipLogDirection, SipTransportEvent, parse_gb_xml},
 };
 
 use super::types::{
@@ -630,7 +630,7 @@ fn xml_sn(message: &str) -> Option<String> {
         .or_else(|| message.split_once("\n\n"))
         .map_or(message, |(_, body)| body)
         .trim();
-    let parsed = parse_xml(body).ok()?;
+    let parsed = parse_gb_xml(body).ok()?;
     let sn = match parsed {
         GbMessage::Query(query) => query.sn,
         GbMessage::Response(response) => response.sn,

@@ -50,7 +50,7 @@ src/
 │   └── bootstrap.ts
 ├── features/                       # 按业务领域组织
 │   ├── simulator/                  # 设备配置、派生通道与运行时状态；通过类型化 IPC 读写
-│   └── settings/                   # SIP 配置类型、读取与保存 API
+│   └── settings/                   # 全局平台/设备配置类型、读取与保存 API
 ├── infrastructure/                 # 技术适配，不包含业务规则
 │   └── tauri/                      # 类型化 command/event 客户端
 ├── layouts/                        # 桌面应用布局
@@ -120,6 +120,7 @@ crates/gblab-core/
 │   ├── sip/                        # siprs 隔离层
 │   │   ├── mod.rs
 │   │   ├── registration.rs         # 共享 UDP 客户端、连接与 SIP 错误类型
+│   │   ├── charset.rs              # GB2312、GBK、UTF-8 XML 编解码适配
 │   │   ├── transport.rs            # UDP 收发、入站请求与服务端事务缓存
 │   │   ├── dispatcher.rs           # Method/CmdType 分派与结构化响应
 │   │   ├── session.rs              # 设备 CSeq、Digest、REGISTER、MESSAGE、NOTIFY

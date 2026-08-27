@@ -1,6 +1,6 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
-    SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+    SignalCharset, SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,36 @@ impl From<SipTransportDto> for SipTransport {
     }
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub enum SignalCharsetDto {
+    #[serde(rename = "GB2312")]
+    Gb2312,
+    #[serde(rename = "GBK")]
+    Gbk,
+    #[serde(rename = "UTF-8")]
+    Utf8,
+}
+
+impl From<SignalCharset> for SignalCharsetDto {
+    fn from(value: SignalCharset) -> Self {
+        match value {
+            SignalCharset::Gb2312 => Self::Gb2312,
+            SignalCharset::Gbk => Self::Gbk,
+            SignalCharset::Utf8 => Self::Utf8,
+        }
+    }
+}
+
+impl From<SignalCharsetDto> for SignalCharset {
+    fn from(value: SignalCharsetDto) -> Self {
+        match value {
+            SignalCharsetDto::Gb2312 => Self::Gb2312,
+            SignalCharsetDto::Gbk => Self::Gbk,
+            SignalCharsetDto::Utf8 => Self::Utf8,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SipServiceConfigurationDto {
@@ -63,6 +93,7 @@ pub struct SipServiceConfigurationDto {
     local_port: u16,
     register_expires: u32,
     keepalive_interval: u32,
+    signal_charset: SignalCharsetDto,
 }
 
 impl SipServiceConfigurationDto {
@@ -78,6 +109,7 @@ impl SipServiceConfigurationDto {
             local_port: configuration.local_port,
             register_expires: configuration.register_expires,
             keepalive_interval: configuration.keepalive_interval,
+            signal_charset: configuration.signal_charset.into(),
         }
     }
 
@@ -93,6 +125,7 @@ impl SipServiceConfigurationDto {
             local_port: self.local_port,
             register_expires: self.register_expires,
             keepalive_interval: self.keepalive_interval,
+            signal_charset: self.signal_charset.into(),
         }
     }
 }
@@ -329,7 +362,7 @@ impl CommandErrorDto {
     pub fn registration_active() -> Self {
         Self {
             code: "registration_active",
-            message: "请先完成全量停止注册，再修改 SIP 或设备配置。".to_owned(),
+            message: "请先完成全量停止注册，再修改全局配置或设备数据。".to_owned(),
         }
     }
 

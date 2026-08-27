@@ -100,6 +100,9 @@ function validateSipServiceConfig(config: SipServiceConfig): OperationResult {
   if (config.transport !== 'UDP') {
     return { ok: false, message: '当前真实 SIP 传输仅支持 UDP。' };
   }
+  if (!['GB2312', 'GBK', 'UTF-8'].includes(config.signalCharset)) {
+    return { ok: false, message: '请选择有效的信令字符集。' };
+  }
   if (!config.uri.trim().startsWith('sip:')) {
     return { ok: false, message: 'SIP 地址必须以 sip: 开头。' };
   }
@@ -151,6 +154,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
     localPort: 5_060,
     registerExpires: 3_600,
     keepaliveInterval: 60,
+    signalCharset: 'GB2312',
   });
   const isSipServiceLoading = ref(false);
   const isSipServiceSaving = ref(false);
@@ -309,7 +313,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
 
   async function loadSipService(): Promise<OperationResult> {
     if (isSipServiceLoading.value) {
-      return { ok: false, message: 'SIP 服务配置正在加载。' };
+      return { ok: false, message: '全局配置正在加载。' };
     }
 
     isSipServiceLoading.value = true;
@@ -333,10 +337,10 @@ export const useSimulatorStore = defineStore('simulator', () => {
 
   async function saveSipService(config: SipServiceConfig): Promise<OperationResult> {
     if (isRegistrationActive.value) {
-      return { ok: false, message: '请先完成全量停止注册，再修改 SIP 服务配置。' };
+      return { ok: false, message: '请先完成全量停止注册，再修改全局配置。' };
     }
     if (isSipServiceSaving.value) {
-      return { ok: false, message: 'SIP 服务配置正在保存。' };
+      return { ok: false, message: '全局配置正在保存。' };
     }
     const normalized = normalizeSipServiceConfig(config);
     const validation = validateSipServiceConfig(normalized);

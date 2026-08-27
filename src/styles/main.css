@@ -514,6 +514,28 @@ select {
   gap: 0 16px;
 }
 
+.global-settings-page {
+  width: 100%;
+}
+
+.global-settings-card .n-card-content {
+  padding: 26px 30px 30px;
+}
+
+.settings-warning {
+  margin-bottom: 20px;
+}
+
+.settings-tab-pane {
+  padding-top: 18px;
+}
+
+.settings-section-description {
+  margin: 0 0 22px;
+  color: #8291a7;
+  font-size: 0.86rem;
+}
+
 .modal-actions {
   justify-content: flex-end;
 }

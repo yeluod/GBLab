@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    configuration::{SipServiceConfiguration, SipTransport},
+    configuration::{SignalCharset, SipServiceConfiguration, SipTransport},
     sip::transaction::{TransactionKey, TransactionManager},
 };
 
@@ -66,6 +66,8 @@ pub enum SipRegistrationError {
     Socket(String),
     #[error("SIP 报文构建失败: {0}")]
     Build(String),
+    #[error("SIP XML 字符集处理失败: {0}")]
+    Charset(String),
     #[error("SIP Digest 认证失败: {0}")]
     Authentication(String),
     #[error("SIP 事务等待响应超时")]
@@ -93,6 +95,7 @@ pub struct SipRegistrationClient {
     pub(super) invite_transactions: Mutex<HashMap<TransactionKey, Instant>>,
     pub(super) server_transactions: Mutex<HashMap<TransactionKey, CachedServerResponse>>,
     pub(super) query_cseq: AtomicU32,
+    pub(super) signal_charset: SignalCharset,
     dropped_events: AtomicU64,
     pub(super) query_executor: Arc<tokio::sync::Semaphore>,
 }
@@ -167,6 +170,7 @@ impl SipRegistrationClient {
             invite_transactions: Mutex::new(HashMap::new()),
             server_transactions: Mutex::new(HashMap::new()),
             query_cseq: AtomicU32::new(0),
+            signal_charset: configuration.signal_charset,
             dropped_events: AtomicU64::new(0),
             query_executor: Arc::new(tokio::sync::Semaphore::new(64)),
         }))
@@ -262,6 +266,23 @@ mod tests {
         assert!(matches!(
             result,
             InboundRequestDisposition::Respond { status: 400, .. }
+        ));
+    }
+
+    #[test]
+    fn dispatcher_should_accept_platform_gb2312_xml_declaration() {
+        let devices = HashMap::new();
+        let request = "MESSAGE sip:34020000002000000100 SIP/2.0\r\n\
+                       Content-Type: Application/MANSCDP+xml;charset=GB2312\r\n\r\n\
+                       <?xml version=\"1.0\" encoding=\"GB2312\" standalone=\"yes\"?>\n\
+                       <Query><CmdType>DeviceInfo</CmdType><SN>3152</SN>\
+                       <DeviceID>34020000002000000100</DeviceID></Query>";
+
+        let result = dispatch_inbound_request(request, Some("MESSAGE"), &devices);
+
+        assert!(matches!(
+            result,
+            InboundRequestDisposition::RespondAndQuery { .. }
         ));
     }
 

@@ -14,9 +14,10 @@ use siprs::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::configuration::SipServiceConfiguration;
+use crate::configuration::{SignalCharset, SipServiceConfiguration};
 
 use super::{
+    charset::encode_xml,
     notify::NotifyDialogContext,
     registration::{SipRegistrationClient, SipRegistrationError},
 };
@@ -61,6 +62,7 @@ pub struct DeviceSipSession {
     cseq: AtomicU32,
     nonce_count: AtomicU32,
     sn: AtomicU32,
+    signal_charset: SignalCharset,
 }
 
 impl DeviceSipSession {
@@ -97,6 +99,7 @@ impl DeviceSipSession {
             cseq: AtomicU32::new(0),
             nonce_count: AtomicU32::new(0),
             sn: AtomicU32::new(0),
+            signal_charset: configuration.signal_charset,
         })
     }
 
@@ -134,13 +137,9 @@ impl DeviceSipSession {
         channel_id: Option<String>,
     ) -> Result<(), SipRegistrationError> {
         let cseq = self.next_cseq();
+        let request = self.build_message_request(Method::Message, cseq, &body)?;
         client
-            .exchange_with_channel(
-                &self.device_id,
-                self.build_message_request(Method::Message, cseq, body),
-                cancellation,
-                channel_id,
-            )
+            .exchange_with_channel(&self.device_id, request, cancellation, channel_id)
             .await
             .map(|_| ())
     }
@@ -153,13 +152,9 @@ impl DeviceSipSession {
         channel_id: Option<String>,
         subscription: &NotifyDialogContext,
     ) -> Result<(), SipRegistrationError> {
+        let request = self.build_notify_request(&body, subscription)?;
         client
-            .exchange_with_channel(
-                &self.device_id,
-                self.build_notify_request(body, subscription),
-                cancellation,
-                channel_id,
-            )
+            .exchange_with_channel(&self.device_id, request, cancellation, channel_id)
             .await
             .map(|_| ())
     }
@@ -291,7 +286,14 @@ impl DeviceSipSession {
         }
     }
 
-    fn build_message_request(&self, method: Method, cseq: u32, body: String) -> SipRequest {
+    fn build_message_request(
+        &self,
+        method: Method,
+        cseq: u32,
+        body: &str,
+    ) -> Result<SipRequest, SipRegistrationError> {
+        let encoded = encode_xml(body, self.signal_charset)
+            .map_err(|error| SipRegistrationError::Charset(error.to_string()))?;
         let mut headers = HeaderCollection::new();
         headers.insert(
             HeaderName::Via,
@@ -322,7 +324,7 @@ impl DeviceSipSession {
         headers.insert(HeaderName::MaxForwards, HeaderValue::MaxForwards(70));
         headers.insert(
             HeaderName::ContentType,
-            HeaderValue::ContentType("Application/MANSCDP+xml".to_owned()),
+            HeaderValue::ContentType(encoded.content_type.clone()),
         );
         if method == Method::Notify {
             headers.insert(
@@ -334,7 +336,7 @@ impl DeviceSipSession {
                 HeaderValue::Raw("active".to_owned()),
             );
         }
-        SipRequest {
+        Ok(SipRequest {
             request_line: RequestLine {
                 method,
                 request_uri: self.registrar.clone(),
@@ -342,14 +344,18 @@ impl DeviceSipSession {
             },
             headers,
             body: Some(siprs::siprs_message::Body::new(
-                "Application/MANSCDP+xml",
-                body.into_bytes(),
+                encoded.content_type,
+                encoded.bytes,
             )),
-        }
+        })
     }
 
-    fn build_notify_request(&self, body: String, subscription: &NotifyDialogContext) -> SipRequest {
-        let mut request = self.build_message_request(Method::Notify, subscription.cseq, body);
+    fn build_notify_request(
+        &self,
+        body: &str,
+        subscription: &NotifyDialogContext,
+    ) -> Result<SipRequest, SipRegistrationError> {
+        let mut request = self.build_message_request(Method::Notify, subscription.cseq, body)?;
         if let Some(call_id) = subscription.call_id.as_ref() {
             request.headers.insert(
                 HeaderName::CallId,
@@ -380,7 +386,7 @@ impl DeviceSipSession {
                 HeaderValue::Raw(event.clone()),
             );
         }
-        request
+        Ok(request)
     }
 
     fn next_cseq(&self) -> u32 {

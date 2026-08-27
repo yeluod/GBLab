@@ -58,6 +58,7 @@ app → pages / layouts → features → infrastructure / shared
 - `computed` 表达派生状态，`watch` 仅处理必要副作用；订阅、计时器、事件监听和外部资源须在卸载时清理。
 - 异步交互必须覆盖 loading、成功、空数据、失败、取消和重复提交；列表使用稳定业务键。
 - Tauri command/event 的参数和返回值是明确、版本可控的 IPC 契约；前端不得绕过类型化封装直接散落调用。
+- “全局配置”页面只负责共享配置编排，按平台连接参数和设备运行参数分组；同一保存操作必须完整校验并原子持久化全部配置，禁止形成只在 UI 生效的伪配置项。
 - 用户可见文案默认使用中文；保持语义化结构、键盘可达性、表单标签、替代文本和图标按钮可访问名称。
 - 样式优先使用 Naive UI 主题覆盖、CSS 变量和既有断点；避免硬编码主题色、脆弱 DOM 选择器与无理由的 `!important`。
 
@@ -67,6 +68,7 @@ app → pages / layouts → features → infrastructure / shared
 - 不通过 shell 拼接启动 FFmpeg；使用 program/argv 边界。媒体路径、协议地址和端口必须经受控配置和校验。
 - 日志使用结构化字段；错误保留操作、资源、超时和底层原因等诊断上下文。模拟器运行数据、错误输出和日志内容均按原值传递，不做加密、脱敏、掩码或字段替换；交互日志按产品定义保留完整 SIP / GB28181 事件内容。
 - 外部流程按“原始输入 → 已校验领域命令 → 执行规格 → Adapter”转换；校验失败不得部分执行或套用默认行为。
+- GB28181 XML 字符集转换集中在 SIP Adapter；业务模块只产生 Unicode XML 模型。禁止在 GB2312/GBK 正文上直接使用 `String::from_utf8_lossy`，禁止让 XML 声明、Content-Type charset、实际字节编码或 Content-Length 相互矛盾。
 
 ## 测试与质量门禁
 

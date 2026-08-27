@@ -31,6 +31,7 @@ describe('SIP 服务配置 IPC', () => {
       localPort: 5_060,
       registerExpires: 3_600,
       keepaliveInterval: 60,
+      signalCharset: 'GB2312',
     } as const;
     invokeCommand.mockResolvedValue(configuration);
 

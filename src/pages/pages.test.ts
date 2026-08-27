@@ -39,7 +39,7 @@ vi.mock('@/features/simulator/device-api', () => deviceApiMocks);
 vi.mock('@/features/simulator/registration-api', () => registrationApiMocks);
 
 import DevicesPage from './devices-page.vue';
-import SipServicePage from './sip-service-page.vue';
+import GlobalSettingsPage from './global-settings-page.vue';
 import { useSimulatorStore } from '@/features/simulator';
 
 function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
@@ -116,8 +116,12 @@ describe('静态演示页面', () => {
       platformId: '34020000002000000001',
       domain: '3402000000',
       password: '',
+      localBindAddress: '0.0.0.0',
+      advertisedAddress: '',
+      localPort: 5_060,
       registerExpires: 3_600,
       keepaliveInterval: 60,
+      signalCharset: 'GB2312',
     });
     settingsMocks.saveSipServiceConfiguration.mockImplementation(async (configuration) =>
       Promise.resolve(configuration),
@@ -228,8 +232,8 @@ describe('静态演示页面', () => {
     expect(store.registrationOperationStatus).toBe('stopping');
   });
 
-  it('SIP 服务页应加载密码配置并通过桌面后端保存', async () => {
-    const wrapper = mount(SipServicePage, { global: { plugins: [createPinia()] } });
+  it('全局配置页应拆分平台与设备配置并通过桌面后端保存', async () => {
+    const wrapper = mount(GlobalSettingsPage, { global: { plugins: [createPinia()] } });
     await flushPromises();
     const passwordInput = wrapper
       .findAll('input')
@@ -243,9 +247,20 @@ describe('静态演示页面', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('认证密码');
+    expect(wrapper.text()).toContain('平台配置');
+    expect(wrapper.text()).toContain('设备配置');
     expect(passwordInput.attributes('type')).toBe('text');
     expect(settingsMocks.saveSipServiceConfiguration).toHaveBeenCalledWith(
       expect.objectContaining({ password: 'test-only-password' }),
     );
+
+    const deviceTab = wrapper.findAll('.n-tabs-tab').find((tab) => tab.text().includes('设备配置'));
+    if (deviceTab === undefined) {
+      throw new Error('未找到设备配置页签');
+    }
+    await deviceTab.trigger('click');
+    await nextTick();
+    expect(wrapper.text()).toContain('信令字符集');
+    expect(wrapper.text()).toContain('GB2312');
   });
 });

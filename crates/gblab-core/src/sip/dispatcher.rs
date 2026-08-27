@@ -15,14 +15,19 @@ use siprs::{
     },
 };
 
-use crate::{SimulatedDevice, domain::derive_channels_for_device};
+use crate::{SignalCharset, SimulatedDevice, domain::derive_channels_for_device};
 
-use super::{dialog::DialogId, registration::SipRegistrationError, transaction::TransactionKey};
+use super::{
+    charset::{sip_message_for_display, xml_without_declaration},
+    dialog::DialogId,
+    registration::SipRegistrationError,
+    transaction::TransactionKey,
+};
 
 pub(super) const SIP_MESSAGE_LIMIT: usize = 65_536;
 
-pub(super) fn payload_command_type(payload: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(payload);
+pub(super) fn payload_command_type(payload: &[u8], fallback: SignalCharset) -> Option<String> {
+    let text = sip_message_for_display(payload, fallback);
     sip_body(&text).and_then(xml_command_type)
 }
 
@@ -403,7 +408,7 @@ pub(super) fn dispatch_platform_request(
         return None;
     }
     let body = sip_body(request)?;
-    match parse_xml(body).ok()? {
+    match parse_gb_xml(body).ok()? {
         GbMessage::Query(query) => match query.cmd_type {
             CmdType::Catalog => Some(build_catalog_body(&query, devices)),
             CmdType::DeviceInfo => Some(build_device_info_body(
@@ -520,7 +525,7 @@ pub(super) fn sip_body(request: &str) -> Option<&str> {
 }
 
 pub(super) fn xml_metadata(xml: &str) -> (Option<String>, Option<String>) {
-    let Ok(message) = parse_xml(xml) else {
+    let Ok(message) = parse_gb_xml(xml) else {
         return (None, None);
     };
     match message {
@@ -546,6 +551,11 @@ pub(super) fn xml_metadata(xml: &str) -> (Option<String>, Option<String>) {
 
 pub(super) fn xml_command_type(xml: &str) -> Option<String> {
     xml_metadata(xml).1
+}
+
+/// 解析允许使用任意 XML 声明字符集与 standalone 属性的 GB28181 XML。
+pub fn parse_gb_xml(xml: &str) -> Result<GbMessage, siprs::siprs_gb28181_xml::XmlError> {
+    parse_xml(xml_without_declaration(xml))
 }
 
 pub(super) fn xml_escape(value: &str) -> String {

@@ -20,9 +20,13 @@ export const router = createRouter({
       component: () => import('@/pages/interaction-logs-page.vue'),
     },
     {
+      path: '/global-settings',
+      name: 'GlobalSettings',
+      component: () => import('@/pages/global-settings-page.vue'),
+    },
+    {
       path: '/sip-service',
-      name: 'SipService',
-      component: () => import('@/pages/sip-service-page.vue'),
+      redirect: { name: 'GlobalSettings' },
     },
   ],
 });

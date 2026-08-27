@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::SimulatedDevice;
 
 use super::{
+    charset::{encode_xml, prepare_inbound_sip_message, sip_message_for_display},
     dispatcher::{
         InboundRequestDisposition, SIP_MESSAGE_LIMIT, accept_sip_success, build_channel_index,
         build_request_response, dispatch_inbound_request, extract_header, header_u32_value,
@@ -72,14 +73,20 @@ impl SipRegistrationClient {
                 break;
             };
             let raw = &buffer[..size];
-            let Ok(message) = parser.parse(raw) else {
+            let Ok(prepared) = prepare_inbound_sip_message(raw, self.signal_charset) else {
                 continue;
             };
+            let Ok(message) = parser.parse(&prepared.parser_bytes) else {
+                continue;
+            };
+            let Ok(parse_text) = std::str::from_utf8(&prepared.parser_bytes) else {
+                continue;
+            };
+            let display_text = prepared.display_text;
             let SipMessage::Response(response) = message else {
                 let SipMessage::Request(request) = message else {
                     continue;
                 };
-                let text = String::from_utf8_lossy(raw).into_owned();
                 let server_key = transaction_key_from_request(&request);
                 let now = Instant::now();
                 self.invite_transactions
@@ -99,7 +106,7 @@ impl SipRegistrationClient {
                             timestamp_millis: now_millis(),
                             device_id: String::new(),
                             direction: SipLogDirection::Send,
-                            message: String::from_utf8_lossy(&payload).into_owned(),
+                            message: sip_message_for_display(&payload, self.signal_charset),
                             channel_id: None,
                             is_request: false,
                             method: None,
@@ -158,7 +165,7 @@ impl SipRegistrationClient {
                     timestamp_millis: now_millis(),
                     device_id: device_id.clone(),
                     direction: SipLogDirection::Receive,
-                    message: text.clone(),
+                    message: display_text,
                     channel_id,
                     is_request: true,
                     method: method.clone(),
@@ -171,11 +178,16 @@ impl SipRegistrationClient {
                     expires,
                 });
                 let disposition = self
-                    .dispatch_inbound_request(&request, &text, method.as_deref(), &catalog_devices)
+                    .dispatch_inbound_request(
+                        &request,
+                        parse_text,
+                        method.as_deref(),
+                        &catalog_devices,
+                    )
                     .await;
                 let response = disposition.response().map(|(status, reason)| {
                     build_request_response(
-                        &text,
+                        parse_text,
                         status,
                         reason,
                         local_tag.as_deref(),
@@ -256,7 +268,7 @@ impl SipRegistrationClient {
                     timestamp_millis: now_millis(),
                     device_id: context.device_id,
                     direction: SipLogDirection::Receive,
-                    message: String::from_utf8_lossy(raw).into_owned(),
+                    message: display_text.clone(),
                     channel_id: context.channel_id,
                     is_request: false,
                     method: context.method,
@@ -269,7 +281,7 @@ impl SipRegistrationClient {
                     expires: None,
                 });
             } else {
-                let response_text = String::from_utf8_lossy(raw).into_owned();
+                let response_text = display_text;
                 let requested_id = response
                     .headers
                     .get(&HeaderName::To)
@@ -354,7 +366,7 @@ impl SipRegistrationClient {
                     device_id: device_id.to_owned(),
                     channel_id: channel_id.clone(),
                     method: Some(request_method_name),
-                    command_type: payload_command_type(&payload),
+                    command_type: payload_command_type(&payload, self.signal_charset),
                 },
                 sender,
             )
@@ -372,11 +384,11 @@ impl SipRegistrationClient {
                 timestamp_millis: now_millis(),
                 device_id: device_id.to_owned(),
                 direction: SipLogDirection::Send,
-                message: String::from_utf8_lossy(&payload).into_owned(),
+                message: sip_message_for_display(&payload, self.signal_charset),
                 channel_id: channel_id.clone(),
                 is_request: true,
                 method: request_method(&payload),
-                command_type: payload_command_type(&payload),
+                command_type: payload_command_type(&payload, self.signal_charset),
                 event: None,
                 local_tag: None,
                 from_tag: None,
@@ -561,9 +573,11 @@ impl SipRegistrationClient {
             HeaderValue::Contact(ContactHeader::new(contact)),
         );
         headers.insert(HeaderName::MaxForwards, HeaderValue::MaxForwards(70));
+        let encoded = encode_xml(&body, self.signal_charset)
+            .map_err(|error| SipRegistrationError::Charset(error.to_string()))?;
         headers.insert(
             HeaderName::ContentType,
-            HeaderValue::ContentType("Application/MANSCDP+xml".to_owned()),
+            HeaderValue::ContentType(encoded.content_type.clone()),
         );
         let outbound = SipRequest {
             request_line: RequestLine {
@@ -573,8 +587,8 @@ impl SipRegistrationClient {
             },
             headers,
             body: Some(siprs::siprs_message::Body::new(
-                "Application/MANSCDP+xml",
-                body.into_bytes(),
+                encoded.content_type,
+                encoded.bytes,
             )),
         };
         self.exchange_with_channel(device_id, outbound, cancellation, None)

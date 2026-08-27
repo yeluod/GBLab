@@ -1,5 +1,6 @@
 //! `siprs` 的 GB28181 设备端隔离层。
 
+mod charset;
 mod dialog;
 mod dispatcher;
 pub(crate) mod notify;
@@ -9,6 +10,7 @@ mod time;
 pub(crate) mod transaction;
 mod transport;
 
+pub(crate) use dispatcher::parse_gb_xml;
 pub(crate) use notify::NotifyDialogContext;
 pub(crate) use registration::{
     SipLogDirection, SipRegistrationClient, SipRegistrationError, SipTransportEvent,

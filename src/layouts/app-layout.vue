@@ -12,7 +12,7 @@
     { label: '运行总览', key: 'Overview' },
     { label: '设备管理', key: 'Devices' },
     { label: '交互日志', key: 'InteractionLogs' },
-    { label: 'SIP 服务', key: 'SipService' },
+    { label: '全局配置', key: 'GlobalSettings' },
   ];
   const activeMenuKey = computed(() => String(route.name));
 
