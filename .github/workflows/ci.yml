@@ -13,6 +13,29 @@ permissions:
   contents: read
 
 jobs:
+  pull-request-title:
+    name: Pull request title
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Validate Conventional Commit title
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          title_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([[:alnum:]_./-]+\))?(!)?:[[:space:]]+.+$'
+          if [[ ! "$PULL_REQUEST_TITLE" =~ $title_pattern ]]; then
+            printf '%s\n' \
+              'Pull request title must follow Conventional Commit format.' \
+              'Examples:' \
+              '  feat(simulator): add device scenario' \
+              '  fix(release): upload desktop installers' \
+              '  chore(main): release 0.4.0' >&2
+            exit 1
+          fi
+
   quick-develop:
     name: Quick check (develop)
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
