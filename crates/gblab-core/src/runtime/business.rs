@@ -374,14 +374,8 @@ fn build_catalog_notify_body(
         );
     };
     let channels = crate::domain::derive_channels_for_device(device).unwrap_or_default();
-    let mut items = format!(
-        "<Device><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>ON</Status><ParentID>{}</ParentID></Device>",
-        xml_escape(&device.id.to_string()),
-        xml_escape(&device.name),
-        xml_escape(&device.manufacturer),
-        xml_escape(&device.model),
-        xml_escape(&device.id.to_string())
-    );
+    let count = channels.len();
+    let mut items = String::new();
     for channel in channels {
         let _ = write!(
             items,
@@ -393,7 +387,6 @@ fn build_catalog_notify_body(
             xml_escape(&device.id.to_string())
         );
     }
-    let count = device.channel_count as usize + 1;
     format!(
         "<Notify><CmdType>Catalog</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><SumNum>{count}</SumNum><DeviceList Num=\"{count}\">{items}</DeviceList></Notify>"
     )
@@ -490,9 +483,18 @@ fn notify_dialog_context(subscription: &SubscriptionSnapshot) -> NotifyDialogCon
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use siprs::siprs_gb28181_xml::{Message, Notify, parse_xml};
 
-    use super::{build_alarm_notify_body, build_mobile_position_notify_body};
+    use crate::{
+        DeviceKind, SimulatedDevice,
+        domain::{DeviceId, DeviceIdError},
+    };
+
+    use super::{
+        build_alarm_notify_body, build_catalog_notify_body, build_mobile_position_notify_body,
+    };
 
     #[test]
     fn typed_alarm_notify_should_escape_special_characters_and_round_trip() {
@@ -512,5 +514,27 @@ mod tests {
         let xml = build_mobile_position_notify_body("34020000001320000001", 116.397, 39.908, 8);
         let parsed = xml.ok().and_then(|value| parse_xml(&value).ok());
         assert!(matches!(parsed, Some(Message::Notify(Notify { .. }))));
+    }
+
+    #[test]
+    fn catalog_notify_should_only_contain_real_channels() -> Result<(), DeviceIdError> {
+        let device = SimulatedDevice {
+            id: DeviceId::new("34020000002000000100")?,
+            name: "模拟摄像机-001".to_owned(),
+            kind: DeviceKind::Camera,
+            manufacturer: "GBLab".to_owned(),
+            model: "SIM-CAM-100".to_owned(),
+            firmware_version: "V1.0.0".to_owned(),
+            channel_count: 1,
+            created_at: 0,
+        };
+        let devices = HashMap::from([(device.id.to_string(), device)]);
+
+        let xml = build_catalog_notify_body("34020000002000000100", &devices, 9);
+
+        assert!(xml.contains("<SumNum>1</SumNum><DeviceList Num=\"1\">"));
+        assert!(!xml.contains("<DeviceID>34020000002000000100</DeviceID><Name>"));
+        assert!(xml.contains("<DeviceID>34020000002000100001</DeviceID>"));
+        Ok(())
     }
 }

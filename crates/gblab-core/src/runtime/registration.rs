@@ -273,7 +273,9 @@ fn handle_command(
                 PlatformCommandType::Alarm,
                 now_millis(),
             ) else {
-                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                let _ = reply.send(Err(RegistrationRuntimeError::MissingActiveSubscription(
+                    "Alarm",
+                )));
                 return;
             };
             let command = BusinessCommand::Alarm {
@@ -305,7 +307,9 @@ fn handle_command(
                 PlatformCommandType::MobilePosition,
                 now_millis(),
             ) else {
-                let _ = reply.send(Err(RegistrationRuntimeError::BusinessUnavailable));
+                let _ = reply.send(Err(RegistrationRuntimeError::MissingActiveSubscription(
+                    "Mobile Position",
+                )));
                 return;
             };
             let command = BusinessCommand::MobilePosition {

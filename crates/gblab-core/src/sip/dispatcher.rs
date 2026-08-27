@@ -10,8 +10,8 @@ use siprs::{
         CmdType, DeviceItem, DeviceStatusInfo, Message as GbMessage, Query, Response, parse_xml,
     },
     siprs_message::{
-        ContactHeader, HeaderName, HeaderValue, MessageBuilder, MessageParser, Method, SipMessage,
-        SipRequest, SipResponse, SipUri, StatusLine, Tag,
+        ContactHeader, HeaderCollection, HeaderName, HeaderValue, MessageBuilder, MessageParser,
+        Method, SipMessage, SipRequest, SipResponse, SipUri, StatusLine, Tag,
     },
 };
 
@@ -302,24 +302,37 @@ pub(super) fn build_request_response(
     let parser = MessageParser::new(SIP_MESSAGE_LIMIT);
     if let Ok(SipMessage::Request(parsed)) = parser.parse(request.as_bytes()) {
         let method = parsed.request_line.method.to_string();
-        let mut headers = parsed.headers;
-        if status / 100 == 2
-            && let Some(local_tag) = local_tag
-            && let Some(HeaderValue::FromTo(to)) = headers.get(&HeaderName::To).cloned()
-        {
-            headers.insert(
-                HeaderName::To,
-                HeaderValue::FromTo(to.with_tag(Tag(local_tag.to_owned()))),
-            );
+        let request_headers = parsed.headers;
+        let mut headers = HeaderCollection::new();
+        for via in request_headers.get_all(&HeaderName::Via) {
+            headers.insert(HeaderName::Via, via.clone());
         }
-        if method == "SUBSCRIBE"
-            && let Ok(contact) =
+        for name in [HeaderName::From, HeaderName::CallId, HeaderName::CSeq] {
+            if let Some(value) = request_headers.get(&name) {
+                headers.insert(name, value.clone());
+            }
+        }
+        if let Some(to) = request_headers.get(&HeaderName::To).cloned() {
+            let to = match (status / 100 == 2, local_tag, to) {
+                (true, Some(local_tag), HeaderValue::FromTo(to)) => {
+                    HeaderValue::FromTo(to.with_tag(Tag(local_tag.to_owned())))
+                }
+                (_, _, value) => value,
+            };
+            headers.insert(HeaderName::To, to);
+        }
+        if method == "SUBSCRIBE" {
+            if let Some(expires) = request_headers.get(&HeaderName::Expires) {
+                headers.insert(HeaderName::Expires, expires.clone());
+            }
+            if let Ok(contact) =
                 SipUri::parse(&format!("sip:{device_id}@{advertised_ip}:{local_port}"))
-        {
-            headers.insert(
-                HeaderName::Contact,
-                HeaderValue::Contact(ContactHeader::new(contact)),
-            );
+            {
+                headers.insert(
+                    HeaderName::Contact,
+                    HeaderValue::Contact(ContactHeader::new(contact)),
+                );
+            }
         }
         if status == 405 {
             headers.insert(
@@ -484,14 +497,7 @@ pub(super) fn build_catalog_body(
     let Some(device) = devices.get(device_id) else {
         return Response::catalog(query.sn, query.device_id.clone(), 0, Vec::new()).to_xml();
     };
-    let mut items = Vec::with_capacity(device.channel_count as usize + 1);
-    let mut root = DeviceItem::new(query.device_id.clone());
-    root.name = Some(device.name.clone());
-    root.manufacturer = Some(device.manufacturer.clone());
-    root.model = Some(device.model.clone());
-    root.parent_id = Some(device.id.to_string());
-    root.status = Some("ON".to_owned());
-    items.push(root);
+    let mut items = Vec::with_capacity(device.channel_count as usize);
     if let Ok(channels) = derive_channels_for_device(device) {
         for channel in channels {
             let Ok(channel_id) = siprs::siprs_gb28181_codec::DeviceId::parse(channel.id.as_str())
@@ -565,4 +571,126 @@ pub(super) fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, net::IpAddr};
+
+    use siprs::siprs_gb28181_codec::DeviceId as CodecDeviceId;
+    use siprs::{
+        siprs_gb28181_xml::{Message as GbMessage, Query, parse_xml},
+        siprs_message::{HeaderName, MessageParser, SipMessage},
+    };
+
+    use crate::{
+        DeviceKind, SimulatedDevice,
+        domain::{DeviceId, DeviceIdError},
+    };
+
+    use super::{SIP_MESSAGE_LIMIT, build_catalog_body, build_request_response};
+
+    fn simulated_device(channel_count: u16) -> Result<SimulatedDevice, DeviceIdError> {
+        Ok(SimulatedDevice {
+            id: DeviceId::new("34020000002000000100")?,
+            name: "模拟摄像机-001".to_owned(),
+            kind: DeviceKind::Camera,
+            manufacturer: "GBLab".to_owned(),
+            model: "SIM-CAM-100".to_owned(),
+            firmware_version: "V1.0.0".to_owned(),
+            channel_count,
+            created_at: 0,
+        })
+    }
+
+    #[test]
+    fn catalog_response_should_only_contain_real_channels() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let device = simulated_device(1)?;
+        let device_id = CodecDeviceId::parse(device.id.as_str())?;
+        let query = Query::catalog(7, device_id);
+        let devices = HashMap::from([(device.id.to_string(), device)]);
+
+        let parsed = parse_xml(&build_catalog_body(&query, &devices))?;
+        let GbMessage::Response(response) = parsed else {
+            return Err("目录响应应解析为 Response".into());
+        };
+
+        assert_eq!(response.sum_num, Some(1));
+        assert_eq!(response.device_list.len(), 1);
+        assert_eq!(
+            response.device_list[0].device_id.as_str(),
+            "34020000002000100001"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_response_should_not_advertise_parent_device_as_channel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let device = simulated_device(2)?;
+        let device_id = CodecDeviceId::parse(device.id.as_str())?;
+        let query = Query::catalog(8, device_id);
+        let devices = HashMap::from([(device.id.to_string(), device)]);
+
+        let parsed = parse_xml(&build_catalog_body(&query, &devices))?;
+        let GbMessage::Response(response) = parsed else {
+            return Err("目录响应应解析为 Response".into());
+        };
+
+        assert!(
+            response
+                .device_list
+                .iter()
+                .all(|item| item.device_id.as_str() != "34020000002000000100")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn subscribe_response_should_only_contain_response_headers_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = "SUBSCRIBE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
+                       Via: SIP/2.0/UDP 192.168.10.91:5060;branch=z9hG4bK-platform\r\n\
+                       From: <sip:34020000002000000001@3402000000>;tag=platform-tag\r\n\
+                       To: <sip:34020000002000000100@192.168.10.94:5060>\r\n\
+                       Call-ID: alarm-subscription\r\n\
+                       CSeq: 9 SUBSCRIBE\r\n\
+                       Contact: <sip:34020000002000000001@192.168.10.91:5060>\r\n\
+                       Event: Alarm\r\n\
+                       Expires: 3599\r\n\
+                       Content-Type: Application/MANSCDP+xml;charset=GB2312\r\n\
+                       Content-Length: 0\r\n\r\n";
+
+        let payload = build_request_response(
+            request,
+            200,
+            "OK",
+            Some("device-tag"),
+            "34020000002000000100",
+            "192.168.10.94".parse::<IpAddr>()?,
+            5060,
+        );
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(payload.as_bytes())?;
+        let SipMessage::Response(response) = parsed else {
+            return Err("应构造 SIP Response".into());
+        };
+
+        for header in [
+            HeaderName::Via,
+            HeaderName::From,
+            HeaderName::To,
+            HeaderName::CallId,
+            HeaderName::CSeq,
+            HeaderName::Contact,
+        ] {
+            assert_eq!(
+                response.headers.get_all(&header).len(),
+                1,
+                "{header} 必须唯一"
+            );
+        }
+        assert!(!response.headers.contains(&HeaderName::ContentType));
+        Ok(())
+    }
 }

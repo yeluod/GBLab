@@ -170,6 +170,9 @@ pub enum RegistrationRuntimeError {
     /// 业务触发时设备会话不存在或运行时不可用。
     #[error("设备未注册或业务运行时不可用")]
     BusinessUnavailable,
+    /// 平台尚未建立当前业务需要的有效订阅。
+    #[error("平台尚未建立有效的 {0} 订阅")]
+    MissingActiveSubscription(&'static str),
     /// 业务 SIP 事务已完成，但平台返回了失败状态或传输失败。
     #[error("业务 SIP 事务失败: {0}")]
     BusinessFailed(String),

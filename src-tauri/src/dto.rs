@@ -367,8 +367,14 @@ impl CommandErrorDto {
     }
 
     pub fn registration(error: &RegistrationRuntimeError) -> Self {
+        let code = match error {
+            RegistrationRuntimeError::MissingActiveSubscription(_) => "subscription_unavailable",
+            RegistrationRuntimeError::BusinessUnavailable => "business_unavailable",
+            RegistrationRuntimeError::BusinessFailed(_) => "business_failed",
+            _ => "registration_error",
+        };
         Self {
-            code: "registration_error",
+            code,
             message: error.to_string(),
         }
     }

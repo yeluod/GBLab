@@ -355,37 +355,52 @@ impl DeviceSipSession {
         body: &str,
         subscription: &NotifyDialogContext,
     ) -> Result<SipRequest, SipRegistrationError> {
+        let call_id = subscription
+            .call_id
+            .as_ref()
+            .ok_or_else(|| SipRegistrationError::Build("订阅缺少 Call-ID".to_owned()))?;
+        let remote_tag = subscription
+            .remote_tag
+            .as_ref()
+            .ok_or_else(|| SipRegistrationError::Build("订阅缺少平台 From tag".to_owned()))?;
+        let local_tag = subscription
+            .local_tag
+            .as_ref()
+            .ok_or_else(|| SipRegistrationError::Build("订阅缺少设备 To tag".to_owned()))?;
+        let event = subscription
+            .event
+            .as_ref()
+            .ok_or_else(|| SipRegistrationError::Build("订阅缺少 Event".to_owned()))?;
         let mut request = self.build_message_request(Method::Notify, subscription.cseq, body)?;
-        if let Some(call_id) = subscription.call_id.as_ref() {
-            request.headers.insert(
-                HeaderName::CallId,
-                HeaderValue::CallId(CallId(call_id.clone())),
-            );
-        }
-        request.headers.insert(
+        replace_header(
+            &mut request.headers,
+            HeaderName::CallId,
+            HeaderValue::CallId(CallId(call_id.clone())),
+        );
+        replace_header(
+            &mut request.headers,
             HeaderName::CSeq,
             HeaderValue::CSeq(CSeqHeader::new(subscription.cseq, Method::Notify)),
         );
-        if let Some(tag) = subscription.remote_tag.as_ref() {
-            request.headers.insert(
-                HeaderName::To,
-                HeaderValue::FromTo(
-                    FromToHeader::new(self.registrar.clone()).with_tag(Tag(tag.clone())),
-                ),
-            );
-        }
-        if let Some(tag) = subscription.local_tag.as_ref() {
-            request.headers.insert(
-                HeaderName::From,
-                HeaderValue::FromTo(FromToHeader::new(self.aor.clone()).with_tag(Tag(tag.clone()))),
-            );
-        }
-        if let Some(event) = subscription.event.as_ref() {
-            request.headers.insert(
-                HeaderName::Extension("Event".to_owned()),
-                HeaderValue::Raw(event.clone()),
-            );
-        }
+        replace_header(
+            &mut request.headers,
+            HeaderName::To,
+            HeaderValue::FromTo(
+                FromToHeader::new(self.registrar.clone()).with_tag(Tag(remote_tag.clone())),
+            ),
+        );
+        replace_header(
+            &mut request.headers,
+            HeaderName::From,
+            HeaderValue::FromTo(
+                FromToHeader::new(self.aor.clone()).with_tag(Tag(local_tag.clone())),
+            ),
+        );
+        replace_header(
+            &mut request.headers,
+            HeaderName::Extension("Event".to_owned()),
+            HeaderValue::Raw(event.clone()),
+        );
         Ok(request)
     }
 
@@ -401,5 +416,59 @@ impl DeviceSipSession {
         } else {
             next
         }
+    }
+}
+
+fn replace_header(headers: &mut HeaderCollection, name: HeaderName, value: HeaderValue) {
+    headers.remove(&name);
+    headers.insert(name, value);
+}
+
+#[cfg(test)]
+mod tests {
+    use siprs::siprs_message::HeaderName;
+    use tokio::sync::mpsc;
+
+    use crate::{SignalCharset, SipServiceConfiguration};
+
+    use super::{DeviceSipSession, NotifyDialogContext, SipRegistrationClient};
+
+    #[tokio::test]
+    async fn notify_request_should_contain_one_value_for_each_dialog_header()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let configuration = SipServiceConfiguration {
+            uri: "sip:127.0.0.1:5099".to_owned(),
+            local_port: 0,
+            signal_charset: SignalCharset::Utf8,
+            ..SipServiceConfiguration::default()
+        };
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let client = SipRegistrationClient::connect(&configuration, event_tx).await?;
+        let session =
+            DeviceSipSession::new("34020000002000000100".to_owned(), &configuration, &client)?;
+        let dialog = NotifyDialogContext {
+            call_id: Some("subscription-call-id".to_owned()),
+            remote_tag: Some("platform-tag".to_owned()),
+            local_tag: Some("device-tag".to_owned()),
+            event: Some("Alarm".to_owned()),
+            cseq: 3,
+        };
+
+        let request = session.build_notify_request("<Notify></Notify>", &dialog)?;
+
+        for header in [
+            HeaderName::CallId,
+            HeaderName::CSeq,
+            HeaderName::From,
+            HeaderName::To,
+            HeaderName::Extension("Event".to_owned()),
+        ] {
+            assert_eq!(
+                request.headers.get_all(&header).len(),
+                1,
+                "{header} 必须唯一"
+            );
+        }
+        Ok(())
     }
 }

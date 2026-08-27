@@ -40,12 +40,24 @@ vi.mock('@/features/simulator/registration-api', () => registrationApiMocks);
 
 import DevicesPage from './devices-page.vue';
 import GlobalSettingsPage from './global-settings-page.vue';
-import { useSimulatorStore } from '@/features/simulator';
+import { useSimulatorStore, type SubscriptionSnapshot } from '@/features/simulator';
+
+let subscriptionListener: ((subscriptions: SubscriptionSnapshot[]) => void) | null = null;
 
 function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
   const button = wrapper.findAll('button').find((item) => item.text() === text);
   if (button === undefined) {
     throw new Error(`未找到按钮：${text}`);
+  }
+  return button;
+}
+
+function findDocumentButtonByText(text: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll('button')).find(
+    (item) => item.textContent?.trim() === text,
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`未找到页面按钮：${text}`);
   }
   return button;
 }
@@ -110,6 +122,7 @@ describe('静态演示页面', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     document.body.innerHTML = '';
+    subscriptionListener = null;
     settingsMocks.getSipServiceConfiguration.mockResolvedValue({
       uri: 'sip:192.168.1.100:5060',
       transport: 'UDP',
@@ -143,7 +156,10 @@ describe('静态演示页面', () => {
     registrationApiMocks.getRegistrationDeviceStates.mockResolvedValue([]);
     registrationApiMocks.listenRegistrationSnapshot.mockResolvedValue(() => undefined);
     registrationApiMocks.listenRegistrationDeviceStates.mockResolvedValue(() => undefined);
-    registrationApiMocks.listenRegistrationSubscriptions.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenRegistrationSubscriptions.mockImplementation(async (listener) => {
+      subscriptionListener = listener;
+      return () => undefined;
+    });
     registrationApiMocks.listenInteractionLogs.mockResolvedValue(() => undefined);
     registrationApiMocks.registerAllDevicesCommand.mockResolvedValue({
       operationId: '1',
@@ -213,6 +229,54 @@ describe('静态演示页面', () => {
 
     expect(document.body.textContent).toContain('平台订阅');
     expect(document.body.textContent).toContain('未订阅');
+  });
+
+  it('通道业务按钮应依据对应平台订阅启用', async () => {
+    registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
+      operationStatus: 'running',
+      operationId: 'registration-1',
+      totalDevices: 2,
+      registeredCount: 2,
+      failedCount: 0,
+      activeSubscriptions: 1,
+      droppedLogs: 0,
+    });
+    registrationApiMocks.getRegistrationDeviceStates.mockResolvedValue(
+      deviceSnapshot().devices.map((device) => ({
+        deviceId: device.id,
+        status: 'registered',
+        lastError: null,
+        expiresAt: Date.now() + 60_000,
+      })),
+    );
+    const wrapper = mount(DevicesPage, {
+      attachTo: document.body,
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+    const listener = subscriptionListener;
+    if (listener === null) throw new Error('订阅监听器未初始化');
+    listener([
+      {
+        deviceId: '34020000001320000001',
+        channelId: null,
+        commandType: 'alarm',
+        callId: 'alarm-call',
+        status: 'active',
+        expiresAt: Date.now() + 60_000,
+        lastNotifiedAt: null,
+        lastError: null,
+      },
+    ]);
+
+    await findButtonByText(wrapper, '通道').trigger('click');
+    await flushPromises();
+    const alarmButton = findDocumentButtonByText('报警模拟');
+    const positionButton = findDocumentButtonByText('移动位置');
+
+    expect(alarmButton.disabled).toBe(false);
+    expect(positionButton.disabled).toBe(true);
+    expect(document.body.textContent).toContain('报警 Alarm');
   });
 
   it('应通过全量操作更新全部设备注册状态并记录日志', async () => {

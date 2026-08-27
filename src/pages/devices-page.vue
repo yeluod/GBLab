@@ -238,6 +238,20 @@
     isTriggerModalOpen.value = true;
   }
 
+  function hasEventSubscription(channel: SimulatedChannel): boolean {
+    return (
+      channel.platformSubscriptions.includes('alarm') ||
+      channel.platformSubscriptions.includes('mobile-position')
+    );
+  }
+
+  function canTrigger(channel: SimulatedChannel, kind: 'alarm' | 'mobile-position'): boolean {
+    return (
+      channelDevice.value?.registrationStatus === 'registered' &&
+      channel.platformSubscriptions.includes(kind)
+    );
+  }
+
   async function submitTrigger(): Promise<void> {
     if (channelDevice.value === null) return;
     const result =
@@ -724,9 +738,19 @@
               </div>
               <NTag
                 size="small"
-                :type="channelDevice.registrationStatus === 'registered' ? 'success' : 'default'"
+                :type="
+                  channelDevice.registrationStatus === 'registered' && hasEventSubscription(channel)
+                    ? 'success'
+                    : 'default'
+                "
               >
-                {{ channelDevice.registrationStatus === 'registered' ? '可触发' : '未注册' }}
+                {{
+                  channelDevice.registrationStatus !== 'registered'
+                    ? '未注册'
+                    : hasEventSubscription(channel)
+                      ? '可触发'
+                      : '等待订阅'
+                }}
               </NTag>
             </div>
             <div class="channel-card-subscriptions">
@@ -748,7 +772,7 @@
                 size="small"
                 type="warning"
                 secondary
-                :disabled="channelDevice.registrationStatus !== 'registered'"
+                :disabled="!canTrigger(channel, 'alarm')"
                 @click="openAlarmTrigger(channel)"
                 >报警模拟</NButton
               >
@@ -756,7 +780,7 @@
                 size="small"
                 type="info"
                 secondary
-                :disabled="channelDevice.registrationStatus !== 'registered'"
+                :disabled="!canTrigger(channel, 'mobile-position')"
                 @click="openMobilePositionTrigger(channel)"
                 >移动位置</NButton
               >

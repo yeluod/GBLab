@@ -224,6 +224,7 @@ export const useSimulatorStore = defineStore('simulator', () => {
       .map((subscription) => ({
         id: `${subscription.deviceId}:${subscription.channelId ?? ''}:${subscription.commandType}`,
         deviceId: subscription.deviceId,
+        channelId: subscription.channelId,
         kind:
           subscription.commandType === 'alarm'
             ? 'alarm'
@@ -239,6 +240,27 @@ export const useSimulatorStore = defineStore('simulator', () => {
             : new Date(subscription.lastNotifiedAt).toISOString(),
         catalogPreview: [],
       }));
+    synchronizeChannelSubscriptions();
+  }
+
+  function activeSubscriptionKindsForChannel(channel: SimulatedChannel): SubscriptionKind[] {
+    return subscriptions.value
+      .filter(
+        (subscription) =>
+          subscription.deviceId === channel.deviceId &&
+          subscription.status === 'active' &&
+          (subscription.channelId === null || subscription.channelId === channel.id),
+      )
+      .map((subscription) => subscription.kind);
+  }
+
+  function synchronizeChannelSubscriptions(): void {
+    channels.value = channels.value.map((channel) => ({
+      ...channel,
+      platformSubscriptions: [
+        ...new Set(activeSubscriptionKindsForChannel(channel)),
+      ] as SubscriptionKind[],
+    }));
   }
 
   async function ensureRegistrationListeners(): Promise<void> {
@@ -275,18 +297,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   function applyDeviceChannels(derivedChannels: SimulatedChannel[]): void {
-    channels.value = derivedChannels.map((channel) => {
-      const platformSubscriptions = subscriptions.value
-        .filter(
-          (subscription) =>
-            subscription.deviceId === channel.deviceId && subscription.status === 'active',
-        )
-        .map((subscription) => subscription.kind);
-      return {
-        ...channel,
-        platformSubscriptions: [...new Set(platformSubscriptions)] as SubscriptionKind[],
-      };
-    });
+    channels.value = derivedChannels;
+    synchronizeChannelSubscriptions();
   }
 
   function appendInteractionLogs(logs: InteractionLog[]): void {

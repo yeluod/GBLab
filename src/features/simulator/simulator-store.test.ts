@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-import type { DeviceSnapshot } from './types';
+import type { DeviceSnapshot, SubscriptionSnapshot } from './types';
 
 const deviceApiMocks = vi.hoisted(() => ({
   getDeviceSnapshot: vi.fn(),
@@ -20,12 +20,18 @@ const registrationApiMocks = vi.hoisted(() => ({
   listenInteractionLogs: vi.fn(),
   registerAllDevicesCommand: vi.fn(),
   stopAllDeviceRegistrationCommand: vi.fn(),
+  triggerAlarmCommand: vi.fn(),
+  triggerMobilePositionCommand: vi.fn(),
+  controlDeviceCommand: vi.fn(),
+  controlPtzCommand: vi.fn(),
 }));
 
 vi.mock('./device-api', () => deviceApiMocks);
 vi.mock('./registration-api', () => registrationApiMocks);
 
 import { useSimulatorStore } from './simulator-store';
+
+let subscriptionListener: ((subscriptions: SubscriptionSnapshot[]) => void) | null = null;
 
 function initialSnapshot(): DeviceSnapshot {
   return {
@@ -60,6 +66,7 @@ describe('useSimulatorStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+    subscriptionListener = null;
     deviceApiMocks.getDeviceSnapshot.mockResolvedValue(initialSnapshot());
     deviceApiMocks.getDeviceChannels.mockResolvedValue(initialChannels());
     registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
@@ -74,7 +81,10 @@ describe('useSimulatorStore', () => {
     registrationApiMocks.getRegistrationDeviceStates.mockResolvedValue([]);
     registrationApiMocks.listenRegistrationSnapshot.mockResolvedValue(() => undefined);
     registrationApiMocks.listenRegistrationDeviceStates.mockResolvedValue(() => undefined);
-    registrationApiMocks.listenRegistrationSubscriptions.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenRegistrationSubscriptions.mockImplementation(async (listener) => {
+      subscriptionListener = listener;
+      return () => undefined;
+    });
     registrationApiMocks.listenInteractionLogs.mockResolvedValue(() => undefined);
     registrationApiMocks.registerAllDevicesCommand.mockResolvedValue({
       operationId: '1',
@@ -210,5 +220,39 @@ describe('useSimulatorStore', () => {
 
     expect(await store.stopAllDeviceRegistration()).toEqual({ ok: true });
     expect(store.registrationOperationStatus).toBe('stopping');
+  });
+
+  it('订阅变化应实时同步设备级和通道级业务能力', async () => {
+    const store = useSimulatorStore();
+    await store.loadDevices();
+    await store.loadDeviceChannels('34020000001320000001');
+    const listener = subscriptionListener;
+    if (listener === null) throw new Error('订阅监听器未初始化');
+
+    listener([
+      {
+        deviceId: '34020000001320000001',
+        channelId: null,
+        commandType: 'alarm',
+        callId: 'alarm-call',
+        status: 'active',
+        expiresAt: Date.now() + 60_000,
+        lastNotifiedAt: null,
+        lastError: null,
+      },
+      {
+        deviceId: '34020000001320000001',
+        channelId: '34020000001320001001',
+        commandType: 'mobilePosition',
+        callId: 'position-call',
+        status: 'active',
+        expiresAt: Date.now() + 60_000,
+        lastNotifiedAt: null,
+        lastError: null,
+      },
+    ]);
+
+    expect(store.channels[0]?.platformSubscriptions).toEqual(['alarm', 'mobile-position']);
+    expect(store.channels[1]?.platformSubscriptions).toEqual(['alarm']);
   });
 });

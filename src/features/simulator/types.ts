@@ -39,6 +39,7 @@ export type SubscriptionStatus = 'active' | 'inactive';
 export interface DeviceSubscription {
   id: string;
   deviceId: string;
+  channelId: string | null;
   kind: SubscriptionKind;
   status: SubscriptionStatus;
   expiresAt: string | null;
