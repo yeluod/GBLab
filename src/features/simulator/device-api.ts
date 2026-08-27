@@ -8,7 +8,7 @@ import type {
   SimulatedChannel,
 } from './types';
 
-/** 读取持久化设备及其即时派生通道。 */
+/** 读取持久化设备配置；通道通过单独接口按需派生。 */
 export function getDeviceSnapshot(): Promise<DeviceSnapshot> {
   return invokeCommand<DeviceSnapshot>('get_device_snapshot');
 }

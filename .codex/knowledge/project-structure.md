@@ -47,29 +47,14 @@ GBLab/
 src/
 ├── app/                            # 应用启动与全局装配
 │   ├── router/
-│   ├── stores/
 │   └── bootstrap.ts
 ├── features/                       # 按业务领域组织
 │   ├── simulator/                  # 设备配置、派生通道与运行时状态；通过类型化 IPC 读写
-│   ├── platforms/
-│   ├── devices/
-│   ├── channels/
-│   ├── scenarios/
-│   ├── media/
-│   ├── logs/
 │   └── settings/                   # SIP 配置类型、读取与保存 API
 ├── infrastructure/                 # 技术适配，不包含业务规则
-│   ├── tauri/                      # 类型化 command/event 客户端
-│   ├── telemetry/
-│   └── runtime/
+│   └── tauri/                      # 类型化 command/event 客户端
 ├── layouts/                        # 桌面应用布局
 ├── pages/                          # 路由页面与业务编排
-├── shared/                         # 无业务归属的稳定复用能力
-│   ├── components/
-│   ├── composables/
-│   ├── constants/
-│   ├── types/
-│   └── utils/
 ├── styles/                         # Naive UI 主题与全局样式
 ├── App.vue
 ├── main.ts
@@ -122,16 +107,27 @@ crates/gblab-core/
 │   ├── application/                # 用例与业务编排
 │   │   └── mod.rs                  # 当前提供 CoreService
 │   ├── runtime/                    # Tokio 生命周期与性能机制
-│   │   ├── mod.rs                  # 有界资源配置与运行时公开契约
-│   │   └── registration.rs         # 全量注册监督器、状态快照与批量事件
+│   │   ├── mod.rs                  # 运行时公开契约与资源限制
+│   │   ├── handle.rs               # 面向应用层的异步运行时句柄
+│   │   ├── registration.rs         # 单 owner 监督器、命令与内部事件路由
+│   │   ├── operations.rs           # 注册/注销 transient operation 执行器
+│   │   ├── business.rs             # Alarm、MobilePosition、控制与通知业务
+│   │   ├── platform.rs             # 平台请求、CmdType 与订阅状态机
+│   │   ├── scheduler.rs            # 共享节拍调度器
+│   │   ├── state.rs                # 运行态聚合与交互日志存储
+│   │   ├── types.rs                # 运行态 DTO、事件与错误类型
+│   │   └── time.rs                 # 运行时统一时间工具
 │   ├── sip/                        # siprs 隔离层
 │   │   ├── mod.rs
-│   │   └── registration.rs         # 共享 UDP 传输、REGISTER 与 Digest 适配
-│   ├── media/                      # FFmpeg 与媒体会话管理
-│   │   └── mod.rs
+│   │   ├── registration.rs         # 共享 UDP 客户端、连接与 SIP 错误类型
+│   │   ├── transport.rs            # UDP 收发、入站请求与服务端事务缓存
+│   │   ├── dispatcher.rs           # Method/CmdType 分派与结构化响应
+│   │   ├── session.rs              # 设备 CSeq、Digest、REGISTER、MESSAGE、NOTIFY
+│   │   ├── transaction.rs          # Call-ID/CSeq/Method/branch 事务匹配
+│   │   ├── dialog.rs                # INVITE 前置对话状态
+│   │   ├── notify.rs                # NOTIFY 对话上下文
+│   │   └── time.rs                  # SIP 热路径时间工具
 │   ├── configuration/              # JSON 配置读写
-│   │   └── mod.rs
-│   ├── observability/              # tracing、指标与日志采样
 │   │   └── mod.rs
 │   ├── error.rs
 │   └── lib.rs
@@ -145,7 +141,7 @@ domain
   ↑
 application ← runtime
   ↑
-sip / media / configuration / observability
+sip / configuration
   ↑
 src-tauri
 ```

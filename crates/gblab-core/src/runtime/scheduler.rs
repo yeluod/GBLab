@@ -8,6 +8,8 @@ use std::time::Duration;
 use tokio::{sync::broadcast, task::JoinHandle, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
+use super::time::now_millis;
+
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CHANNEL_CAPACITY: usize = 64;
 
@@ -47,14 +49,6 @@ impl Scheduler {
     pub(super) async fn join(self) {
         let _ = self.task.await;
     }
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[cfg(test)]

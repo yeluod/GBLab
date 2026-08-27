@@ -65,14 +65,6 @@ export interface InteractionLog {
   message: string;
 }
 
-/** Rust 侧交互日志分页查询结果。 */
-export interface InteractionLogPage {
-  items: InteractionLog[];
-  total: number;
-  offset: number;
-  limit: number;
-}
-
 /** Rust 注册运行时返回的单设备状态。 */
 export interface DeviceRegistrationSnapshot {
   deviceId: string;
@@ -93,9 +85,11 @@ export interface DeviceRegistrationSnapshot {
 export interface RegistrationSnapshot {
   operationStatus: RegistrationOperationStatus;
   operationId: string | null;
-  devices: DeviceRegistrationSnapshot[];
-  interactionLogs: Array<Omit<InteractionLog, 'id'> & { sequence: number }>;
-  subscriptions?: SubscriptionSnapshot[];
+  totalDevices: number;
+  registeredCount: number;
+  failedCount: number;
+  activeSubscriptions: number;
+  droppedLogs: number;
 }
 
 export type SubscriptionRuntimeStatus =

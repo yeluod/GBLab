@@ -7,7 +7,6 @@ export type {
   DeviceSubscription,
   DeviceType,
   InteractionLog,
-  InteractionLogPage,
   SimulatedChannel,
   SimulatedDevice,
   RegistrationStatus,

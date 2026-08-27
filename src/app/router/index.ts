@@ -1,10 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 
-import DevicesPage from '@/pages/devices-page.vue';
-import InteractionLogsPage from '@/pages/interaction-logs-page.vue';
-import OverviewPage from '@/pages/overview-page.vue';
-import SipServicePage from '@/pages/sip-service-page.vue';
-
 /** 桌面应用路由实例。 */
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -12,22 +7,22 @@ export const router = createRouter({
     {
       path: '/',
       name: 'Overview',
-      component: OverviewPage,
+      component: () => import('@/pages/overview-page.vue'),
     },
     {
       path: '/devices',
       name: 'Devices',
-      component: DevicesPage,
+      component: () => import('@/pages/devices-page.vue'),
     },
     {
       path: '/interaction-logs',
       name: 'InteractionLogs',
-      component: InteractionLogsPage,
+      component: () => import('@/pages/interaction-logs-page.vue'),
     },
     {
       path: '/sip-service',
       name: 'SipService',
-      component: SipServicePage,
+      component: () => import('@/pages/sip-service-page.vue'),
     },
   ],
 });

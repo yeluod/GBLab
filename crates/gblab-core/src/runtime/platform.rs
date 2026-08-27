@@ -320,6 +320,15 @@ impl SubscriptionManager {
         self.entries.values().cloned().collect()
     }
 
+    /// 返回当前有效订阅数量，不分配完整快照。
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| entry.status == SubscriptionRuntimeStatus::Active)
+            .count()
+    }
+
     /// 清空当前注册生命周期产生的运行时订阅。
     pub fn clear(&mut self) {
         self.entries.clear();

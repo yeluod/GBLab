@@ -1,0 +1,584 @@
+//! 共享 UDP 传输、入站 Request 处理与服务端事务缓存。
+
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
+
+use siprs::{
+    siprs_core::{Host, SipVersion, TransportProtocol},
+    siprs_message::{
+        CSeqHeader, CallId, ContactHeader, FromToHeader, HeaderCollection, HeaderName, HeaderValue,
+        MessageBuilder, MessageParser, Method, RequestLine, SipMessage, SipRequest, SipResponse,
+        SipUri, Tag, ViaHeader,
+    },
+};
+use tokio::{
+    sync::oneshot,
+    time::{Instant, sleep_until},
+};
+use tokio_util::sync::CancellationToken;
+
+use crate::SimulatedDevice;
+
+use super::{
+    dispatcher::{
+        InboundRequestDisposition, SIP_MESSAGE_LIMIT, accept_sip_success, build_channel_index,
+        build_request_response, dispatch_inbound_request, extract_header, header_u32_value,
+        invite_key_from_cancel, payload_command_type, request_body_text, request_call_id,
+        request_cseq, request_dialog_id, request_method, resolve_device_and_channel,
+        response_class, structured_header_value, transaction_key_from_request,
+        transaction_key_from_response, xml_metadata,
+    },
+    registration::{
+        CachedServerResponse, SipLogDirection, SipRegistrationClient, SipRegistrationError,
+        SipTransportEvent,
+    },
+    time::now_millis,
+    transaction::{TransactionContext, TransactionState},
+};
+
+const SERVER_TRANSACTION_TTL: Duration = Duration::from_secs(32);
+const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(8);
+const FIRST_RETRANSMIT_DELAY: Duration = Duration::from_millis(500);
+const MAX_RETRANSMISSIONS: u8 = 4;
+
+impl SipRegistrationClient {
+    pub(crate) async fn clear_server_transactions(&self) {
+        self.server_transactions.lock().await.clear();
+        self.invite_transactions.lock().await.clear();
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "共享接收循环必须完成解析、响应和事件投影"
+    )]
+    pub(crate) async fn receive_loop(
+        self: Arc<Self>,
+        cancellation: CancellationToken,
+        catalog_devices: Arc<HashMap<String, SimulatedDevice>>,
+    ) {
+        let parser = MessageParser::new(SIP_MESSAGE_LIMIT);
+        let mut buffer = vec![0_u8; SIP_MESSAGE_LIMIT];
+        let channel_index = build_channel_index(&catalog_devices);
+        loop {
+            let received = tokio::select! {
+                () = cancellation.cancelled() => break,
+                received = self.socket.recv(&mut buffer) => received,
+            };
+            let Ok(size) = received else {
+                break;
+            };
+            let raw = &buffer[..size];
+            let Ok(message) = parser.parse(raw) else {
+                continue;
+            };
+            let SipMessage::Response(response) = message else {
+                let SipMessage::Request(request) = message else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(raw).into_owned();
+                let server_key = transaction_key_from_request(&request);
+                let now = Instant::now();
+                self.invite_transactions
+                    .lock()
+                    .await
+                    .retain(|_, expires_at| *expires_at > now);
+                {
+                    let mut transactions = self.server_transactions.lock().await;
+                    transactions.retain(|_, cached| cached.expires_at > now);
+                    if let Some(key) = server_key.as_ref()
+                        && let Some(cached) = transactions.get(key)
+                    {
+                        let payload = cached.response.clone();
+                        drop(transactions);
+                        let _ = self.socket.send(&payload).await;
+                        self.emit_event(SipTransportEvent {
+                            timestamp_millis: now_millis(),
+                            device_id: String::new(),
+                            direction: SipLogDirection::Send,
+                            message: String::from_utf8_lossy(&payload).into_owned(),
+                            channel_id: None,
+                            is_request: false,
+                            method: None,
+                            command_type: None,
+                            event: None,
+                            local_tag: None,
+                            from_tag: None,
+                            request_uri: None,
+                            call_id: request_call_id(&request),
+                            expires: None,
+                        });
+                        continue;
+                    }
+                }
+                let body = request_body_text(&request);
+                let (requested_id, parsed_command_type) = xml_metadata(&body);
+                let requested_id = requested_id.unwrap_or_default();
+                let (device_id, channel_id) =
+                    resolve_device_and_channel(&requested_id, &catalog_devices, &channel_index);
+                let method = Some(request.request_line.method.to_string());
+                let is_subscribe = method.as_deref() == Some("SUBSCRIBE");
+                let command_type = parsed_command_type;
+                let event =
+                    structured_header_value(&request, &HeaderName::Extension("Event".to_owned()));
+                let from_tag = request
+                    .headers
+                    .get(&HeaderName::From)
+                    .and_then(HeaderValue::as_from_to)
+                    .and_then(|header| header.tag.as_ref())
+                    .map(ToString::to_string);
+                let request_uri = Some(request.request_line.request_uri.to_string());
+                let call_id = request
+                    .headers
+                    .get(&HeaderName::CallId)
+                    .and_then(HeaderValue::as_call_id)
+                    .map(|value| value.0.clone());
+                let expires = request
+                    .headers
+                    .get(&HeaderName::Expires)
+                    .and_then(header_u32_value);
+                let local_tag = if is_subscribe {
+                    if let Some(call_id) = call_id.as_ref() {
+                        let mut tags = self.subscription_tags.lock().await;
+                        Some(
+                            tags.entry(call_id.clone())
+                                .or_insert_with(|| Tag::new().to_string())
+                                .clone(),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.emit_event(SipTransportEvent {
+                    timestamp_millis: now_millis(),
+                    device_id: device_id.clone(),
+                    direction: SipLogDirection::Receive,
+                    message: text.clone(),
+                    channel_id,
+                    is_request: true,
+                    method: method.clone(),
+                    command_type,
+                    event,
+                    local_tag: local_tag.clone(),
+                    from_tag,
+                    request_uri: request_uri.clone(),
+                    call_id: call_id.clone(),
+                    expires,
+                });
+                let disposition = self
+                    .dispatch_inbound_request(&request, &text, method.as_deref(), &catalog_devices)
+                    .await;
+                let response = disposition.response().map(|(status, reason)| {
+                    build_request_response(
+                        &text,
+                        status,
+                        reason,
+                        local_tag.as_deref(),
+                        &device_id,
+                        self.advertised_ip,
+                        self.local_port,
+                    )
+                });
+                if let Some(response) = response {
+                    let response_call_id = extract_header(&response, "Call-ID");
+                    let payload = response.as_bytes().to_vec();
+                    let _ = self.socket.send(&payload).await;
+                    if let Some(key) = server_key.clone() {
+                        self.server_transactions.lock().await.insert(
+                            key,
+                            CachedServerResponse {
+                                response: payload,
+                                expires_at: Instant::now() + SERVER_TRANSACTION_TTL,
+                            },
+                        );
+                    }
+                    self.emit_event(SipTransportEvent {
+                        timestamp_millis: now_millis(),
+                        device_id: device_id.clone(),
+                        direction: SipLogDirection::Send,
+                        message: response,
+                        channel_id: None,
+                        is_request: false,
+                        method: None,
+                        command_type: None,
+                        event: None,
+                        local_tag: None,
+                        from_tag: None,
+                        request_uri: None,
+                        call_id: response_call_id,
+                        expires: None,
+                    });
+                    if is_subscribe
+                        && expires == Some(0)
+                        && let Some(call_id) = call_id.as_ref()
+                    {
+                        self.subscription_tags.lock().await.remove(call_id);
+                    }
+                }
+                if let InboundRequestDisposition::RespondAndQuery { body } = disposition {
+                    let client = Arc::clone(&self);
+                    let executor = Arc::clone(&self.query_executor);
+                    let request = request.clone();
+                    let device_id = device_id.clone();
+                    let cancellation = cancellation.clone();
+                    tokio::spawn(async move {
+                        let Ok(_permit) = executor.acquire_owned().await else {
+                            return;
+                        };
+                        let _ = client
+                            .send_query_response(&device_id, &request, body, &cancellation)
+                            .await;
+                    });
+                }
+                continue;
+            };
+            let Some(call_id) = response
+                .headers
+                .get(&HeaderName::CallId)
+                .and_then(HeaderValue::as_call_id)
+                .map(|value| value.0.clone())
+            else {
+                continue;
+            };
+            let transaction_key = transaction_key_from_response(&response);
+            let is_final = response_class(response.status_line.status_code.0).is_final();
+            let context = match transaction_key.as_ref() {
+                Some(key) => self.transactions.context(key).await,
+                None => None,
+            };
+            if let Some(context) = context {
+                self.emit_event(SipTransportEvent {
+                    timestamp_millis: now_millis(),
+                    device_id: context.device_id,
+                    direction: SipLogDirection::Receive,
+                    message: String::from_utf8_lossy(raw).into_owned(),
+                    channel_id: context.channel_id,
+                    is_request: false,
+                    method: context.method,
+                    command_type: context.command_type,
+                    event: None,
+                    local_tag: None,
+                    from_tag: None,
+                    request_uri: None,
+                    call_id: Some(call_id.clone()),
+                    expires: None,
+                });
+            } else {
+                let response_text = String::from_utf8_lossy(raw).into_owned();
+                let requested_id = response
+                    .headers
+                    .get(&HeaderName::To)
+                    .or_else(|| response.headers.get(&HeaderName::From))
+                    .and_then(HeaderValue::as_from_to)
+                    .and_then(|header| header.uri.user_info.as_ref())
+                    .map(|user| user.user.clone());
+                let (device_id, channel_id) = requested_id
+                    .as_deref()
+                    .map(|value| {
+                        resolve_device_and_channel(value, &catalog_devices, &channel_index)
+                    })
+                    .unwrap_or_default();
+                let method = response
+                    .headers
+                    .get(&HeaderName::CSeq)
+                    .and_then(HeaderValue::as_cseq)
+                    .map(|cseq| cseq.method.to_string());
+                self.emit_event(SipTransportEvent {
+                    timestamp_millis: now_millis(),
+                    device_id,
+                    direction: SipLogDirection::Receive,
+                    message: response_text,
+                    channel_id,
+                    is_request: false,
+                    method,
+                    command_type: None,
+                    event: None,
+                    local_tag: None,
+                    from_tag: None,
+                    request_uri: None,
+                    call_id: Some(call_id.clone()),
+                    expires: None,
+                });
+            }
+            if is_final
+                && let Some(sender) = self.transactions.take_final(transaction_key.as_ref()).await
+            {
+                let _ = sender.send(response);
+            }
+        }
+    }
+
+    /// 执行带通道上下文的业务交换，并只接受 SIP 2xx。
+    pub(super) async fn exchange_with_channel(
+        &self,
+        device_id: &str,
+        request: SipRequest,
+        cancellation: &CancellationToken,
+        channel_id: Option<String>,
+    ) -> Result<SipResponse, SipRegistrationError> {
+        let response = self
+            .exchange_raw(device_id, request, cancellation, channel_id)
+            .await?;
+        accept_sip_success(response)
+    }
+
+    pub(super) async fn exchange_raw(
+        &self,
+        device_id: &str,
+        request: SipRequest,
+        cancellation: &CancellationToken,
+        channel_id: Option<String>,
+    ) -> Result<SipResponse, SipRegistrationError> {
+        let transaction_key = transaction_key_from_request(&request)
+            .ok_or_else(|| SipRegistrationError::Build("SIP 请求缺少事务头部".to_owned()))?;
+        let request_method_name = request.request_line.method.to_string();
+        let call_id = request
+            .headers
+            .get(&HeaderName::CallId)
+            .and_then(HeaderValue::as_call_id)
+            .map(|value| value.0.clone())
+            .ok_or_else(|| SipRegistrationError::Build("SIP 请求缺少 Call-ID".to_owned()))?;
+        let payload = MessageBuilder::with_validation(true)
+            .build(&SipMessage::Request(request))
+            .map_err(|error| SipRegistrationError::Build(error.to_string()))?;
+        let (sender, mut receiver) = oneshot::channel();
+        self.transactions
+            .register(
+                transaction_key.clone(),
+                TransactionContext {
+                    device_id: device_id.to_owned(),
+                    channel_id: channel_id.clone(),
+                    method: Some(request_method_name),
+                    command_type: payload_command_type(&payload),
+                },
+                sender,
+            )
+            .await;
+
+        let deadline = Instant::now() + TRANSACTION_TIMEOUT;
+        let mut delay = FIRST_RETRANSMIT_DELAY;
+        let mut transmissions = 0_u8;
+        let result = loop {
+            if let Err(error) = self.socket.send(&payload).await {
+                break Err(SipRegistrationError::Socket(error.to_string()));
+            }
+            transmissions = transmissions.saturating_add(1);
+            self.emit_event(SipTransportEvent {
+                timestamp_millis: now_millis(),
+                device_id: device_id.to_owned(),
+                direction: SipLogDirection::Send,
+                message: String::from_utf8_lossy(&payload).into_owned(),
+                channel_id: channel_id.clone(),
+                is_request: true,
+                method: request_method(&payload),
+                command_type: payload_command_type(&payload),
+                event: None,
+                local_tag: None,
+                from_tag: None,
+                request_uri: None,
+                call_id: Some(call_id.clone()),
+                expires: None,
+            });
+
+            let wake_at = if transmissions < MAX_RETRANSMISSIONS {
+                (Instant::now() + delay).min(deadline)
+            } else {
+                deadline
+            };
+            tokio::select! {
+                () = cancellation.cancelled() => break Err(SipRegistrationError::Cancelled),
+                response = &mut receiver => {
+                    break response.map_err(|_| SipRegistrationError::Timeout);
+                }
+                () = sleep_until(wake_at) => {
+                    if Instant::now() >= deadline {
+                        let _ = self
+                            .transactions
+                            .finish_without_response(&transaction_key, TransactionState::TimedOut)
+                            .await;
+                        break Err(SipRegistrationError::Timeout);
+                    }
+                    let _ = self.transactions.record_retransmission(&transaction_key).await;
+                    delay = delay.saturating_mul(2);
+                }
+            }
+        };
+
+        if matches!(result, Err(SipRegistrationError::Cancelled)) {
+            let _ = self
+                .transactions
+                .finish_without_response(&transaction_key, TransactionState::Cancelled)
+                .await;
+        } else {
+            self.transactions.remove(&transaction_key).await;
+        }
+        result
+    }
+
+    async fn dispatch_inbound_request(
+        &self,
+        request: &SipRequest,
+        raw: &str,
+        method: Option<&str>,
+        devices: &HashMap<String, SimulatedDevice>,
+    ) -> InboundRequestDisposition {
+        let method_name = method.unwrap_or_default().to_ascii_uppercase();
+        match method_name.as_str() {
+            "CANCEL" => {
+                let mut invites = self.invite_transactions.lock().await;
+                invites.retain(|_, expires_at| *expires_at > Instant::now());
+                let key = invite_key_from_cancel(request);
+                let disposition = key.map_or(
+                    InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    },
+                    |key| {
+                        if invites.remove(&key).is_none() {
+                            return InboundRequestDisposition::Respond {
+                                status: 481,
+                                reason: "Call/Transaction Does Not Exist",
+                            };
+                        }
+                        InboundRequestDisposition::Respond {
+                            status: 200,
+                            reason: "OK",
+                        }
+                    },
+                );
+                drop(invites);
+                disposition
+            }
+            "BYE" => {
+                let Some(dialog_id) = request_dialog_id(request) else {
+                    return InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    };
+                };
+                if self.dialogs.lock().await.terminate(&dialog_id) {
+                    InboundRequestDisposition::Respond {
+                        status: 200,
+                        reason: "OK",
+                    }
+                } else {
+                    InboundRequestDisposition::Respond {
+                        status: 481,
+                        reason: "Call/Transaction Does Not Exist",
+                    }
+                }
+            }
+            "ACK" => {
+                if let Some(dialog_id) = request_dialog_id(request)
+                    && let Some(cseq) = request_cseq(request)
+                {
+                    let _ = self.dialogs.lock().await.confirm(&dialog_id, cseq);
+                }
+                InboundRequestDisposition::NoResponse
+            }
+            "INVITE" => {
+                if let Some(key) = transaction_key_from_request(request) {
+                    self.invite_transactions
+                        .lock()
+                        .await
+                        .insert(key, Instant::now() + SERVER_TRANSACTION_TTL);
+                }
+                // 媒体能力尚未启用，明确拒绝而不是伪造 200/SDP。
+                InboundRequestDisposition::Respond {
+                    status: 488,
+                    reason: "Not Acceptable Here",
+                }
+            }
+            _ => dispatch_inbound_request(raw, method, devices),
+        }
+    }
+
+    pub(super) const fn endpoint_host(&self) -> Host {
+        match self.advertised_ip {
+            IpAddr::V4(address) => Host::IPv4(address),
+            IpAddr::V6(address) => Host::IPv6(address),
+        }
+    }
+
+    pub(super) const fn local_port(&self) -> u16 {
+        self.local_port
+    }
+
+    async fn send_query_response(
+        &self,
+        device_id: &str,
+        request: &SipRequest,
+        body: String,
+        cancellation: &CancellationToken,
+    ) -> Result<(), SipRegistrationError> {
+        let aor = SipUri::parse(&format!("sip:{device_id}@{}", self.domain))
+            .map_err(|error| SipRegistrationError::InvalidUri(error.to_string()))?;
+        let contact = SipUri::parse(&format!(
+            "sip:{device_id}@{}:{}",
+            self.advertised_ip, self.local_port
+        ))
+        .map_err(|error| SipRegistrationError::InvalidUri(error.to_string()))?;
+        let cseq = self
+            .query_cseq
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let mut headers = HeaderCollection::new();
+        headers.insert(
+            HeaderName::Via,
+            HeaderValue::Via(ViaHeader::new(
+                TransportProtocol::Udp,
+                contact.host.clone(),
+                contact.port,
+            )),
+        );
+        headers.insert(
+            HeaderName::From,
+            HeaderValue::FromTo(FromToHeader::new(aor.clone()).with_tag(Tag::new())),
+        );
+        headers.insert(
+            HeaderName::To,
+            request
+                .headers
+                .get(&HeaderName::From)
+                .cloned()
+                .unwrap_or_else(|| HeaderValue::FromTo(FromToHeader::new(self.registrar.clone()))),
+        );
+        headers.insert(
+            HeaderName::CallId,
+            HeaderValue::CallId(CallId::with_host(&self.endpoint_host().to_string())),
+        );
+        headers.insert(
+            HeaderName::CSeq,
+            HeaderValue::CSeq(CSeqHeader::new(cseq, Method::Message)),
+        );
+        headers.insert(
+            HeaderName::Contact,
+            HeaderValue::Contact(ContactHeader::new(contact)),
+        );
+        headers.insert(HeaderName::MaxForwards, HeaderValue::MaxForwards(70));
+        headers.insert(
+            HeaderName::ContentType,
+            HeaderValue::ContentType("Application/MANSCDP+xml".to_owned()),
+        );
+        let outbound = SipRequest {
+            request_line: RequestLine {
+                method: Method::Message,
+                request_uri: self.registrar.clone(),
+                version: SipVersion,
+            },
+            headers,
+            body: Some(siprs::siprs_message::Body::new(
+                "Application/MANSCDP+xml",
+                body.into_bytes(),
+            )),
+        };
+        self.exchange_with_channel(device_id, outbound, cancellation, None)
+            .await
+            .map(|_| ())
+    }
+}

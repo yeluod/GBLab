@@ -1,12 +1,19 @@
 //! `siprs` 的 GB28181 设备端隔离层。
 
+mod dialog;
+mod dispatcher;
+pub(crate) mod notify;
 mod registration;
+mod session;
+mod time;
 pub(crate) mod transaction;
+mod transport;
 
+pub(crate) use notify::NotifyDialogContext;
 pub(crate) use registration::{
-    DeviceSipSession, SipLogDirection, SipRegistrationClient, SipRegistrationError,
-    SipTransportEvent,
+    SipLogDirection, SipRegistrationClient, SipRegistrationError, SipTransportEvent,
 };
+pub(crate) use session::DeviceSipSession;
 
 /// 返回当前采用的 SIP 协议栈名称。
 #[must_use]

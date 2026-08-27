@@ -13,7 +13,10 @@ const deviceApiMocks = vi.hoisted(() => ({
 
 const registrationApiMocks = vi.hoisted(() => ({
   getRegistrationSnapshot: vi.fn(),
+  getRegistrationDeviceStates: vi.fn(),
   listenRegistrationSnapshot: vi.fn(),
+  listenRegistrationDeviceStates: vi.fn(),
+  listenRegistrationSubscriptions: vi.fn(),
   listenInteractionLogs: vi.fn(),
   registerAllDevicesCommand: vi.fn(),
   stopAllDeviceRegistrationCommand: vi.fn(),
@@ -62,11 +65,16 @@ describe('useSimulatorStore', () => {
     registrationApiMocks.getRegistrationSnapshot.mockResolvedValue({
       operationStatus: 'idle',
       operationId: null,
-      devices: [],
-      interactionLogs: [],
-      subscriptions: [],
+      totalDevices: 0,
+      registeredCount: 0,
+      failedCount: 0,
+      activeSubscriptions: 0,
+      droppedLogs: 0,
     });
+    registrationApiMocks.getRegistrationDeviceStates.mockResolvedValue([]);
     registrationApiMocks.listenRegistrationSnapshot.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenRegistrationDeviceStates.mockResolvedValue(() => undefined);
+    registrationApiMocks.listenRegistrationSubscriptions.mockResolvedValue(() => undefined);
     registrationApiMocks.listenInteractionLogs.mockResolvedValue(() => undefined);
     registrationApiMocks.registerAllDevicesCommand.mockResolvedValue({
       operationId: '1',

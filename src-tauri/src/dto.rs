@@ -1,7 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
     SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
-    runtime::{BatchOperationAccepted, InteractionLog, RegistrationRuntimeError},
+    runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
 
@@ -218,124 +218,13 @@ pub struct DevicePageDto {
 }
 
 impl DevicePageDto {
-    pub fn from_snapshot(
-        snapshot: DeviceSnapshot,
-        offset: usize,
-        limit: usize,
-        filter: Option<&str>,
-        sort: Option<&str>,
-    ) -> Self {
-        let filter = filter.unwrap_or_default().trim().to_ascii_lowercase();
-        let mut devices: Vec<_> = snapshot
-            .devices
-            .into_iter()
-            .filter(|device| {
-                filter.is_empty()
-                    || device.id.to_string().contains(&filter)
-                    || device.name.to_ascii_lowercase().contains(&filter)
-                    || device.manufacturer.to_ascii_lowercase().contains(&filter)
-                    || device.model.to_ascii_lowercase().contains(&filter)
-            })
-            .collect();
-        match sort.unwrap_or("id-asc") {
-            "id-desc" => devices.sort_by_key(|device| std::cmp::Reverse(device.id.to_string())),
-            "name-asc" => devices.sort_by(|left, right| left.name.cmp(&right.name)),
-            "name-desc" => devices.sort_by(|left, right| right.name.cmp(&left.name)),
-            _ => devices.sort_by_key(|device| device.id.to_string()),
-        }
-        let total = devices.len();
-        let page = devices
-            .into_iter()
-            .skip(offset)
-            .take(limit.max(1))
-            .map(Into::into)
-            .collect();
+    pub fn from_page(page: gblab_core::DevicePage) -> Self {
         Self {
-            devices: page,
-            total,
-            offset,
-            limit: limit.max(1),
-            has_completed_batch_add: snapshot.has_completed_batch_add,
-        }
-    }
-}
-
-/// SIP 交互日志查询分页结果。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InteractionLogPageDto {
-    items: Vec<InteractionLog>,
-    total: usize,
-    offset: usize,
-    limit: usize,
-}
-
-/// 交互日志查询条件。
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InteractionLogQueryDto {
-    pub offset: usize,
-    pub limit: usize,
-    pub device_id: Option<String>,
-    pub direction: Option<String>,
-    pub method: Option<String>,
-    pub keyword: Option<String>,
-}
-
-impl InteractionLogPageDto {
-    pub fn from_logs(logs: Vec<InteractionLog>, query: &InteractionLogQueryDto) -> Self {
-        let method = query
-            .method
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_uppercase();
-        let keyword = query
-            .keyword
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        let mut filtered: Vec<_> = logs
-            .into_iter()
-            .filter(|log| {
-                query
-                    .device_id
-                    .as_deref()
-                    .is_none_or(|value| value.is_empty() || log.device_id == value)
-                    && query.direction.as_deref().is_none_or(|value| {
-                        value.is_empty()
-                            || matches!(
-                                (value, log.direction),
-                                ("send", gblab_core::runtime::InteractionDirection::Send)
-                                    | (
-                                        "receive",
-                                        gblab_core::runtime::InteractionDirection::Receive
-                                    )
-                            )
-                    })
-                    && (method.is_empty()
-                        || log
-                            .message
-                            .lines()
-                            .next()
-                            .and_then(|line| line.split_whitespace().next())
-                            .is_some_and(|value| value.eq_ignore_ascii_case(&method)))
-                    && (keyword.is_empty() || log.message.to_ascii_lowercase().contains(&keyword))
-            })
-            .collect();
-        filtered.sort_by_key(|log| log.sequence);
-        let total = filtered.len();
-        let page = filtered
-            .into_iter()
-            .skip(query.offset)
-            .take(query.limit.max(1))
-            .collect();
-        Self {
-            items: page,
-            total,
-            offset: query.offset,
-            limit: query.limit.max(1),
+            devices: page.devices.into_iter().map(Into::into).collect(),
+            total: page.total,
+            offset: page.offset,
+            limit: page.limit,
+            has_completed_batch_add: page.has_completed_batch_add,
         }
     }
 }

@@ -11,6 +11,8 @@ use gblab_core::{CoreService, runtime::RegistrationHandle};
 use tauri::{Emitter, Manager};
 
 const REGISTRATION_SNAPSHOT_EVENT: &str = "registration-snapshot";
+const REGISTRATION_DEVICE_STATES_EVENT: &str = "registration-device-states";
+const REGISTRATION_SUBSCRIPTIONS_EVENT: &str = "registration-subscriptions";
 const INTERACTION_LOGS_EVENT: &str = "sip-interaction-logs";
 
 /// 启动 `GBLab` 桌面应用。
@@ -34,6 +36,15 @@ pub fn run() -> Result<(), tauri::Error> {
                     match registration_events.recv().await {
                         Ok(gblab_core::runtime::RegistrationEvent::Snapshot(snapshot)) => {
                             let _ = app_handle.emit(REGISTRATION_SNAPSHOT_EVENT, snapshot);
+                        }
+                        Ok(gblab_core::runtime::RegistrationEvent::DeviceStates(states)) => {
+                            let _ = app_handle.emit(REGISTRATION_DEVICE_STATES_EVENT, states);
+                        }
+                        Ok(gblab_core::runtime::RegistrationEvent::Subscriptions(
+                            subscriptions,
+                        )) => {
+                            let _ =
+                                app_handle.emit(REGISTRATION_SUBSCRIPTIONS_EVENT, subscriptions);
                         }
                         Ok(gblab_core::runtime::RegistrationEvent::InteractionLogs(logs)) => {
                             let _ = app_handle.emit(INTERACTION_LOGS_EVENT, logs);
@@ -64,7 +75,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::control_device,
             commands::control_ptz,
             commands::get_registration_snapshot,
-            commands::get_interaction_log_page
+            commands::get_registration_device_states
         ])
         .build(tauri::generate_context!())?;
     app.run(|app_handle, event| {

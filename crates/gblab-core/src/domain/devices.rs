@@ -133,15 +133,10 @@ impl DeviceSnapshot {
         devices: Vec<SimulatedDevice>,
         has_completed_batch_add: bool,
     ) -> Result<Self, DeviceError> {
-        let mut channel_ids = HashSet::new();
+        validate_unique_channel_ids(&devices)?;
         let mut channels = Vec::new();
         for device in &devices {
             let derived = derive_channels_for_device(device)?;
-            for channel in &derived {
-                if !channel_ids.insert(channel.id.clone()) {
-                    return Err(DeviceError::DuplicateChannelId(channel.id.to_string()));
-                }
-            }
             channels.extend(derived);
         }
         Ok(Self {
@@ -150,6 +145,31 @@ impl DeviceSnapshot {
             channels,
         })
     }
+}
+
+/// 只校验全部设备的派生通道编号，不分配通道名称或完整通道对象。
+///
+/// 设备配置写入路径使用该函数避免在大批量设备变更时预先创建全部通道；
+/// 通道对象仍由 [`derive_channels_for_device`] 在用户打开通道面板时按需生成。
+///
+/// # Errors
+///
+/// 通道数量无效、通道编号无效或跨设备出现重复编号时返回错误。
+pub fn validate_unique_channel_ids(devices: &[SimulatedDevice]) -> Result<(), DeviceError> {
+    let mut channel_ids = HashSet::new();
+    for device in devices {
+        validate_channel_count(device.channel_count)?;
+        let raw = device.id.as_str();
+        let channel_prefix = &raw[..14];
+        let device_sequence = &raw[17..20];
+        for index in 1..=device.channel_count {
+            let id = DeviceId::new(format!("{channel_prefix}{device_sequence}{index:03}"))?;
+            if !channel_ids.insert(id.clone()) {
+                return Err(DeviceError::DuplicateChannelId(id.to_string()));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl BatchDeviceDraft {

@@ -6,8 +6,7 @@ use crate::{
     app_state::AppState,
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
-        DeviceSnapshotDto, DeviceUpdateDraftDto, InteractionLogPageDto, InteractionLogQueryDto,
-        SimulatedChannelDto, SipServiceConfigurationDto,
+        DeviceSnapshotDto, DeviceUpdateDraftDto, SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
 
@@ -103,13 +102,12 @@ pub fn get_device_page(
         .core
         .read()
         .map_err(|_| CommandErrorDto::state_unavailable())?;
-    Ok(DevicePageDto::from_snapshot(
-        core.device_snapshot(),
+    Ok(DevicePageDto::from_page(core.device_page(
         offset,
         limit,
         filter.as_deref(),
         sort.as_deref(),
-    ))
+    )))
 }
 
 #[tauri::command]
@@ -383,15 +381,14 @@ pub fn get_registration_snapshot(
     state.registration.snapshot()
 }
 
-/// 按方向、设备、方法和关键字分页查询运行时 SIP 交互日志。
+/// 查询当前设备运行态，不把设备列表塞入聚合快照。
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri command 参数提取器要求按值接收 State"
-)]
-pub fn get_interaction_log_page(
-    query: InteractionLogQueryDto,
+pub async fn get_registration_device_states(
     state: State<'_, AppState>,
-) -> InteractionLogPageDto {
-    InteractionLogPageDto::from_logs(state.registration.snapshot().interaction_logs, &query)
+) -> Result<Vec<gblab_core::runtime::DeviceRegistrationSnapshot>, CommandErrorDto> {
+    state
+        .registration
+        .device_states()
+        .await
+        .map_err(|error| CommandErrorDto::registration(&error))
 }

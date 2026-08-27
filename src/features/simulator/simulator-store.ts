@@ -17,7 +17,10 @@ import {
 } from './device-api';
 import {
   getRegistrationSnapshot,
+  getRegistrationDeviceStates,
   listenInteractionLogs,
+  listenRegistrationDeviceStates,
+  listenRegistrationSubscriptions,
   listenRegistrationSnapshot,
   registerAllDevicesCommand,
   stopAllDeviceRegistrationCommand,
@@ -174,9 +177,6 @@ export const useSimulatorStore = defineStore('simulator', () => {
   const isRegistrationActive = computed(() => registrationOperationStatus.value !== 'idle');
 
   let registrationListenersPromise: Promise<void> | null = null;
-  let hasHydratedInteractionLogSnapshot = false;
-  let interactionLogsCleared = false;
-
   function mapInteractionLog(
     log: Omit<InteractionLog, 'id'> & { sequence: number },
   ): InteractionLog {
@@ -185,14 +185,15 @@ export const useSimulatorStore = defineStore('simulator', () => {
 
   function applyRegistrationSnapshot(snapshot: RegistrationSnapshot): void {
     registrationOperationStatus.value = snapshot.operationStatus;
+  }
+
+  function applyDeviceStates(states: DeviceRegistrationSnapshot[]): void {
     registrationStatusByDevice.value = new Map(
-      snapshot.devices.map((device) => [device.deviceId, device.status]),
+      states.map((device) => [device.deviceId, device.status]),
     );
-    registrationSnapshotByDevice.value = new Map(
-      snapshot.devices.map((device) => [device.deviceId, device]),
-    );
+    registrationSnapshotByDevice.value = new Map(states.map((device) => [device.deviceId, device]));
     registrationErrorByDevice.value = new Map(
-      snapshot.devices.flatMap((device) =>
+      states.flatMap((device) =>
         device.lastError === null ? [] : [[device.deviceId, device.lastError] as const],
       ),
     );
@@ -208,7 +209,9 @@ export const useSimulatorStore = defineStore('simulator', () => {
       device.guarded = runtime?.guarded ?? false;
       device.alarmActive = runtime?.alarmActive ?? false;
     });
-    const nextSubscriptions = snapshot.subscriptions ?? [];
+  }
+
+  function applySubscriptions(nextSubscriptions: SubscriptionSnapshot[]): void {
     subscriptionSnapshots.value = nextSubscriptions;
     subscriptions.value = nextSubscriptions
       .filter((subscription) =>
@@ -232,10 +235,6 @@ export const useSimulatorStore = defineStore('simulator', () => {
             : new Date(subscription.lastNotifiedAt).toISOString(),
         catalogPreview: [],
       }));
-    if (!hasHydratedInteractionLogSnapshot && !interactionLogsCleared) {
-      interactionLogs.value = snapshot.interactionLogs.map(mapInteractionLog);
-      hasHydratedInteractionLogSnapshot = true;
-    }
   }
 
   async function ensureRegistrationListeners(): Promise<void> {
@@ -244,6 +243,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
     }
     registrationListenersPromise = Promise.all([
       listenRegistrationSnapshot(applyRegistrationSnapshot),
+      listenRegistrationDeviceStates(applyDeviceStates),
+      listenRegistrationSubscriptions(applySubscriptions),
       listenInteractionLogs((logs) => appendInteractionLogs(logs.map(mapInteractionLog))),
     ]).then(() => undefined);
     return registrationListenersPromise;
@@ -292,7 +293,6 @@ export const useSimulatorStore = defineStore('simulator', () => {
   }
 
   function clearInteractionLogs(): void {
-    interactionLogsCleared = true;
     interactionLogs.value = [];
   }
 
@@ -315,12 +315,14 @@ export const useSimulatorStore = defineStore('simulator', () => {
     isSipServiceLoading.value = true;
     try {
       await ensureRegistrationListeners();
-      const [configuration, registrationSnapshot] = await Promise.all([
+      const [configuration, registrationSnapshot, deviceStates] = await Promise.all([
         getSipServiceConfiguration(),
         getRegistrationSnapshot(),
+        getRegistrationDeviceStates(),
       ]);
       sipService.value = configuration;
       applyRegistrationSnapshot(registrationSnapshot);
+      applyDeviceStates(deviceStates);
       return { ok: true };
     } catch (error: unknown) {
       return { ok: false, message: getConfigurationErrorMessage(error) };
@@ -360,11 +362,13 @@ export const useSimulatorStore = defineStore('simulator', () => {
     isDeviceLoading.value = true;
     try {
       await ensureRegistrationListeners();
-      const [deviceSnapshot, registrationSnapshot] = await Promise.all([
+      const [deviceSnapshot, registrationSnapshot, deviceStates] = await Promise.all([
         getDeviceSnapshot(),
         getRegistrationSnapshot(),
+        getRegistrationDeviceStates(),
       ]);
       applyRegistrationSnapshot(registrationSnapshot);
+      applyDeviceStates(deviceStates);
       applyDeviceSnapshot(deviceSnapshot);
       return { ok: true };
     } catch (error: unknown) {
