@@ -31,11 +31,22 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+      - name: Read release pull request branch
+        id: release_pr
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          RELEASE_PR_JSON: ${{ steps.release.outputs.pr }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_pr_branch="$(printf '%s' "$RELEASE_PR_JSON" | jq -er '.headBranchName')"
+          printf 'branch=%s\n' "$release_pr_branch" >> "$GITHUB_OUTPUT"
       - name: Checkout release pull request branch
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          ref: ${{ steps.release_pr.outputs.branch }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           fetch-depth: 0
       - name: Set up Rust for lockfile synchronization
@@ -46,7 +57,7 @@ jobs:
       - name: Synchronize Cargo lockfile
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
-          RELEASE_PR_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          RELEASE_PR_BRANCH: ${{ steps.release_pr.outputs.branch }}
         shell: bash
         run: |
           set -euo pipefail
