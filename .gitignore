@@ -5,6 +5,7 @@
 /.pnpm-store
 /dist
 /coverage
+/.codex/
 
 # Local environment
 .env.local
