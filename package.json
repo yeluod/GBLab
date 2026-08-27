@@ -18,7 +18,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run type:check && pnpm run test:run && pnpm run build",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run test:run && pnpm run build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

@@ -42,19 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.19.0
-          run_install: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-build
       - name: Check frontend formatting
         run: pnpm run format:check
       - name: Lint frontend
@@ -70,20 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-build
         with:
-          version: 11.19.0
-          run_install: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
-          components: clippy,rustfmt
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+          rust-components: clippy
       - name: Verify frontend
         run: pnpm run check
       - name: Verify Rust
@@ -101,19 +78,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.19.0
-          run_install: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
-          components: clippy,rustfmt
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-build
       - name: Build desktop without bundle
         run: pnpm tauri build --no-bundle
