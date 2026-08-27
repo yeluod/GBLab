@@ -1,0 +1,49 @@
+export { configureMediaService } from './services/media-service-provider';
+export { MediaServiceError, type MediaService } from './services/media-service';
+export {
+  MockMediaService,
+  type MockMediaOperation,
+  type MockMediaServiceOptions,
+} from './services/mock-media-service';
+export {
+  MOCK_AUDIO_DEVICES,
+  MOCK_MP4_PATHS,
+  MOCK_PROBE_RESULTS,
+  MOCK_VIDEO_CAPABILITIES,
+  MOCK_VIDEO_DEVICES,
+} from './services/mock-media-fixtures';
+export {
+  useMediaStore,
+  validateMediaConfig,
+  type MediaFieldErrors,
+  type MediaOperationResult,
+} from './stores/media-store';
+export { createDefaultMediaConfig } from './types/media-defaults';
+export {
+  AudioCodec,
+  CaptureDeviceStatus,
+  EncoderBackend,
+  MediaSourceType,
+  VideoCodec,
+} from './types/media-config';
+export type {
+  AudioCaptureConfig,
+  CameraSourceConfig,
+  CaptureDeviceCapabilities,
+  CaptureDeviceInfo,
+  GlobalMediaConfig,
+  MediaPreferences,
+  MediaSourceConfig,
+  Mp4SourceConfig,
+  RecordingConfig,
+  VideoCaptureConfig,
+  VideoCaptureMode,
+} from './types/media-config';
+export { MediaSourceStatus, RecordingStatus } from './types/media-runtime';
+export type {
+  AudioStreamInfo,
+  MediaProbeResult,
+  MediaRuntimeStatus,
+  RecordingRuntimeInfo,
+  VideoStreamInfo,
+} from './types/media-runtime';

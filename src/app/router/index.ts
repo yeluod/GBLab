@@ -20,6 +20,11 @@ export const router = createRouter({
       component: () => import('@/pages/interaction-logs-page.vue'),
     },
     {
+      path: '/media',
+      name: 'Media',
+      component: () => import('@/pages/media-page.vue'),
+    },
+    {
       path: '/global-settings',
       name: 'GlobalSettings',
       component: () => import('@/pages/global-settings-page.vue'),
