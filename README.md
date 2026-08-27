@@ -40,4 +40,4 @@ macOS 与 Windows 应用分别在对应原生平台构建和验证。
 2. 合并 Release PR 后，GitHub Actions 分别在 macOS 与 Windows 原生 runner 构建 DMG、NSIS 和 MSI。
 3. 两个平台的安装包全部上传成功后，草稿 Release 自动发布；任一构建失败时保留草稿，不发布不完整版本。
 
-提交信息使用 Conventional Commits，例如 `feat: ...`、`fix: ...`。仓库设置与完整发布流程见 [docs/release.md](docs/release.md)。
+提交信息使用 Conventional Commits，例如 `feat: ...`、`fix: ...`。
