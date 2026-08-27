@@ -156,8 +156,9 @@ jobs:
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "$TAG_NAME" --draft=false --latest
+          gh release edit "$TAG_NAME" --repo "$GH_REPO" --draft=false --latest
