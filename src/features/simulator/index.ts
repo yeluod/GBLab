@@ -1,4 +1,11 @@
 export { useSimulatorStore } from './simulator-store';
+export {
+  alarmMethodOptions,
+  alarmPriorityOptions,
+  getAlarmTypeOptions,
+  isValidAlarmSelection,
+} from './alarm-options';
+export type { AlarmOption } from './alarm-options';
 export type {
   BatchDeviceDraft,
   DeviceUpdateDraft,

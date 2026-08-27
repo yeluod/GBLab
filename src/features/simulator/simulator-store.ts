@@ -29,6 +29,7 @@ import {
   controlPtzCommand,
   triggerMobilePositionCommand,
 } from './registration-api';
+import { isValidAlarmSelection } from './alarm-options';
 
 import type {
   BatchDeviceDraft,
@@ -588,8 +589,8 @@ export const useSimulatorStore = defineStore('simulator', () => {
     deviceId: string,
     channelId: string,
     alarmPriority = '1',
-    alarmMethod = '1',
-    alarmType = '1',
+    alarmMethod = '2',
+    alarmType = '',
     alarmStatus = 'Occur',
     description = '模拟报警',
     longitude = 116.397,
@@ -602,12 +603,16 @@ export const useSimulatorStore = defineStore('simulator', () => {
       return { ok: false, message: '设备尚未注册，无法触发报警。' };
     }
     if (
-      alarmPriority.trim() === '' ||
-      alarmMethod.trim() === '' ||
+      !isValidAlarmSelection(alarmPriority, alarmMethod, alarmType) ||
+      !['Occur', 'Restore'].includes(alarmStatus) ||
       !Number.isFinite(longitude) ||
-      !Number.isFinite(latitude)
+      longitude < -180 ||
+      longitude > 180 ||
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90
     ) {
-      return { ok: false, message: '请填写报警级别、报警方式以及有效的经纬度。' };
+      return { ok: false, message: '报警字典组合、报警状态或经纬度不合法。' };
     }
     try {
       await triggerAlarmCommand(

@@ -176,6 +176,9 @@ pub enum RegistrationRuntimeError {
     /// 业务 SIP 事务已完成，但平台返回了失败状态或传输失败。
     #[error("业务 SIP 事务失败: {0}")]
     BusinessFailed(String),
+    /// 手动报警参数不符合 GB28181 字典或范围约束。
+    #[error("报警参数无效: {0}")]
+    InvalidAlarm(String),
 }
 
 /// 一次手动 Alarm 通知需要的业务字段。
@@ -199,6 +202,54 @@ pub struct AlarmTrigger {
     pub longitude: f64,
     /// 报警纬度。
     pub latitude: f64,
+}
+
+impl AlarmTrigger {
+    pub(super) fn validate(&self) -> Result<(), RegistrationRuntimeError> {
+        if !matches!(self.alarm_priority.as_str(), "1" | "2" | "3" | "4") {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "AlarmPriority 必须为 1 至 4".to_owned(),
+            ));
+        }
+        if !matches!(
+            self.alarm_method.as_str(),
+            "1" | "2" | "3" | "4" | "5" | "6" | "7"
+        ) {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "AlarmMethod 必须为 1 至 7".to_owned(),
+            ));
+        }
+        let alarm_type_is_valid = match self.alarm_method.as_str() {
+            "2" => matches!(self.alarm_type.as_str(), "" | "1" | "2" | "3" | "4" | "5"),
+            "5" => matches!(
+                self.alarm_type.as_str(),
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12" | "13"
+            ),
+            "6" => matches!(self.alarm_type.as_str(), "1" | "2"),
+            _ => self.alarm_type.is_empty(),
+        };
+        if !alarm_type_is_valid {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "AlarmType 与 AlarmMethod 不匹配".to_owned(),
+            ));
+        }
+        if !matches!(self.alarm_status.as_str(), "Occur" | "Restore") {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "AlarmStatus 必须为 Occur 或 Restore".to_owned(),
+            ));
+        }
+        if !self.longitude.is_finite() || !(-180.0..=180.0).contains(&self.longitude) {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "Longitude 必须位于 -180 至 180".to_owned(),
+            ));
+        }
+        if !self.latitude.is_finite() || !(-90.0..=90.0).contains(&self.latitude) {
+            return Err(RegistrationRuntimeError::InvalidAlarm(
+                "Latitude 必须位于 -90 至 90".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 可模拟的设备控制动作。

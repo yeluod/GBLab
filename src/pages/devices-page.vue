@@ -20,6 +20,9 @@
   } from 'naive-ui';
 
   import {
+    alarmMethodOptions,
+    alarmPriorityOptions,
+    getAlarmTypeOptions,
     useSimulatorStore,
     type BatchDeviceDraft,
     type DeviceUpdateDraft,
@@ -44,8 +47,8 @@
   const triggerKind = ref<'alarm' | 'mobile-position'>('alarm');
   const triggerChannelId = ref('');
   const alarmPriority = ref('1');
-  const alarmMethod = ref('1');
-  const alarmType = ref('1');
+  const alarmMethod = ref('2');
+  const alarmType = ref('');
   const alarmStatus = ref('Occur');
   const alarmDescription = ref('模拟报警');
   const longitude = ref(116.397);
@@ -114,6 +117,8 @@
       ? []
       : store.channels.filter((channel) => channel.deviceId === channelDevice.value?.id),
   );
+  const alarmTypeOptions = computed(() => getAlarmTypeOptions(alarmMethod.value));
+  const isAlarmTypeDisabled = computed(() => alarmTypeOptions.value.length === 0);
 
   watch([searchKeyword, statusFilter, devicePageSize], () => {
     devicePage.value = 1;
@@ -128,6 +133,17 @@
       }
     },
   );
+
+  watch(alarmMethod, () => {
+    const options = alarmTypeOptions.value;
+    if (options.length === 0) {
+      alarmType.value = '';
+      return;
+    }
+    if (!options.some((option) => option.value === alarmType.value)) {
+      alarmType.value = options[0]?.value ?? '';
+    }
+  });
 
   onMounted(async () => {
     const result = await store.loadDevices();
@@ -818,15 +834,20 @@
         <template v-if="triggerKind === 'alarm'">
           <div class="form-grid">
             <NFormItem label="报警级别" required>
-              <NInput v-model:value="alarmPriority" />
+              <NSelect v-model:value="alarmPriority" :options="alarmPriorityOptions" />
             </NFormItem>
             <NFormItem label="报警方式" required>
-              <NInput v-model:value="alarmMethod" />
+              <NSelect v-model:value="alarmMethod" :options="alarmMethodOptions" />
             </NFormItem>
           </div>
           <div class="form-grid">
             <NFormItem label="报警类型">
-              <NInput v-model:value="alarmType" />
+              <NSelect
+                v-model:value="alarmType"
+                :options="alarmTypeOptions"
+                :disabled="isAlarmTypeDisabled"
+                :placeholder="isAlarmTypeDisabled ? '当前报警方式无标准报警类型' : '请选择报警类型'"
+              />
             </NFormItem>
             <NFormItem label="报警状态">
               <NSelect

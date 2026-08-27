@@ -105,6 +105,7 @@ impl RegistrationHandle {
     ///
     /// 设备未注册或业务运行时不可用时返回错误。
     pub async fn trigger_alarm(&self, alarm: AlarmTrigger) -> Result<(), RegistrationRuntimeError> {
+        alarm.validate()?;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
             .send(RegistrationCommand::TriggerAlarm {

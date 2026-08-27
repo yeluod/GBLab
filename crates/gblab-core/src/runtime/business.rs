@@ -301,10 +301,16 @@ fn build_alarm_notify_body(
     alarm: &AlarmTrigger,
     sn: u32,
 ) -> Result<String, RegistrationRuntimeError> {
+    alarm.validate()?;
     let codec_device_id = CodecDeviceId::parse(&alarm.channel_id)
         .map_err(|error| RegistrationRuntimeError::BusinessFailed(error.to_string()))?;
+    let alarm_type = if alarm.alarm_type.is_empty() {
+        String::new()
+    } else {
+        format!("<AlarmType>{}</AlarmType>", xml_escape(&alarm.alarm_type))
+    };
     Ok(format!(
-        "<Notify><CmdType>Alarm</CmdType><SN>{sn}</SN><DeviceID>{}</DeviceID><AlarmPriority>{}</AlarmPriority><AlarmMethod>{}</AlarmMethod><AlarmTime>{}</AlarmTime><AlarmDescription>{}</AlarmDescription><Longitude>{:.6}</Longitude><Latitude>{:.6}</Latitude><Info><AlarmType>{}</AlarmType><AlarmStatus>{}</AlarmStatus></Info></Notify>",
+        "<Notify><CmdType>Alarm</CmdType><SN>{sn}</SN><DeviceID>{}</DeviceID><AlarmPriority>{}</AlarmPriority><AlarmMethod>{}</AlarmMethod><AlarmTime>{}</AlarmTime><AlarmDescription>{}</AlarmDescription><Longitude>{:.6}</Longitude><Latitude>{:.6}</Latitude><Info>{alarm_type}<AlarmStatus>{}</AlarmStatus></Info></Notify>",
         xml_escape(codec_device_id.as_ref()),
         xml_escape(&alarm.alarm_priority),
         xml_escape(&alarm.alarm_method),
@@ -312,7 +318,6 @@ fn build_alarm_notify_body(
         xml_escape(&alarm.description),
         alarm.longitude,
         alarm.latitude,
-        xml_escape(&alarm.alarm_type),
         xml_escape(&alarm.alarm_status),
     ))
 }
@@ -513,6 +518,51 @@ mod tests {
         );
         assert!(!xml.contains("<AlarmList"));
         Ok(())
+    }
+
+    #[test]
+    fn default_device_alarm_should_omit_alarm_type() -> Result<(), RegistrationRuntimeError> {
+        let xml = build_alarm_notify_body(
+            &AlarmTrigger {
+                device_id: "34020000001320000001".to_owned(),
+                channel_id: "34020000001320000001".to_owned(),
+                alarm_priority: "1".to_owned(),
+                alarm_method: "2".to_owned(),
+                alarm_type: String::new(),
+                alarm_status: "Occur".to_owned(),
+                description: "默认设备报警".to_owned(),
+                longitude: 116.397,
+                latitude: 39.908,
+            },
+            8,
+        )?;
+
+        assert!(!xml.contains("<AlarmType>"));
+        assert!(xml.contains("<Info><AlarmStatus>Occur</AlarmStatus></Info>"));
+        Ok(())
+    }
+
+    #[test]
+    fn phone_alarm_should_reject_alarm_type() {
+        let result = build_alarm_notify_body(
+            &AlarmTrigger {
+                device_id: "34020000001320000001".to_owned(),
+                channel_id: "34020000001320000001".to_owned(),
+                alarm_priority: "1".to_owned(),
+                alarm_method: "1".to_owned(),
+                alarm_type: "1".to_owned(),
+                alarm_status: "Occur".to_owned(),
+                description: "电话报警".to_owned(),
+                longitude: 116.397,
+                latitude: 39.908,
+            },
+            9,
+        );
+
+        assert!(matches!(
+            result,
+            Err(RegistrationRuntimeError::InvalidAlarm(_))
+        ));
     }
 
     #[test]

@@ -277,6 +277,13 @@ describe('静态演示页面', () => {
     expect(alarmButton.disabled).toBe(false);
     expect(positionButton.disabled).toBe(true);
     expect(document.body.textContent).toContain('报警 Alarm');
+
+    alarmButton.click();
+    await nextTick();
+
+    expect(document.body.textContent).toContain('一级警情（1）');
+    expect(document.body.textContent).toContain('设备报警（2）');
+    expect(document.body.textContent).toContain('默认设备报警（不发送 AlarmType）');
   });
 
   it('应通过全量操作更新全部设备注册状态并记录日志', async () => {
