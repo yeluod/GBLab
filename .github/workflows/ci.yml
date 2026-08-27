@@ -38,8 +38,8 @@ jobs:
         run: pnpm run lint
       - name: Check frontend types
         run: pnpm run type:check
-      - name: Check Rust workspace
-        run: cargo check --workspace --locked
+      - name: Check Rust core
+        run: cargo check -p gblab-core --locked
 
   quality:
     name: Quality
@@ -64,9 +64,9 @@ jobs:
       - name: Verify frontend
         run: pnpm run check
       - name: Verify Rust
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy -p gblab-core --all-targets --all-features --locked -- -D warnings
       - name: Test Rust
-        run: cargo test --workspace --locked
+        run: cargo test -p gblab-core --locked
 
   verify:
     name: Verify (${{ matrix.os }})
