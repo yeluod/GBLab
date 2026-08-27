@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/yeluod/GBLab/compare/v0.3.0...v0.4.0) (2026-08-27)
+
+
+### Features
+
+* **ci:** 增加 Conventional Commit 标题检查 5. ([#4](https://github.com/yeluod/GBLab/issues/4)) ([20d4d1c](https://github.com/yeluod/GBLab/commit/20d4d1c377124d744cf0d5d6156566abde8762a0))
+
 ## [0.3.0](https://github.com/yeluod/GBLab/compare/v0.2.0...v0.3.0) (2026-08-27)
 
 
