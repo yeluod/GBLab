@@ -1,13 +1,14 @@
 use std::sync::{
-    Arc, RwLock,
+    Arc, Mutex, RwLock,
     atomic::{AtomicBool, Ordering},
 };
 
-use gblab_core::{CoreService, runtime::RegistrationHandle};
+use gblab_core::{CoreService, MediaEngine, runtime::RegistrationHandle};
 
 pub struct AppState {
     pub core: Arc<RwLock<CoreService>>,
     pub registration: RegistrationHandle,
+    pub media: Arc<Mutex<MediaEngine>>,
     operation_gate: AtomicBool,
     shutdown_started: AtomicBool,
 }
@@ -17,6 +18,7 @@ impl AppState {
         Self {
             core: Arc::new(RwLock::new(core)),
             registration,
+            media: Arc::new(Mutex::new(MediaEngine::new())),
             operation_gate: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
         }

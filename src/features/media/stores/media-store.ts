@@ -158,7 +158,9 @@ export const useMediaStore = defineStore('media', () => {
       videoDevices.value = nextVideoDevices;
       audioDevices.value = nextAudioDevices;
       runtimeStatus.value = nextRuntimeStatus;
-      await refreshVideoCapabilities(config.source.camera.video.deviceId);
+      if (config.source.type === MediaSourceType.Camera) {
+        await refreshVideoCapabilities(config.source.camera.video.deviceId);
+      }
       if (config.source.type === MediaSourceType.Mp4 && config.source.mp4.filePath.length > 0) {
         await probeCurrentMp4();
       }

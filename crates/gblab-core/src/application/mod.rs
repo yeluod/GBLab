@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::{
     Result,
-    configuration::{ConfigurationStore, SipServiceConfiguration},
+    configuration::{ConfigurationStore, MediaConfiguration, SipServiceConfiguration},
     domain::{
         BatchDeviceDraft, DeviceError, DeviceId, DeviceSnapshot, DeviceUpdateDraft,
         SimulatedChannel, derive_channels_for_device, validate_unique_channel_ids,
@@ -72,6 +72,24 @@ impl CoreService {
         configuration: SipServiceConfiguration,
     ) -> Result<SipServiceConfiguration> {
         Ok(self.configuration.save_sip_service(configuration)?)
+    }
+
+    /// 返回全局媒体配置快照。
+    #[must_use]
+    pub fn media_configuration(&self) -> MediaConfiguration {
+        self.configuration.media()
+    }
+
+    /// 校验并保存全局媒体配置。
+    ///
+    /// # Errors
+    ///
+    /// 配置校验或 JSON 文件写入失败时返回错误。
+    pub fn save_media_configuration(
+        &mut self,
+        configuration: MediaConfiguration,
+    ) -> Result<MediaConfiguration> {
+        Ok(self.configuration.save_media(configuration)?)
     }
 
     /// 返回持久化设备列表；通道由独立用例按单台设备加载。
@@ -343,8 +361,22 @@ mod tests {
         assert_eq!(reloaded.device_channels("34020000001320000100")?.len(), 3);
         assert_eq!(reloaded.device_channels("34020000001320000101")?.len(), 2);
         let json = std::fs::read_to_string(configuration_path)?;
-        assert!(!json.contains("channels"));
-        assert!(!json.contains("registrationStatus"));
+        let json: serde_json::Value = serde_json::from_str(&json)?;
+        let devices = json
+            .get("deviceCollection")
+            .and_then(|value| value.get("devices"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or("device collection missing")?;
+        assert!(
+            devices
+                .iter()
+                .all(|device| device.get("channels").is_none())
+        );
+        assert!(
+            devices
+                .iter()
+                .all(|device| device.get("registrationStatus").is_none())
+        );
         Ok(())
     }
 
@@ -360,6 +392,24 @@ mod tests {
         let mut reloaded = CoreService::open(configuration_path.as_path())?;
 
         assert!(reloaded.add_devices_in_batch(batch_draft()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn media_configuration_should_persist_without_runtime_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut service = CoreService::open(configuration_path.as_path())?;
+        let mut media = service.media_configuration();
+        media.source.mp4.file_path = "/videos/demo.mp4".to_owned();
+        media.source.mp4.is_looping = false;
+        service.save_media_configuration(media.clone())?;
+
+        let reloaded = CoreService::open(configuration_path.as_path())?;
+
+        assert_eq!(reloaded.media_configuration(), media);
+        assert!(!std::fs::read_to_string(configuration_path)?.contains("positionSeconds"));
         Ok(())
     }
 

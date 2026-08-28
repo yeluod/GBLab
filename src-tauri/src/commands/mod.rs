@@ -1,3 +1,8 @@
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command extractors require owned values for IPC arguments"
+)]
+
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -7,7 +12,8 @@ use crate::{
     app_state::AppState,
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
-        DeviceSnapshotDto, DeviceUpdateDraftDto, SimulatedChannelDto, SipServiceConfigurationDto,
+        DeviceSnapshotDto, DeviceUpdateDraftDto, MediaPacketDto, MediaRuntimeStatusDto,
+        Mp4ProbeResultDto, SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
 
@@ -55,6 +61,102 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, CommandErr
 }
 
 #[tauri::command]
+pub fn probe_mp4(file_path: String) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
+    gblab_core::MediaEngine::probe_mp4(std::path::Path::new(&file_path))
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn open_mp4(
+    file_path: String,
+    looping: bool,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .open_mp4(std::path::Path::new(&file_path), looping)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .play()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn pause_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .pause()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn stop_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .stop()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn reset_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .reset()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn get_media_runtime_status(
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    Ok(media.status().into())
+}
+
+#[tauri::command]
+pub fn read_media_packet(
+    state: State<'_, AppState>,
+) -> Result<Option<MediaPacketDto>, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .next_packet()
+        .map(|packet| packet.map(Into::into))
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Tauri command 参数提取器要求按值接收 State"
@@ -69,6 +171,44 @@ pub fn get_sip_service_configuration(
     Ok(SipServiceConfigurationDto::from_core(
         core.sip_service_configuration(),
     ))
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command 参数提取器要求按值接收 State"
+)]
+pub fn get_media_configuration(
+    state: State<'_, AppState>,
+) -> Result<gblab_core::MediaConfiguration, CommandErrorDto> {
+    let core = state
+        .core
+        .read()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    Ok(core.media_configuration())
+}
+
+#[tauri::command]
+pub async fn save_media_configuration(
+    configuration: gblab_core::MediaConfiguration,
+    state: State<'_, AppState>,
+) -> Result<gblab_core::MediaConfiguration, CommandErrorDto> {
+    let _operation = state
+        .try_operation()
+        .ok_or_else(CommandErrorDto::operation_busy)?;
+    if state.registration.is_active() {
+        return Err(CommandErrorDto::registration_active());
+    }
+    let core = Arc::clone(&state.core);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut core = core
+            .write()
+            .map_err(|_| CommandErrorDto::state_unavailable())?;
+        core.save_media_configuration(configuration)
+            .map_err(|error| CommandErrorDto::from_core(&error))
+    })
+    .await
+    .map_err(|_| CommandErrorDto::task_failed())?
 }
 
 #[tauri::command]

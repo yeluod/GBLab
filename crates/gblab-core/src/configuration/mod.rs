@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::domain::SimulatedDevice;
 
-const CURRENT_SCHEMA_VERSION: u8 = 2;
+const CURRENT_SCHEMA_VERSION: u8 = 3;
 const MAX_SIP_URI_LENGTH: usize = 256;
 const MAX_PASSWORD_LENGTH: usize = 128;
 const MAX_DOMAIN_LENGTH: usize = 64;
@@ -34,6 +34,8 @@ pub struct AppConfiguration {
     pub sip_service: SipServiceConfiguration,
     /// 设备配置；注册状态和通道不会写入此集合。
     pub device_collection: DeviceCollectionConfiguration,
+    /// 全局媒体源配置；播放会话和运行时状态不落盘。
+    pub media: MediaConfiguration,
 }
 
 impl Default for AppConfiguration {
@@ -42,6 +44,227 @@ impl Default for AppConfiguration {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: SipServiceConfiguration::default(),
             device_collection: DeviceCollectionConfiguration::default(),
+            media: MediaConfiguration::default(),
+        }
+    }
+}
+
+/// 全局媒体配置。所有设备和通道共享这一份配置。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaConfiguration {
+    /// 媒体源配置。
+    pub source: MediaSourceConfiguration,
+    /// 本地录像配置；第一阶段只保存设置，不执行录像。
+    pub recording: MediaRecordingConfiguration,
+    /// 媒体页面偏好。
+    pub preferences: MediaPreferences,
+}
+
+/// 媒体源配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaSourceConfiguration {
+    /// 媒体源类型。
+    pub r#type: MediaSourceType,
+    /// MP4 文件配置。
+    pub mp4: Mp4SourceConfiguration,
+    /// 摄像头配置，为下一阶段采集能力保留设置结构。
+    pub camera: CameraSourceConfiguration,
+}
+
+impl Default for MediaSourceConfiguration {
+    fn default() -> Self {
+        Self {
+            r#type: MediaSourceType::Mp4,
+            mp4: Mp4SourceConfiguration::default(),
+            camera: CameraSourceConfiguration::default(),
+        }
+    }
+}
+
+/// 媒体源类型。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaSourceType {
+    /// MP4 文件。
+    #[default]
+    Mp4,
+    /// 本地摄像头。
+    Camera,
+}
+
+/// MP4 文件配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Mp4SourceConfiguration {
+    /// 文件路径。
+    pub file_path: String,
+    /// 是否循环播放。
+    pub is_looping: bool,
+}
+
+impl Default for Mp4SourceConfiguration {
+    fn default() -> Self {
+        Self {
+            file_path: String::new(),
+            is_looping: true,
+        }
+    }
+}
+
+/// 摄像头源配置。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CameraSourceConfiguration {
+    /// 视频采集配置。
+    pub video: VideoCaptureConfiguration,
+    /// 音频采集配置。
+    pub audio: AudioCaptureConfiguration,
+}
+
+/// 视频采集配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VideoCaptureConfiguration {
+    /// 设备标识。
+    pub device_id: String,
+    /// 宽度。
+    pub width: u32,
+    /// 高度。
+    pub height: u32,
+    /// 帧率。
+    pub frames_per_second: u32,
+    /// 视频编码。
+    pub codec: VideoCodec,
+    /// 码率，单位为 Kbps。
+    pub bitrate_kbps: u32,
+    /// 编码后端。
+    pub encoder_backend: EncoderBackend,
+}
+
+impl Default for VideoCaptureConfiguration {
+    fn default() -> Self {
+        Self {
+            device_id: String::new(),
+            width: 1_920,
+            height: 1_080,
+            frames_per_second: 25,
+            codec: VideoCodec::H264,
+            bitrate_kbps: 4_096,
+            encoder_backend: EncoderBackend::Auto,
+        }
+    }
+}
+
+/// 音频采集配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioCaptureConfiguration {
+    /// 是否启用音频。
+    pub is_enabled: bool,
+    /// 设备标识。
+    pub device_id: String,
+    /// 音频编码。
+    pub codec: AudioCodec,
+    /// 采样率。
+    pub sample_rate: u32,
+    /// 声道数。
+    pub channels: u32,
+    /// 码率，单位为 Kbps。
+    pub bitrate_kbps: u32,
+}
+
+impl Default for AudioCaptureConfiguration {
+    fn default() -> Self {
+        Self {
+            is_enabled: false,
+            device_id: String::new(),
+            codec: AudioCodec::Aac,
+            sample_rate: 48_000,
+            channels: 2,
+            bitrate_kbps: 128,
+        }
+    }
+}
+
+/// 视频编码。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoCodec {
+    /// H.264。
+    #[default]
+    H264,
+    /// H.265/HEVC。
+    H265,
+}
+
+/// 音频编码。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioCodec {
+    /// G.711 A-law。
+    G711a,
+    /// G.711 mu-law。
+    G711u,
+    /// AAC。
+    #[default]
+    Aac,
+}
+
+/// 编码后端。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EncoderBackend {
+    /// 自动选择。
+    #[default]
+    Auto,
+    /// Apple `VideoToolbox`。
+    Videotoolbox,
+    /// Windows Media Foundation。
+    MediaFoundation,
+    /// NVIDIA NVENC。
+    Nvenc,
+    /// Intel Quick Sync。
+    Qsv,
+    /// AMD AMF。
+    Amf,
+}
+
+/// 本地录像配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaRecordingConfiguration {
+    /// 是否启用录像。
+    pub is_enabled: bool,
+    /// 录像目录。
+    pub directory: String,
+    /// 分片时长，单位为分钟。
+    pub segment_duration_minutes: u16,
+}
+
+impl Default for MediaRecordingConfiguration {
+    fn default() -> Self {
+        Self {
+            is_enabled: false,
+            directory: String::new(),
+            segment_duration_minutes: 10,
+        }
+    }
+}
+
+/// 媒体页面偏好。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaPreferences {
+    /// 选择文件后是否立即探测。
+    pub should_probe_after_selection: bool,
+}
+
+impl Default for MediaPreferences {
+    fn default() -> Self {
+        Self {
+            should_probe_after_selection: true,
         }
     }
 }
@@ -241,6 +464,12 @@ impl ConfigurationStore {
         self.configuration.device_collection.clone()
     }
 
+    /// 返回全局媒体配置快照。
+    #[must_use]
+    pub fn media(&self) -> MediaConfiguration {
+        self.configuration.media.clone()
+    }
+
     /// 校验并保存唯一 SIP 服务配置。
     ///
     /// 只有文件写入成功后才会替换内存配置，确保内存与磁盘一致。
@@ -257,6 +486,7 @@ impl ConfigurationStore {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: sip_service.clone(),
             device_collection: self.configuration.device_collection.clone(),
+            media: self.configuration.media.clone(),
         };
 
         write_configuration(&self.path, &next_configuration)?;
@@ -277,10 +507,70 @@ impl ConfigurationStore {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: self.configuration.sip_service.clone(),
             device_collection: device_collection.clone(),
+            media: self.configuration.media.clone(),
         };
         write_configuration(&self.path, &next_configuration)?;
         self.configuration = next_configuration;
         Ok(device_collection)
+    }
+
+    /// 校验并保存全局媒体配置。
+    ///
+    /// # Errors
+    ///
+    /// 媒体配置字段校验或 JSON 文件写入失败时返回错误。
+    pub fn save_media(
+        &mut self,
+        media: MediaConfiguration,
+    ) -> Result<MediaConfiguration, ConfigurationError> {
+        let media = media.normalize_and_validate()?;
+        let next_configuration = AppConfiguration {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            sip_service: self.configuration.sip_service.clone(),
+            device_collection: self.configuration.device_collection.clone(),
+            media: media.clone(),
+        };
+        write_configuration(&self.path, &next_configuration)?;
+        self.configuration = next_configuration;
+        Ok(media)
+    }
+}
+
+impl MediaConfiguration {
+    fn normalize_and_validate(mut self) -> Result<Self, ConfigurationError> {
+        self.source.mp4.file_path = self.source.mp4.file_path.trim().to_owned();
+        self.recording.directory = self.recording.directory.trim().to_owned();
+        if self.source.mp4.file_path.len() > 4_096 {
+            return Err(ConfigurationError::invalid_field(
+                "source.mp4.filePath",
+                "MP4 文件路径长度不能超过 4096 个字符",
+            ));
+        }
+        if self.recording.is_enabled && self.recording.directory.is_empty() {
+            return Err(ConfigurationError::invalid_field(
+                "recording.directory",
+                "启用录像后必须设置录像目录",
+            ));
+        }
+        if !matches!(self.recording.segment_duration_minutes, 5 | 10 | 30 | 60) {
+            return Err(ConfigurationError::invalid_field(
+                "recording.segmentDurationMinutes",
+                "录像分片时长必须为 5、10、30 或 60 分钟",
+            ));
+        }
+        if self.source.camera.video.width == 0 || self.source.camera.video.height == 0 {
+            return Err(ConfigurationError::invalid_field(
+                "source.camera.video",
+                "摄像头分辨率必须大于 0",
+            ));
+        }
+        if self.source.camera.video.frames_per_second == 0 {
+            return Err(ConfigurationError::invalid_field(
+                "source.camera.video.framesPerSecond",
+                "摄像头帧率必须大于 0",
+            ));
+        }
+        Ok(self)
     }
 }
 

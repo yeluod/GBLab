@@ -59,8 +59,18 @@ pub fn run() -> Result<(), tauri::Error> {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::probe_mp4,
+            commands::open_mp4,
+            commands::play_media,
+            commands::pause_media,
+            commands::stop_media,
+            commands::reset_media,
+            commands::get_media_runtime_status,
+            commands::read_media_packet,
             commands::get_sip_service_configuration,
             commands::save_sip_service_configuration,
+            commands::get_media_configuration,
+            commands::save_media_configuration,
             commands::get_device_snapshot,
             commands::get_device_page,
             commands::get_device_channels,

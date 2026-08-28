@@ -1,6 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
-    SignalCharset, SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+    MediaPacket, MediaRuntimeStatus, Mp4ProbeResult, SignalCharset, SimulatedChannel,
+    SimulatedDevice, SipServiceConfiguration, SipTransport,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -383,6 +384,85 @@ impl CommandErrorDto {
         Self {
             code: "invalid_configuration",
             message,
+        }
+    }
+
+    pub fn media(error: &gblab_core::MediaError) -> Self {
+        Self {
+            code: "media_error",
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRuntimeStatusDto {
+    source_status: gblab_core::media::MediaSourceStatus,
+    source_kind: Option<gblab_core::media::MediaSourceKind>,
+    video: Option<gblab_core::media::VideoStreamInfo>,
+    audio: Option<gblab_core::media::AudioStreamInfo>,
+    duration_seconds: Option<f64>,
+    position_seconds: f64,
+}
+
+impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
+    fn from(value: MediaRuntimeStatus) -> Self {
+        Self {
+            source_status: value.source_status,
+            source_kind: value.source_kind,
+            video: value.video,
+            audio: value.audio,
+            duration_seconds: value.duration_seconds,
+            position_seconds: value.position_seconds,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mp4ProbeResultDto {
+    file_path: String,
+    video: gblab_core::media::VideoStreamInfo,
+    audio: Option<gblab_core::media::AudioStreamInfo>,
+    duration_seconds: Option<f64>,
+    bitrate: Option<u64>,
+}
+
+impl From<Mp4ProbeResult> for Mp4ProbeResultDto {
+    fn from(value: Mp4ProbeResult) -> Self {
+        Self {
+            file_path: value.file_path,
+            video: value.video,
+            audio: value.audio,
+            duration_seconds: value.duration_seconds,
+            bitrate: value.bitrate,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaPacketDto {
+    stream_index: usize,
+    pts: Option<i64>,
+    dts: Option<i64>,
+    duration: i64,
+    size: usize,
+    is_keyframe: bool,
+    position_seconds: f64,
+}
+
+impl From<MediaPacket> for MediaPacketDto {
+    fn from(value: MediaPacket) -> Self {
+        Self {
+            stream_index: value.stream_index,
+            pts: value.pts,
+            dts: value.dts,
+            duration: value.duration,
+            size: value.size,
+            is_keyframe: value.is_keyframe,
+            position_seconds: value.position_seconds,
         }
     }
 }

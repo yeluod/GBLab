@@ -8,6 +8,7 @@
 pub mod application;
 pub mod configuration;
 pub mod domain;
+pub mod media;
 pub mod runtime;
 pub mod sip;
 
@@ -15,10 +16,16 @@ mod error;
 
 pub use application::{CoreInfo, CoreService, DevicePage};
 pub use configuration::{
-    DeviceCollectionConfiguration, SignalCharset, SipServiceConfiguration, SipTransport,
+    AudioCaptureConfiguration, AudioCodec, CameraSourceConfiguration,
+    DeviceCollectionConfiguration, EncoderBackend, MediaConfiguration, MediaPreferences,
+    MediaRecordingConfiguration, MediaSourceConfiguration, MediaSourceType, Mp4SourceConfiguration,
+    SignalCharset, SipServiceConfiguration, SipTransport, VideoCaptureConfiguration, VideoCodec,
 };
 pub use domain::{
     BatchDeviceDraft, DeviceKind, DeviceSnapshot, DeviceUpdateDraft, SimulatedChannel,
     SimulatedDevice,
 };
 pub use error::{CoreError, Result};
+pub use media::{
+    MediaEngine, MediaError, MediaPacket, MediaResult, MediaRuntimeStatus, Mp4ProbeResult,
+};

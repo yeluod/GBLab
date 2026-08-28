@@ -5,6 +5,7 @@ export {
   type MockMediaOperation,
   type MockMediaServiceOptions,
 } from './services/mock-media-service';
+export { TauriMediaService } from './services/tauri-media-service';
 export {
   MOCK_AUDIO_DEVICES,
   MOCK_MP4_PATHS,

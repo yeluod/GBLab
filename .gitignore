@@ -22,4 +22,6 @@ Thumbs.db
 # Tauri sidecars are prepared by platform scripts or CI.
 /src-tauri/binaries/*
 !/src-tauri/binaries/README.md
+/src-tauri/resources/ffmpeg/*
+!/src-tauri/resources/ffmpeg/README.md
 /src-tauri/gen/
