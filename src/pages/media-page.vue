@@ -37,7 +37,7 @@
       <div>
         <p class="eyebrow">GLOBAL MEDIA</p>
         <h1 id="media-page-title">音视频源</h1>
-        <p>所有模拟设备和通道共享当前唯一音视频源；本阶段运行能力由 Mock Service 提供。</p>
+        <p>所有模拟设备和通道共享当前唯一音视频源；MP4 探测和播放由 Rust 媒体服务提供。</p>
       </div>
       <div class="media-header-status">
         <span>Source Status</span>
@@ -75,8 +75,8 @@
           :probe-result="store.probeResult"
           :is-preview-pending="store.isPreviewPending"
           :can-start-preview="store.canStartPreview"
-          @start-preview="runOperation(store.startPreview, 'Mock 预览已启动。')"
-          @stop-preview="runOperation(store.stopPreview, 'Mock 预览已停止。')"
+          @start-preview="runOperation(store.startPreview, '预览已启动。')"
+          @stop-preview="runOperation(store.stopPreview, '预览已停止。')"
         />
       </div>
 

@@ -1,0 +1,28 @@
+name: Prepare FFmpeg native SDK
+description: Prepare the pinned platform FFmpeg SDK and export linker paths
+
+inputs:
+  platform:
+    description: Target platform (linux, macos or windows)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore FFmpeg SDK cache
+      uses: actions/cache@v4
+      with:
+        path: .ffmpeg-sdk
+        key: gblab-ffmpeg-${{ inputs.platform }}-${{ runner.arch }}-8.1
+    - name: Prepare macOS FFmpeg SDK
+      if: ${{ inputs.platform == 'macos' }}
+      shell: bash
+      run: bash scripts/prepare-ffmpeg-macos.sh .ffmpeg-sdk/macos
+    - name: Prepare Windows FFmpeg SDK
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: ./scripts/prepare-ffmpeg-windows.ps1 -OutputRoot .ffmpeg-sdk\windows
+    - name: Prepare Linux FFmpeg SDK
+      if: ${{ inputs.platform == 'linux' }}
+      shell: bash
+      run: bash scripts/prepare-ffmpeg-linux.sh .ffmpeg-sdk/linux

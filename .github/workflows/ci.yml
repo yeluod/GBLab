@@ -43,6 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build
+      - uses: ./.github/actions/prepare-ffmpeg
+        with:
+          platform: linux
       - name: Check frontend formatting
         run: pnpm run format:check
       - name: Lint frontend
@@ -61,6 +64,9 @@ jobs:
       - uses: ./.github/actions/setup-build
         with:
           rust-components: clippy
+      - uses: ./.github/actions/prepare-ffmpeg
+        with:
+          platform: linux
       - name: Verify frontend
         run: pnpm run check
       - name: Verify Rust
@@ -79,5 +85,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build
+      - uses: ./.github/actions/prepare-ffmpeg
+        if: ${{ matrix.os == 'macos-latest' || matrix.os == 'windows-latest' }}
+        with:
+          platform: ${{ matrix.os == 'macos-latest' && 'macos' || 'windows' }}
+      - name: Generate release Tauri configuration
+        if: ${{ matrix.os == 'macos-latest' || matrix.os == 'windows-latest' }}
+        shell: bash
+        run: |
+          node scripts/generate-tauri-release-config.mjs \
+            --platform "${{ matrix.os == 'macos-latest' && 'macos' || 'windows' }}" \
+            --sdk-root "${{ matrix.os == 'macos-latest' && '.ffmpeg-sdk/macos' || '.ffmpeg-sdk/windows' }}" \
+            --output src-tauri/tauri.release.generated.json
       - name: Build desktop without bundle
-        run: pnpm tauri build --no-bundle
+        run: pnpm exec tauri build --no-bundle --config src-tauri/tauri.release.generated.json
+      - name: Stage Windows FFmpeg DLLs beside application
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: Copy-Item -Force .ffmpeg-sdk\windows\bin\*.dll target\release\
+      - name: Verify macOS FFmpeg linkage
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks
+      - name: Verify Windows FFmpeg linkage
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: ./scripts/verify-ffmpeg-windows.ps1 -Binary target\release\gblab-desktop.exe -SdkRoot .ffmpeg-sdk\windows

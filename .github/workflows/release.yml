@@ -88,8 +88,17 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.release_sha }}
       - uses: ./.github/actions/setup-build
-      - name: Build macOS application
-        run: pnpm exec tauri build --bundles app,dmg
+      - uses: ./.github/actions/prepare-ffmpeg
+        with:
+          platform: macos
+      - name: Generate release Tauri configuration
+        run: node scripts/generate-tauri-release-config.mjs --platform macos --sdk-root .ffmpeg-sdk/macos --output src-tauri/tauri.release.generated.json
+      - name: Compile macOS application
+        run: pnpm exec tauri build --no-bundle --config src-tauri/tauri.release.generated.json
+      - name: Relocate and verify macOS FFmpeg linkage
+        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks
+      - name: Bundle macOS application
+        run: pnpm exec tauri bundle --config src-tauri/tauri.release.generated.json --bundles app,dmg
       - name: Upload macOS installer to draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,8 +126,21 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.release_sha }}
       - uses: ./.github/actions/setup-build
-      - name: Build Windows installers
-        run: pnpm exec tauri build --bundles nsis,msi
+      - uses: ./.github/actions/prepare-ffmpeg
+        with:
+          platform: windows
+      - name: Generate release Tauri configuration
+        run: node scripts/generate-tauri-release-config.mjs --platform windows --sdk-root .ffmpeg-sdk/windows --output src-tauri/tauri.release.generated.json
+      - name: Compile Windows application
+        run: pnpm exec tauri build --no-bundle --config src-tauri/tauri.release.generated.json
+      - name: Stage FFmpeg DLLs beside application
+        shell: pwsh
+        run: Copy-Item -Force .ffmpeg-sdk\windows\bin\*.dll target\release\
+      - name: Verify Windows FFmpeg linkage
+        shell: pwsh
+        run: ./scripts/verify-ffmpeg-windows.ps1 -Binary target\release\gblab-desktop.exe -SdkRoot .ffmpeg-sdk\windows
+      - name: Bundle Windows installers
+        run: pnpm exec tauri bundle --config src-tauri/tauri.release.generated.json --bundles nsis,msi
       - name: Upload Windows installers to draft release
         env:
           GH_TOKEN: ${{ github.token }}

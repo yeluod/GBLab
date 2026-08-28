@@ -90,10 +90,10 @@
         />
         <template v-else-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing">
           <div class="preview-test-pattern" aria-hidden="true"></div>
-          <strong>Mock Preview Surface</strong>
+          <strong>MP4 Preview Surface</strong>
           <span>{{ runtimeStatus.sourceLabel }}</span>
         </template>
-        <NEmpty v-else description="第一阶段仅展示 Mock 预览画面" />
+        <NEmpty v-else description="选择并检测 MP4 后可查看预览状态" />
       </div>
 
       <div class="preview-actions">
@@ -116,7 +116,7 @@
         >
           停止预览
         </NButton>
-        <span>真实视频画面将在第二阶段接入。</span>
+        <span>当前展示媒体状态；真实视频画面将在媒体输出链路接入后提供。</span>
       </div>
     </section>
 

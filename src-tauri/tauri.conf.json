@@ -29,9 +29,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": {
-      "resources/ffmpeg": "."
-    },
     "macOS": {
       "minimumSystemVersion": "11.0"
     },

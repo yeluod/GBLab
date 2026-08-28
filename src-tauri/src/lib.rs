@@ -57,6 +57,7 @@ pub fn run() -> Result<(), tauri::Error> {
             app.manage(state);
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::probe_mp4,

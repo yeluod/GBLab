@@ -1,7 +1,7 @@
 import { invokeCommand } from '@/infrastructure/tauri';
+import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 
 import { MediaSourceType } from '../types/media-config';
-import { createDefaultMediaConfig } from '../types/media-defaults';
 import {
   MediaSourceStatus,
   RecordingStatus,
@@ -14,7 +14,6 @@ import type {
   GlobalMediaConfig,
 } from '../types/media-config';
 import { MediaServiceError, type MediaService } from './media-service';
-import { MockMediaService } from './mock-media-service';
 
 interface BackendStreamInfo {
   codec: string;
@@ -191,8 +190,6 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
 
 /** Tauri 媒体适配器；MP4 的探测和播放在 Rust/rsmpeg 内完成。 */
 export class TauriMediaService implements MediaService {
-  private readonly fallback = new MockMediaService({ initialConfig: createDefaultMediaConfig() });
-
   async loadConfig(): Promise<GlobalMediaConfig> {
     return fromBackendConfig(await invokeCommand<BackendMediaConfig>('get_media_configuration'));
   }
@@ -208,11 +205,27 @@ export class TauriMediaService implements MediaService {
       return Promise.reject(new MediaServiceError('摄像头采集将在下一阶段接入。'));
     return this.open(config);
   }
-  selectMp4(currentPath: string): Promise<string | null> {
-    return this.fallback.selectMp4(currentPath);
+  async selectMp4(currentPath: string): Promise<string | null> {
+    const options: OpenDialogOptions = {
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'MP4 视频', extensions: ['mp4'] }],
+    };
+    const trimmedPath = currentPath.trim();
+    if (trimmedPath.length > 0) options.defaultPath = trimmedPath;
+    const selected = await open(options);
+    return typeof selected === 'string' ? selected : null;
   }
-  selectRecordingDirectory(currentDirectory: string): Promise<string | null> {
-    return this.fallback.selectRecordingDirectory(currentDirectory);
+
+  async selectRecordingDirectory(currentDirectory: string): Promise<string | null> {
+    const options: OpenDialogOptions = {
+      multiple: false,
+      directory: true,
+    };
+    const trimmedDirectory = currentDirectory.trim();
+    if (trimmedDirectory.length > 0) options.defaultPath = trimmedDirectory;
+    const selected = await open(options);
+    return typeof selected === 'string' ? selected : null;
   }
   async probeMp4(filePath: string): Promise<MediaProbeResult> {
     return toProbe(await invokeCommand<BackendProbeResult>('probe_mp4', { filePath }));

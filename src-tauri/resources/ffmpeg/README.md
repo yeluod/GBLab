@@ -1,11 +1,14 @@
-# Bundled FFmpeg Native Libraries
+# FFmpeg Native Libraries
 
-平台发布构建在此目录放置与当前目标架构匹配的 FFmpeg 8 Native Libraries：
+此目录只保留说明文件，实际 Native Libraries 不提交 Git。
 
-- macOS：`libavcodec`、`libavformat`、`libavutil`、`libavdevice`、`libavfilter`、`libswresample`、`libswscale` 的 `.dylib`。
-- Windows：对应 `.dll` 和链接阶段需要的 `.lib` 文件。
+发布 workflow 在构建前准备固定版本 FFmpeg SDK：
 
-这些文件由平台 CI 的固定版本准备步骤生成或下载，不提交到 Git。CI 必须在目标平台锁定
-FFmpeg 8 版本、记录来源和 SHA-256 后再复制到本目录；不要直接使用 runner 的系统 FFmpeg。
-Tauri 会将本目录内容复制到应用资源根目录，macOS 通过应用内置 rpath 加载，Windows 将 DLL 放在
-可执行文件旁边；终端用户无需单独安装 FFmpeg。
+- macOS 使用官方 FFmpeg 8.1.2 源码构建共享库，校验源码 SHA-256 后将 dylib 作为
+  `Contents/Frameworks` 组件打包，并将依赖重定位到 `@rpath`。
+- Windows 使用固定资产 ID 的 FFmpeg 8.1 LGPL shared SDK，校验 ZIP SHA-256 后将 DLL
+  作为安装包根目录资源，与 `GBLab.exe` 放在同一目录。
+
+每个 SDK 都生成 `manifest.json`，记录来源、版本、架构和校验值。开发机可以继续通过
+`pkg-config` 使用系统 FFmpeg；Release 构建必须使用 workflow 准备的 SDK，终端用户无需
+预装 FFmpeg。
