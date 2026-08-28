@@ -111,6 +111,26 @@ pub struct CameraCaptureSettings {
     pub frames_per_second: u32,
 }
 
+/// 原生采集设备的可选项。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDeviceInfo {
+    /// `FFmpeg` 输入设备标识。
+    pub id: String,
+    /// 用于界面展示的设备名称。
+    pub name: String,
+}
+
+/// 原生采集设备枚举结果。
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDeviceLists {
+    /// 摄像头设备。
+    pub video: Vec<CaptureDeviceInfo>,
+    /// 麦克风设备。
+    pub audio: Vec<CaptureDeviceInfo>,
+}
+
 /// 播放状态。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

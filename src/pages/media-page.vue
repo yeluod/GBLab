@@ -4,7 +4,7 @@
 
   import MediaSourceForm from '@/features/media/components/media-source-form.vue';
   import MediaStatusPanel from '@/features/media/components/media-status-panel.vue';
-  import { MediaSourceStatus, useMediaStore } from '@/features/media';
+  import { MediaSourceStatus, MediaSourceType, useMediaStore } from '@/features/media';
 
   const store = useMediaStore();
   const message = useMessage();
@@ -52,6 +52,19 @@
 
     <NAlert v-if="store.serviceError !== null" type="error" class="media-service-alert">
       {{ store.serviceError }}
+    </NAlert>
+    <NAlert
+      v-else-if="
+        store.draftConfig.source.type === MediaSourceType.Camera &&
+        !store.isInitializing &&
+        !store.isRefreshingDevices &&
+        store.videoDevices.length === 0 &&
+        store.audioDevices.length === 0
+      "
+      type="warning"
+      class="media-service-alert"
+    >
+      系统未发现可用的摄像头或麦克风，请检查设备连接和系统隐私权限。
     </NAlert>
 
     <NCard class="media-workbench" content-style="padding: 0;">

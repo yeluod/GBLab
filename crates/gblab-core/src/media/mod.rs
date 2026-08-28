@@ -1,6 +1,6 @@
 //! 媒体源抽象与 MP4 解封装能力。
 //!
-//! 本模块只负责本地媒体容器和播放时钟，不负责摄像头采集、编码、MPEG-PS、RTP
+//! 本模块负责本地媒体容器、摄像头输入和播放时钟，不负责编码、MPEG-PS、RTP
 //! 或 SIP 会话。后续媒体传输可以复用 [`MediaPacket`] 和 [`MediaPipeline`] 边界。
 
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
@@ -14,9 +14,9 @@ pub use camera::{CameraMediaSource, CameraSession};
 pub use error::MediaError;
 pub use mp4::{Mp4MediaSource, Mp4Session};
 pub use types::{
-    AudioCodec, AudioStreamInfo, CameraCaptureSettings, MediaPacket, MediaPipeline, MediaResult,
-    MediaRuntimeStatus, MediaSource, MediaSourceKind, MediaSourceSession, MediaSourceStatus,
-    Mp4ProbeResult, VideoCodec, VideoStreamInfo,
+    AudioCodec, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
+    MediaPacket, MediaPipeline, MediaResult, MediaRuntimeStatus, MediaSource, MediaSourceKind,
+    MediaSourceSession, MediaSourceStatus, Mp4ProbeResult, VideoCodec, VideoStreamInfo,
 };
 
 /// 媒体引擎，负责当前全局媒体源的生命周期。
@@ -86,6 +86,11 @@ impl MediaEngine {
     /// 探测摄像头当前协商出的输入能力。
     pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeResult> {
         CameraMediaSource::new(settings.clone()).probe()
+    }
+
+    /// 枚举当前平台的摄像头和麦克风输入设备。
+    pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
+        camera::list_capture_devices()
     }
 
     /// 当前源开始播放。

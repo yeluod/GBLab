@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gblab-core", "src-tauri"]
+members = ["crates/gblab-ffmpeg-device", "crates/gblab-core", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync",
 tokio-util = "0.7"
 tracing = "0.1"
 rsmpeg = { version = "0.18", default-features = false, features = ["ffmpeg8", "link_system_ffmpeg"] }
+gblab-ffmpeg-device = { path = "crates/gblab-ffmpeg-device" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

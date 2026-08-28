@@ -406,6 +406,40 @@ pub struct MediaRuntimeStatusDto {
     position_seconds: f64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDeviceInfoDto {
+    id: String,
+    name: String,
+    status: &'static str,
+}
+
+impl From<gblab_core::CaptureDeviceInfo> for CaptureDeviceInfoDto {
+    fn from(value: gblab_core::CaptureDeviceInfo) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            status: "available",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDeviceListsDto {
+    video: Vec<CaptureDeviceInfoDto>,
+    audio: Vec<CaptureDeviceInfoDto>,
+}
+
+impl From<gblab_core::CaptureDeviceLists> for CaptureDeviceListsDto {
+    fn from(value: gblab_core::CaptureDeviceLists) -> Self {
+        Self {
+            video: value.video.into_iter().map(Into::into).collect(),
+            audio: value.audio.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
     fn from(value: MediaRuntimeStatus) -> Self {
         Self {

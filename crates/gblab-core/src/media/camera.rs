@@ -6,9 +6,27 @@ use rsmpeg::{
 };
 
 use super::{
-    AudioCodec, AudioStreamInfo, CameraCaptureSettings, MediaError, MediaPacket, MediaResult,
-    MediaSource, MediaSourceSession, Mp4ProbeResult, VideoCodec, VideoStreamInfo,
+    AudioCodec, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
+    MediaError, MediaPacket, MediaResult, MediaSource, MediaSourceSession, Mp4ProbeResult,
+    VideoCodec, VideoStreamInfo,
 };
+
+/// 使用当前平台的原生 API 枚举 `FFmpeg` 可采集的输入设备。
+pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
+    let devices = gblab_ffmpeg_device::list_capture_devices()
+        .map_err(|error| MediaError::Camera(format!("无法枚举本机采集设备：{error}")))?;
+    Ok(CaptureDeviceLists {
+        video: devices.video.into_iter().map(capture_device_info).collect(),
+        audio: devices.audio.into_iter().map(capture_device_info).collect(),
+    })
+}
+
+fn capture_device_info(device: gblab_ffmpeg_device::NativeCaptureDevice) -> CaptureDeviceInfo {
+    CaptureDeviceInfo {
+        id: device.id,
+        name: device.name,
+    }
+}
 
 /// `FFmpeg` 摄像头输入源。
 pub struct CameraMediaSource {
@@ -200,6 +218,7 @@ impl CameraSession {
 }
 
 fn platform_input_format() -> MediaResult<AVInputFormatRef<'static>> {
+    gblab_ffmpeg_device::register_devices();
     #[cfg(target_os = "macos")]
     {
         return AVInputFormat::find(c"avfoundation")

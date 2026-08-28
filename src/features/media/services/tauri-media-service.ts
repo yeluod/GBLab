@@ -34,6 +34,17 @@ interface BackendProbeResult {
   bitrate: number | null;
 }
 
+interface BackendCaptureDevice {
+  id: string;
+  name: string;
+  status: 'available' | 'unavailable' | 'permission-denied' | 'busy';
+}
+
+interface BackendCaptureDeviceLists {
+  video: BackendCaptureDevice[];
+  audio: BackendCaptureDevice[];
+}
+
 interface BackendRuntimeStatus {
   sourceStatus: 'unconfigured' | 'ready' | 'playing' | 'paused' | 'stopped';
   sourceKind: MediaSourceType | null;
@@ -194,6 +205,8 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
 
 /** Tauri 媒体适配器；MP4 的探测和播放在 Rust/rsmpeg 内完成。 */
 export class TauriMediaService implements MediaService {
+  private captureDevicesRequest: Promise<BackendCaptureDeviceLists> | null = null;
+
   async loadConfig(): Promise<GlobalMediaConfig> {
     return fromBackendConfig(await invokeCommand<BackendMediaConfig>('get_media_configuration'));
   }
@@ -232,11 +245,13 @@ export class TauriMediaService implements MediaService {
   async probeMp4(filePath: string): Promise<MediaProbeResult> {
     return toProbe(await invokeCommand<BackendProbeResult>('probe_mp4', { filePath }));
   }
-  listVideoDevices(): Promise<CaptureDeviceInfo[]> {
-    return listBrowserDevices('videoinput');
+  async listVideoDevices(): Promise<CaptureDeviceInfo[]> {
+    const devices = await this.listCaptureDevices();
+    return devices.video.map(toCaptureDevice);
   }
-  listAudioDevices(): Promise<CaptureDeviceInfo[]> {
-    return listBrowserDevices('audioinput');
+  async listAudioDevices(): Promise<CaptureDeviceInfo[]> {
+    const devices = await this.listCaptureDevices();
+    return devices.audio.map(toCaptureDevice);
   }
   async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
     const probe = await invokeCommand<BackendProbeResult>('probe_camera', {
@@ -301,27 +316,20 @@ export class TauriMediaService implements MediaService {
       }),
     );
   }
-}
 
-async function listBrowserDevices(kind: MediaDeviceKind): Promise<CaptureDeviceInfo[]> {
-  if (typeof navigator === 'undefined' || navigator.mediaDevices === undefined) return [];
-  try {
-    // Device labels and stable platform identifiers are hidden until capture permission is granted.
-    const stream = await navigator.mediaDevices.getUserMedia(
-      kind === 'videoinput' ? { video: true, audio: false } : { video: false, audio: true },
+  private async listCaptureDevices(): Promise<BackendCaptureDeviceLists> {
+    this.captureDevicesRequest ??= invokeCommand<BackendCaptureDeviceLists>('list_capture_devices').finally(
+      () => {
+        this.captureDevicesRequest = null;
+      },
     );
-    stream.getTracks().forEach((track) => track.stop());
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices
-      .filter((device) => device.kind === kind)
-      .map((device, index) => ({
-        id: device.label || device.deviceId,
-        name: device.label || `${kind === 'videoinput' ? '摄像头' : '麦克风'} ${index + 1}`,
-        status: CaptureDeviceStatus.Available,
-      }));
-  } catch {
-    // Permission denial must result in an empty, non-editable select rather than an opaque ID
-    // that FFmpeg cannot open. Other enumeration errors are handled the same way in the UI.
-    return [];
+    return this.captureDevicesRequest;
   }
+}
+function toCaptureDevice(device: BackendCaptureDevice): CaptureDeviceInfo {
+  return {
+    id: device.id,
+    name: device.name,
+    status: device.status as CaptureDeviceStatus,
+  };
 }
