@@ -1,7 +1,7 @@
 import { invokeCommand } from '@/infrastructure/tauri';
 import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 
-import { MediaSourceType } from '../types/media-config';
+import { CaptureDeviceStatus, MediaSourceType, VideoCodec } from '../types/media-config';
 import {
   MediaSourceStatus,
   RecordingStatus,
@@ -13,7 +13,7 @@ import type {
   CaptureDeviceInfo,
   GlobalMediaConfig,
 } from '../types/media-config';
-import { MediaServiceError, type MediaService } from './media-service';
+import type { MediaService } from './media-service';
 
 interface BackendStreamInfo {
   codec: string;
@@ -173,7 +173,11 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
   return {
     sourceStatus,
     sourceLabel:
-      value.sourceKind === MediaSourceType.Mp4 ? 'MP4 文件' : (value.sourceKind ?? '未配置'),
+      value.sourceKind === MediaSourceType.Mp4
+        ? 'MP4 文件'
+        : value.sourceKind === MediaSourceType.Camera
+          ? '摄像头'
+          : '未配置',
     video: value.video ? frontendVideo(value.video) : null,
     audio: value.audio ? frontendAudio(value.audio) : null,
     activeLiveSessions: 0,
@@ -201,8 +205,6 @@ export class TauriMediaService implements MediaService {
     );
   }
   applyConfig(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
-    if (config.source.type !== MediaSourceType.Mp4)
-      return Promise.reject(new MediaServiceError('摄像头采集将在下一阶段接入。'));
     return this.open(config);
   }
   async selectMp4(currentPath: string): Promise<string | null> {
@@ -231,13 +233,40 @@ export class TauriMediaService implements MediaService {
     return toProbe(await invokeCommand<BackendProbeResult>('probe_mp4', { filePath }));
   }
   listVideoDevices(): Promise<CaptureDeviceInfo[]> {
-    return Promise.resolve([]);
+    return listBrowserDevices('videoinput');
   }
   listAudioDevices(): Promise<CaptureDeviceInfo[]> {
-    return Promise.resolve([]);
+    return listBrowserDevices('audioinput');
   }
-  getVideoCapabilities(_deviceId: string): Promise<CaptureDeviceCapabilities> {
-    return Promise.reject(new MediaServiceError('摄像头采集将在下一阶段接入。'));
+  async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
+    const probe = await invokeCommand<BackendProbeResult>('probe_camera', {
+      configuration: {
+        videoDeviceId: deviceId,
+        audioEnabled: false,
+        audioDeviceId: '',
+        width: 0,
+        height: 0,
+        framesPerSecond: 0,
+      },
+    });
+    const width = probe.video.width ?? 0;
+    const height = probe.video.height ?? 0;
+    const framesPerSecond = probe.video.framesPerSecond ?? 0;
+    return {
+      deviceId,
+      modes:
+        width > 0 && height > 0
+          ? [
+              {
+                width,
+                height,
+                supportedFramesPerSecond:
+                  framesPerSecond > 0 ? [Math.round(framesPerSecond)] : [],
+              },
+            ]
+          : [],
+      supportedCodecs: [VideoCodec.H264, VideoCodec.H265],
+    };
   }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     await this.open(config);
@@ -251,11 +280,48 @@ export class TauriMediaService implements MediaService {
   }
 
   private async open(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
+    if (config.source.type === MediaSourceType.Camera) {
+      return toRuntime(
+        await invokeCommand<BackendRuntimeStatus>('open_camera', {
+          configuration: {
+            videoDeviceId: config.source.camera.video.deviceId,
+            audioEnabled: config.source.camera.audio.isEnabled,
+            audioDeviceId: config.source.camera.audio.deviceId,
+            width: config.source.camera.video.width,
+            height: config.source.camera.video.height,
+            framesPerSecond: config.source.camera.video.framesPerSecond,
+          },
+        }),
+      );
+    }
     return toRuntime(
       await invokeCommand<BackendRuntimeStatus>('open_mp4', {
         filePath: config.source.mp4.filePath,
         looping: config.source.mp4.isLooping,
       }),
     );
+  }
+}
+
+async function listBrowserDevices(kind: MediaDeviceKind): Promise<CaptureDeviceInfo[]> {
+  if (typeof navigator === 'undefined' || navigator.mediaDevices === undefined) return [];
+  try {
+    // Device labels and stable platform identifiers are hidden until capture permission is granted.
+    const stream = await navigator.mediaDevices.getUserMedia(
+      kind === 'videoinput' ? { video: true, audio: false } : { video: false, audio: true },
+    );
+    stream.getTracks().forEach((track) => track.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices
+      .filter((device) => device.kind === kind)
+      .map((device, index) => ({
+        id: device.label || device.deviceId,
+        name: device.label || `${kind === 'videoinput' ? '摄像头' : '麦克风'} ${index + 1}`,
+        status: CaptureDeviceStatus.Available,
+      }));
+  } catch {
+    // Permission denial must result in an empty, non-editable select rather than an opaque ID
+    // that FFmpeg cannot open. Other enumeration errors are handled the same way in the UI.
+    return [];
   }
 }

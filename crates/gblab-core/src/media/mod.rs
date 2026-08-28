@@ -5,16 +5,18 @@
 
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
+mod camera;
 mod error;
 mod mp4;
 mod types;
 
+pub use camera::{CameraMediaSource, CameraSession};
 pub use error::MediaError;
 pub use mp4::{Mp4MediaSource, Mp4Session};
 pub use types::{
-    AudioCodec, AudioStreamInfo, MediaPacket, MediaPipeline, MediaResult, MediaRuntimeStatus,
-    MediaSource, MediaSourceKind, MediaSourceSession, MediaSourceStatus, Mp4ProbeResult,
-    VideoCodec, VideoStreamInfo,
+    AudioCodec, AudioStreamInfo, CameraCaptureSettings, MediaPacket, MediaPipeline, MediaResult,
+    MediaRuntimeStatus, MediaSource, MediaSourceKind, MediaSourceSession, MediaSourceStatus,
+    Mp4ProbeResult, VideoCodec, VideoStreamInfo,
 };
 
 /// 媒体引擎，负责当前全局媒体源的生命周期。
@@ -57,10 +59,33 @@ impl MediaEngine {
         self.status = MediaRuntimeStatus::ready(
             MediaSourceKind::Mp4,
             probe.video.clone(),
-            probe.audio.clone(),
+            probe.audio,
             probe.duration_seconds,
         );
         Ok(self.status.clone())
+    }
+
+    /// 打开全局摄像头源并准备采集。
+    pub fn open_camera(
+        &mut self,
+        settings: &CameraCaptureSettings,
+    ) -> MediaResult<MediaRuntimeStatus> {
+        let source = CameraMediaSource::new(settings.clone());
+        let session = source.open(false)?;
+        let probe = session.probe().clone();
+        self.session = Some(session);
+        self.status = MediaRuntimeStatus::ready(
+            MediaSourceKind::Camera,
+            probe.video.clone(),
+            probe.audio,
+            None,
+        );
+        Ok(self.status.clone())
+    }
+
+    /// 探测摄像头当前协商出的输入能力。
+    pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeResult> {
+        CameraMediaSource::new(settings.clone()).probe()
     }
 
     /// 当前源开始播放。

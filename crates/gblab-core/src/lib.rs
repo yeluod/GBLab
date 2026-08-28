@@ -27,5 +27,6 @@ pub use domain::{
 };
 pub use error::{CoreError, Result};
 pub use media::{
-    MediaEngine, MediaError, MediaPacket, MediaResult, MediaRuntimeStatus, Mp4ProbeResult,
+    CameraCaptureSettings, MediaEngine, MediaError, MediaPacket, MediaResult, MediaRuntimeStatus,
+    Mp4ProbeResult,
 };

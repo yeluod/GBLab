@@ -84,6 +84,30 @@ pub fn open_mp4(
 }
 
 #[tauri::command]
+pub fn open_camera(
+    configuration: gblab_core::CameraCaptureSettings,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .open_camera(&configuration)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn probe_camera(
+    configuration: gblab_core::CameraCaptureSettings,
+) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
+    gblab_core::MediaEngine::probe_camera(&configuration)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
 pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
     let mut media = state
         .media

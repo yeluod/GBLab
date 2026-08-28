@@ -35,4 +35,7 @@ pub enum MediaError {
     /// 播放会话操作失败。
     #[error("媒体播放操作失败: {0}")]
     Playback(String),
+    /// 摄像头设备输入不可用或配置无效。
+    #[error("摄像头输入不可用: {0}")]
+    Camera(String),
 }

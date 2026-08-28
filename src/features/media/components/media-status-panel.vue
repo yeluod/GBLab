@@ -51,9 +51,11 @@
     const labels: Record<VideoCodec | AudioCodec, string> = {
       [VideoCodec.H264]: 'H.264',
       [VideoCodec.H265]: 'H.265',
+      [VideoCodec.RawVideo]: '原始视频',
       [AudioCodec.G711A]: 'G.711 A-law',
       [AudioCodec.G711U]: 'G.711 μ-law',
       [AudioCodec.Aac]: 'AAC',
+      [AudioCodec.Pcm]: 'PCM',
     };
     return labels[codec];
   }

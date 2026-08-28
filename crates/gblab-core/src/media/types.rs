@@ -4,7 +4,7 @@
 )]
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::MediaError;
 
@@ -29,6 +29,8 @@ pub enum VideoCodec {
     H264,
     /// H.265/HEVC。
     H265,
+    /// 摄像头输入的原始视频格式，尚未编码。
+    RawVideo,
 }
 
 /// 音频编码。
@@ -39,6 +41,8 @@ pub enum AudioCodec {
     Aac,
     /// 其它音频编码，MP4 探测会明确标记但不纳入当前传输能力。
     Other,
+    /// 摄像头输入的 PCM 音频，尚未编码。
+    Pcm,
 }
 
 /// 视频流能力。
@@ -87,6 +91,24 @@ pub struct Mp4ProbeResult {
     pub duration_seconds: Option<f64>,
     /// 容器码率，单位 bit/s；未知时为 None。
     pub bitrate: Option<u64>,
+}
+
+/// 摄像头采集输入配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraCaptureSettings {
+    /// 摄像头设备标识；macOS 通常为设备索引，Windows 为 `DirectShow` 名称。
+    pub video_device_id: String,
+    /// 是否同时打开音频输入。
+    pub audio_enabled: bool,
+    /// 麦克风设备标识。
+    pub audio_device_id: String,
+    /// 采集宽度。
+    pub width: u32,
+    /// 采集高度。
+    pub height: u32,
+    /// 采集帧率。
+    pub frames_per_second: u32,
 }
 
 /// 播放状态。
@@ -200,18 +222,24 @@ pub trait MediaSource {
 pub enum MediaSourceSession {
     /// MP4 文件会话。
     Mp4(super::Mp4Session),
+    /// 摄像头输入会话。
+    Camera(super::CameraSession),
 }
 
 impl MediaSourceSession {
     pub(crate) const fn probe(&self) -> &Mp4ProbeResult {
         match self {
             Self::Mp4(session) => session.probe(),
+            Self::Camera(session) => session.probe(),
         }
     }
 
     pub(crate) const fn play(&mut self) {
         match self {
             Self::Mp4(session) => {
+                session.play();
+            }
+            Self::Camera(session) => {
                 session.play();
             }
         }
@@ -222,24 +250,30 @@ impl MediaSourceSession {
             Self::Mp4(session) => {
                 session.pause();
             }
+            Self::Camera(session) => {
+                session.pause();
+            }
         }
     }
 
     pub(crate) fn stop(&mut self) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.stop(),
+            Self::Camera(session) => session.stop(),
         }
     }
 
     pub(crate) fn reset(&mut self) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.reset(),
+            Self::Camera(session) => session.reset(),
         }
     }
 
     pub(crate) fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
         match self {
             Self::Mp4(session) => session.next_packet(),
+            Self::Camera(session) => session.next_packet(),
         }
     }
 }

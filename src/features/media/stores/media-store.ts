@@ -127,6 +127,7 @@ export const useMediaStore = defineStore('media', () => {
   const isApplying = ref(false);
   const isSaving = ref(false);
   const isPreviewPending = ref(false);
+  const isRefreshingDevices = ref(false);
 
   const hasUnsavedChanges = computed(
     () => JSON.stringify(savedConfig.value) !== JSON.stringify(draftConfig.value),
@@ -155,8 +156,7 @@ export const useMediaStore = defineStore('media', () => {
       ]);
       savedConfig.value = clone(config);
       draftConfig.value = clone(config);
-      videoDevices.value = nextVideoDevices;
-      audioDevices.value = nextAudioDevices;
+      setCaptureDevices(nextVideoDevices, nextAudioDevices);
       runtimeStatus.value = nextRuntimeStatus;
       if (config.source.type === MediaSourceType.Camera) {
         await refreshVideoCapabilities(config.source.camera.video.deviceId);
@@ -238,9 +238,34 @@ export const useMediaStore = defineStore('media', () => {
     return refreshVideoCapabilities(deviceId);
   }
 
+  /** 重新枚举摄像头和麦克风，并清理不再存在的设备选择。 */
+  async function refreshCaptureDevices(): Promise<MediaOperationResult> {
+    isRefreshingDevices.value = true;
+    serviceError.value = null;
+    try {
+      const [nextVideoDevices, nextAudioDevices] = await Promise.all([
+        service.listVideoDevices(),
+        service.listAudioDevices(),
+      ]);
+      setCaptureDevices(nextVideoDevices, nextAudioDevices);
+      if (draftConfig.value.source.type === MediaSourceType.Camera) {
+        await refreshVideoCapabilities(draftConfig.value.source.camera.video.deviceId);
+      }
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error);
+    } finally {
+      isRefreshingDevices.value = false;
+    }
+  }
+
   async function refreshVideoCapabilities(deviceId: string): Promise<MediaOperationResult> {
     const device = videoDevices.value.find((item) => item.id === deviceId);
-    if (device?.status !== CaptureDeviceStatus.Available) {
+    if (
+      device?.status === CaptureDeviceStatus.Busy ||
+      device?.status === CaptureDeviceStatus.Unavailable ||
+      device?.status === CaptureDeviceStatus.PermissionDenied
+    ) {
       videoCapabilities.value = null;
       const message = '所选摄像头当前不可用。';
       fieldErrors.value = {
@@ -248,6 +273,11 @@ export const useMediaStore = defineStore('media', () => {
         'source.camera.video.deviceId': message,
       };
       return { ok: false, message };
+    }
+
+    if (deviceId.trim().length === 0) {
+      videoCapabilities.value = null;
+      return { ok: false, message: '请选择摄像头。' };
     }
 
     try {
@@ -401,6 +431,35 @@ export const useMediaStore = defineStore('media', () => {
     }
   }
 
+  function setCaptureDevices(
+    nextVideoDevices: CaptureDeviceInfo[],
+    nextAudioDevices: CaptureDeviceInfo[],
+  ): void {
+    videoDevices.value = nextVideoDevices;
+    audioDevices.value = nextAudioDevices;
+
+    const availableVideo = nextVideoDevices.find(
+      (device) => device.status === CaptureDeviceStatus.Available,
+    );
+    const selectedVideo = nextVideoDevices.find(
+      (device) => device.id === draftConfig.value.source.camera.video.deviceId,
+    );
+    if (selectedVideo?.status !== CaptureDeviceStatus.Available) {
+      draftConfig.value.source.camera.video.deviceId = availableVideo?.id ?? '';
+      videoCapabilities.value = null;
+    }
+
+    const availableAudio = nextAudioDevices.find(
+      (device) => device.status === CaptureDeviceStatus.Available,
+    );
+    const selectedAudio = nextAudioDevices.find(
+      (device) => device.id === draftConfig.value.source.camera.audio.deviceId,
+    );
+    if (selectedAudio?.status !== CaptureDeviceStatus.Available) {
+      draftConfig.value.source.camera.audio.deviceId = availableAudio?.id ?? '';
+    }
+  }
+
   function handleServiceFailure(error: unknown): MediaOperationResult {
     const message = errorMessage(error);
     serviceError.value = message;
@@ -423,6 +482,7 @@ export const useMediaStore = defineStore('media', () => {
     isApplying,
     isSaving,
     isPreviewPending,
+    isRefreshingDevices,
     hasUnsavedChanges,
     canStartPreview,
     initialize,
@@ -430,6 +490,7 @@ export const useMediaStore = defineStore('media', () => {
     selectMp4,
     probeCurrentMp4,
     setVideoDevice,
+    refreshCaptureDevices,
     setVideoResolution,
     selectRecordingDirectory,
     applyDraft,

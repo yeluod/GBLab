@@ -34,11 +34,13 @@
     capabilities: CaptureDeviceCapabilities | null;
     fieldErrors: MediaFieldErrors;
     isProbing: boolean;
+    isRefreshingDevices: boolean;
   }>();
   const emit = defineEmits<{
     sourceTypeChange: [sourceType: MediaSourceType];
     selectMp4: [];
     probeMp4: [];
+    refreshDevices: [];
     videoDeviceChange: [deviceId: string];
     videoResolutionChange: [width: number, height: number];
     selectRecordingDirectory: [];
@@ -190,12 +192,30 @@
       </template>
 
       <template v-else>
-        <NDivider title-placement="left">视频采集</NDivider>
+        <div class="media-subsection-heading">
+          <NDivider title-placement="left">视频采集</NDivider>
+          <NButton
+            secondary
+            size="small"
+            :loading="isRefreshingDevices"
+            data-testid="refresh-capture-devices"
+            @click="emit('refreshDevices')"
+          >
+            刷新设备
+          </NButton>
+        </div>
         <div class="media-form-grid">
           <NFormItem label="摄像头" v-bind="validationProps('source.camera.video.deviceId')">
             <NSelect
               :value="config.source.camera.video.deviceId"
               :options="videoDeviceOptions"
+              :placeholder="
+                videoDeviceOptions.length > 0
+                  ? '请选择摄像头'
+                  : '未检测到摄像头，请刷新或检查系统权限'
+              "
+              :disabled="isRefreshingDevices || videoDeviceOptions.length === 0"
+              :loading="isRefreshingDevices"
               @update:value="handleVideoDevice"
             />
           </NFormItem>
@@ -245,7 +265,17 @@
             <NSelect
               v-model:value="config.source.camera.audio.deviceId"
               :options="audioDeviceOptions"
-              :disabled="!config.source.camera.audio.isEnabled"
+              :placeholder="
+                audioDeviceOptions.length > 0
+                  ? '请选择麦克风'
+                  : '未检测到麦克风，请刷新或检查系统权限'
+              "
+              :disabled="
+                !config.source.camera.audio.isEnabled ||
+                isRefreshingDevices ||
+                audioDeviceOptions.length === 0
+              "
+              :loading="isRefreshingDevices"
             />
           </NFormItem>
           <NFormItem label="音频编码">

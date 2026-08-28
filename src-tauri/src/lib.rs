@@ -62,6 +62,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::get_app_info,
             commands::probe_mp4,
             commands::open_mp4,
+            commands::open_camera,
+            commands::probe_camera,
             commands::play_media,
             commands::pause_media,
             commands::stop_media,
