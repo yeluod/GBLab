@@ -1,6 +1,7 @@
 import { MediaSourceType } from '../types/media-config';
 import { createDefaultMediaConfig } from '../types/media-defaults';
 import {
+  createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
   RecordingStatus,
   type MediaRuntimeStatus,
@@ -165,6 +166,11 @@ export class MockMediaService implements MediaService {
     return clone(this.runtimeStatus);
   }
 
+  async setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.audioMonitoring = enabled;
+    return clone(this.runtimeStatus);
+  }
+
   async stepFrame(): Promise<MediaVideoFrame | null> {
     const previous = this.runtimeStatus.sourceStatus;
     this.runtimeStatus.sourceStatus = MediaSourceStatus.Previewing;
@@ -232,10 +238,13 @@ export class MockMediaService implements MediaService {
         positionSeconds: 0,
         playbackRate: 1,
         decodedFrames: 0,
+        metrics: createEmptyMediaRuntimeMetrics(),
         muted: false,
         volume: 1,
+        audioMonitoring: false,
         recording,
         errorMessage: null,
+        pipelineErrorMessage: null,
       };
     }
 
@@ -266,10 +275,13 @@ export class MockMediaService implements MediaService {
       positionSeconds: 0,
       playbackRate: 1,
       decodedFrames: 0,
+      metrics: createEmptyMediaRuntimeMetrics(),
       muted: false,
       volume: 1,
+      audioMonitoring: false,
       recording,
       errorMessage: null,
+      pipelineErrorMessage: null,
     };
   }
 }

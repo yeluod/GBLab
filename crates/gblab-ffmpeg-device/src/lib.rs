@@ -16,10 +16,81 @@ use std::{
 use rsmpeg::{
     avcodec::{AVCodec, AVCodecParametersRef},
     avformat::{AVFormatContextInput, AVInputFormatRef},
-    avutil::AVDictionary,
+    avutil::{AVAudioFifo, AVDictionary, AVFrame},
     error::RsmpegError,
     ffi,
 };
+
+/// Copies packed interleaved `f32` samples from an FFmpeg frame.
+///
+/// The caller must configure the producing resampler with `AV_SAMPLE_FMT_FLT`.
+#[must_use]
+pub fn copy_interleaved_f32(frame: &AVFrame) -> Option<Vec<f32>> {
+    if frame.format != ffi::AV_SAMPLE_FMT_FLT || frame.nb_samples <= 0 {
+        return None;
+    }
+    let channels = usize::try_from(frame.ch_layout().nb_channels).ok()?;
+    let samples = usize::try_from(frame.nb_samples)
+        .ok()?
+        .checked_mul(channels)?;
+    let pointer = frame.data[0].cast::<f32>();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: FFmpeg owns a packed FLT buffer with nb_samples * channels entries for the frame
+    // lifetime. The samples are copied immediately into Rust-owned storage.
+    Some(unsafe { slice::from_raw_parts(pointer.cast_const(), samples) }.to_vec())
+}
+
+/// Copies packed `f32` samples into an allocated FFmpeg audio frame.
+pub fn write_interleaved_f32(frame: &mut AVFrame, samples: &[f32]) -> bool {
+    if frame.format != ffi::AV_SAMPLE_FMT_FLT || frame.nb_samples <= 0 {
+        return false;
+    }
+    let Ok(sample_count) = usize::try_from(frame.nb_samples) else {
+        return false;
+    };
+    let Ok(channels) = usize::try_from(frame.ch_layout().nb_channels) else {
+        return false;
+    };
+    let Some(expected) = sample_count.checked_mul(channels) else {
+        return false;
+    };
+    if samples.len() != expected {
+        return false;
+    }
+    let destination = frame.data[0].cast::<f32>();
+    if destination.is_null() {
+        return false;
+    }
+    // SAFETY: `alloc_buffer` allocated at least nb_samples * channels packed
+    // f32 values and the exact length was validated above.
+    unsafe { std::ptr::copy_nonoverlapping(samples.as_ptr(), destination, expected) };
+    true
+}
+
+/// Writes all samples from an allocated frame into a matching audio FIFO.
+pub fn audio_fifo_write(fifo: &mut AVAudioFifo, frame: &AVFrame) -> Result<(), String> {
+    // SAFETY: the frame owns valid sample planes for `nb_samples`; the caller
+    // constructs the FIFO with the same format and channel count.
+    unsafe { fifo.write(frame.data.as_ptr(), frame.nb_samples) }.map_err(|error| error.to_string())
+}
+
+/// Reads exactly one allocated frame from a matching audio FIFO.
+pub fn audio_fifo_read(fifo: &mut AVAudioFifo, frame: &mut AVFrame) -> Result<(), String> {
+    // SAFETY: alloc_buffer created writable sample planes for `nb_samples` and
+    // callers only invoke this after checking the FIFO size.
+    let read = unsafe { fifo.read(frame.data.as_ptr(), frame.nb_samples) }
+        .map_err(|error| error.to_string())?;
+    if read == frame.nb_samples {
+        Ok(())
+    } else {
+        Err(format!(
+            "audio FIFO short read: expected {}, got {read}",
+            frame.nb_samples
+        ))
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod windows_capture;

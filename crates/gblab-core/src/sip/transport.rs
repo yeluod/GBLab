@@ -35,6 +35,7 @@ use super::{
     registration::{
         CachedServerResponse, InviteServerTransaction, InviteServerTransactionState,
         SipLogDirection, SipRegistrationClient, SipRegistrationError, SipTransportEvent,
+        UasDialogTag,
     },
     time::now_millis,
     transaction::{TransactionContext, TransactionKey, TransactionState},
@@ -146,16 +147,24 @@ impl SipRegistrationClient {
                     .headers
                     .get(&HeaderName::Expires)
                     .and_then(header_u32_value);
+                {
+                    let mut tags = self.uas_tags.lock().await;
+                    tags.retain(|_, dialog| dialog.is_active(now));
+                }
                 let local_tag = if method.as_deref() == Some("ACK") {
                     None
                 } else if let Some(call_id) = call_id.as_ref() {
                     if is_subscribe {
                         let mut tags = self.uas_tags.lock().await;
-                        Some(
-                            tags.entry(call_id.clone())
-                                .or_insert_with(|| Tag::new().to_string())
-                                .clone(),
-                        )
+                        let lifetime = Duration::from_secs(u64::from(expires.unwrap_or(3_600)));
+                        let dialog = tags.entry(call_id.clone()).or_insert_with(|| UasDialogTag {
+                            value: Tag::new().to_string(),
+                            expires_at: now + lifetime,
+                        });
+                        dialog.expires_at = now + lifetime;
+                        let value = dialog.value.clone();
+                        drop(tags);
+                        Some(value)
                     } else {
                         // Non-dialog requests only need a tag for this response;
                         // retaining every transient Call-ID would create an

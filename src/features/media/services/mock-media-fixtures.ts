@@ -7,6 +7,7 @@ import {
   type CaptureDeviceInfo,
 } from '../types/media-config';
 import {
+  createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
   RecordingStatus,
   type MediaProbeResult,
@@ -166,8 +167,10 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     positionSeconds: 0,
     playbackRate: 1,
     decodedFrames: 0,
+    metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
+    audioMonitoring: false,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -175,5 +178,6 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
       usedSpaceBytes: 0,
     },
     errorMessage: null,
+    pipelineErrorMessage: null,
   };
 }

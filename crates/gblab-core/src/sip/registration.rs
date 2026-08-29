@@ -86,7 +86,7 @@ pub struct SipRegistrationClient {
     pub(super) local_port: u16,
     pub(super) registrar: SipUri,
     pub(super) domain: String,
-    pub(super) uas_tags: Mutex<HashMap<String, String>>,
+    pub(super) uas_tags: Mutex<HashMap<String, UasDialogTag>>,
     pub(super) transactions: TransactionManager,
     pub(super) event_tx: mpsc::Sender<SipTransportEvent>,
     pub(super) invite_transactions: Mutex<HashMap<TransactionKey, InviteServerTransaction>>,
@@ -100,6 +100,17 @@ pub struct SipRegistrationClient {
 pub(super) struct CachedServerResponse {
     pub(super) response: Vec<u8>,
     pub(super) expires_at: Instant,
+}
+
+pub(super) struct UasDialogTag {
+    pub(super) value: String,
+    pub(super) expires_at: Instant,
+}
+
+impl UasDialogTag {
+    pub(super) fn is_active(&self, now: Instant) -> bool {
+        self.expires_at > now
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,16 +204,19 @@ impl SipRegistrationClient {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use siprs::{
         siprs_core::{SipVersion, StatusCode},
         siprs_message::{HeaderCollection, MessageParser, SipMessage, SipResponse, StatusLine},
     };
 
+    use tokio::time::Instant;
+
     use super::{
-        InboundRequestDisposition, SipResponseClass, accept_sip_success, dispatch_inbound_request,
-        invite_key_from_cancel, response_class, transaction_key_from_request,
+        InboundRequestDisposition, SipResponseClass, UasDialogTag, accept_sip_success,
+        dispatch_inbound_request, invite_key_from_cancel, response_class,
+        transaction_key_from_request,
     };
 
     #[test]
@@ -213,6 +227,22 @@ mod tests {
         assert_eq!(response_class(401), SipResponseClass::ClientFailure);
         assert_eq!(response_class(503), SipResponseClass::ServerFailure);
         assert_eq!(response_class(699), SipResponseClass::GlobalFailure);
+    }
+
+    #[test]
+    fn subscribe_dialog_tag_should_expire_naturally() {
+        let now = Instant::now();
+        let active = UasDialogTag {
+            value: "tag".to_owned(),
+            expires_at: now + Duration::from_secs(1),
+        };
+        let expired = UasDialogTag {
+            value: "tag".to_owned(),
+            expires_at: now,
+        };
+
+        assert!(active.is_active(now));
+        assert!(!expired.is_active(now));
     }
 
     #[test]

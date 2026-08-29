@@ -12,6 +12,7 @@ export function createPreviewController(
   const previewFrame = shallowRef<MediaVideoFrame | null>(null);
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let frameLoopActive = false;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
   function applyFrame(frame: MediaVideoFrame): void {
     previewFrame.value = frame;
@@ -23,12 +24,25 @@ export function createPreviewController(
     frameLoopActive = false;
     if (frameTimer !== null) clearTimeout(frameTimer);
     frameTimer = null;
+    if (statusTimer !== null) clearTimeout(statusTimer);
+    statusTimer = null;
     if (clearFrame) previewFrame.value = null;
   }
 
   function start(): void {
     stop(false);
     frameLoopActive = true;
+    const refreshStatus = async (): Promise<void> => {
+      if (!frameLoopActive) return;
+      try {
+        runtimeStatus.value = await service.getRuntimeStatus();
+      } catch (error) {
+        stop();
+        onFailure(error);
+        return;
+      }
+      if (frameLoopActive) statusTimer = setTimeout(() => void refreshStatus(), 400);
+    };
     const read = async (): Promise<void> => {
       if (!frameLoopActive) return;
       try {
@@ -48,6 +62,7 @@ export function createPreviewController(
       frameTimer = setTimeout(() => void read(), delay);
     };
     void read();
+    statusTimer = setTimeout(() => void refreshStatus(), 400);
   }
 
   async function step(): Promise<void> {

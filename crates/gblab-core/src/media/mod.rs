@@ -6,6 +6,7 @@
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
 mod audio_encoder;
+mod audio_preview;
 mod camera;
 mod clock;
 mod decoder;
@@ -32,8 +33,8 @@ pub use packet::{
 pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{
     AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    FrameRateCapability, MediaResult, MediaRuntimeStatus, MediaSourceKind, MediaSourceStatus,
-    MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode,
+    FrameRateCapability, MediaResult, MediaRuntimeMetrics, MediaRuntimeStatus, MediaSourceKind,
+    MediaSourceStatus, MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode,
     VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
 };
 

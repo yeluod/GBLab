@@ -3,6 +3,8 @@
     reason = "媒体时间和帧率使用 f64，无法实现 Eq"
 )]
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use super::{AudioCodec, MediaError, VideoCodec};
@@ -219,12 +221,22 @@ pub struct MediaRuntimeStatus {
     pub playback_rate: f64,
     /// 已向界面输出的解码帧数。
     pub decoded_frames: u64,
+    /// Media pipeline counters and microphone levels.
+    pub metrics: MediaRuntimeMetrics,
     /// 音频是否静音。音频输出管线接入后继续复用此状态。
     pub muted: bool,
     /// 音量，范围 0.0 到 1.0。
     pub volume: f64,
+    /// Whether camera microphone monitoring is enabled locally.
+    pub audio_monitoring: bool,
+    /// Active encoded live-stream consumers.
+    pub active_live_consumers: u64,
+    /// Active encoded recorder consumers.
+    pub active_recorder_consumers: u64,
     /// 最近一次 source worker 错误；正常打开新源后清除。
     pub last_error: Option<String>,
+    /// Latest non-fatal preview/encoder branch failure with an explicit stage prefix.
+    pub last_pipeline_error: Option<String>,
 }
 
 impl MediaRuntimeStatus {
@@ -238,9 +250,14 @@ impl MediaRuntimeStatus {
             position_seconds: 0.0,
             playback_rate: 1.0,
             decoded_frames: 0,
+            metrics: MediaRuntimeMetrics::new(),
             muted: false,
             volume: 1.0,
+            audio_monitoring: false,
+            active_live_consumers: 0,
+            active_recorder_consumers: 0,
             last_error: None,
+            last_pipeline_error: None,
         }
     }
 
@@ -259,9 +276,82 @@ impl MediaRuntimeStatus {
             position_seconds: 0.0,
             playback_rate: 1.0,
             decoded_frames: 0,
+            metrics: MediaRuntimeMetrics::new(),
             muted: false,
             volume: 1.0,
+            audio_monitoring: false,
+            active_live_consumers: 0,
+            active_recorder_consumers: 0,
             last_error: None,
+            last_pipeline_error: None,
+        }
+    }
+}
+
+/// Lightweight counters used to diagnose each camera/media pipeline stage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRuntimeMetrics {
+    /// Demuxed/captured video packets.
+    pub video_packets_captured: u64,
+    /// Successfully decoded raw video frames.
+    pub video_frames_decoded: u64,
+    /// Successfully converted RGBA preview frames.
+    pub video_preview_frames: u64,
+    /// Video packets emitted by the encoded branch.
+    pub video_packets_encoded: u64,
+    /// Demuxed/captured audio packets.
+    pub audio_packets_captured: u64,
+    /// Successfully decoded PCM frames.
+    pub audio_frames_decoded: u64,
+    /// Audio packets emitted by the encoded branch.
+    pub audio_packets_encoded: u64,
+    /// Latest normalized PCM RMS level.
+    pub audio_rms: f64,
+    /// Latest normalized PCM peak level.
+    pub audio_peak: f64,
+}
+
+impl MediaRuntimeMetrics {
+    pub(crate) const fn new() -> Self {
+        Self {
+            video_packets_captured: 0,
+            video_frames_decoded: 0,
+            video_preview_frames: 0,
+            video_packets_encoded: 0,
+            audio_packets_captured: 0,
+            audio_frames_decoded: 0,
+            audio_packets_encoded: 0,
+            audio_rms: 0.0,
+            audio_peak: 0.0,
+        }
+    }
+
+    pub(crate) const fn merge(&mut self, delta: Self) {
+        self.video_packets_captured = self
+            .video_packets_captured
+            .saturating_add(delta.video_packets_captured);
+        self.video_frames_decoded = self
+            .video_frames_decoded
+            .saturating_add(delta.video_frames_decoded);
+        self.video_preview_frames = self
+            .video_preview_frames
+            .saturating_add(delta.video_preview_frames);
+        self.video_packets_encoded = self
+            .video_packets_encoded
+            .saturating_add(delta.video_packets_encoded);
+        self.audio_packets_captured = self
+            .audio_packets_captured
+            .saturating_add(delta.audio_packets_captured);
+        self.audio_frames_decoded = self
+            .audio_frames_decoded
+            .saturating_add(delta.audio_frames_decoded);
+        self.audio_packets_encoded = self
+            .audio_packets_encoded
+            .saturating_add(delta.audio_packets_encoded);
+        if delta.audio_frames_decoded > 0 {
+            self.audio_rms = delta.audio_rms;
+            self.audio_peak = delta.audio_peak;
         }
     }
 }
@@ -300,6 +390,10 @@ pub enum MediaSourceSession {
 pub struct SourceReadOutput {
     pub(crate) packet: Option<super::EncodedMediaPacket>,
     pub(crate) preview_frames: Vec<MediaVideoFrame>,
+    pub(crate) audio_frames: Vec<super::audio_preview::AudioPcmFrame>,
+    pub(crate) metrics: MediaRuntimeMetrics,
+    pub(crate) branch_errors: Vec<String>,
+    pub(crate) retry_after: Option<Duration>,
     pub(crate) looped: bool,
     pub(crate) end_of_stream: bool,
 }
@@ -309,6 +403,10 @@ impl SourceReadOutput {
         Self {
             packet: None,
             preview_frames: Vec::new(),
+            audio_frames: Vec::new(),
+            metrics: MediaRuntimeMetrics::new(),
+            branch_errors: Vec::new(),
+            retry_after: None,
             looped: false,
             end_of_stream: true,
         }
@@ -327,6 +425,14 @@ impl MediaSourceSession {
         }
     }
 
+    /// Earliest selected track timestamp in the normalized 90 kHz source clock.
+    pub(crate) const fn timestamp_origin(&self) -> Option<i64> {
+        match self {
+            Self::Mp4(session) => session.timestamp_origin(),
+            Self::Camera(_) => None,
+        }
+    }
+
     pub(crate) const fn play(&mut self) {
         match self {
             Self::Mp4(session) => {
@@ -342,6 +448,23 @@ impl MediaSourceSession {
         match self {
             Self::Mp4(session) => session.set_preview_enabled(enabled),
             Self::Camera(session) => session.set_preview_enabled(enabled),
+        }
+    }
+
+    pub(crate) fn set_encoded_enabled(&mut self, enabled: bool) -> MediaResult<()> {
+        match self {
+            Self::Mp4(_) => Ok(()),
+            Self::Camera(session) => session.set_encoded_enabled(enabled),
+        }
+    }
+
+    pub(crate) fn set_audio_output_format(
+        &mut self,
+        format: super::audio_preview::AudioOutputFormat,
+    ) -> MediaResult<()> {
+        match self {
+            Self::Mp4(session) => session.set_audio_output_format(format),
+            Self::Camera(session) => session.set_audio_output_format(format),
         }
     }
 

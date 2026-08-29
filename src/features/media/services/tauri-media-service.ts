@@ -55,9 +55,14 @@ interface BackendRuntimeStatus {
   positionSeconds: number;
   playbackRate: number;
   decodedFrames: number;
+  metrics: MediaRuntimeStatus['metrics'];
   muted: boolean;
   volume: number;
+  audioMonitoring: boolean;
+  activeLiveConsumers: number;
+  activeRecorderConsumers: number;
   lastError: string | null;
+  lastPipelineError: string | null;
 }
 
 type BackendMediaConfig = {
@@ -200,14 +205,16 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     audio: value.audio ? frontendAudio(value.audio) : null,
     // Live/Playback managers are not implemented yet; never expose source
     // type as a fabricated business-session count.
-    activeLiveSessions: 0,
-    activePlaybackSessions: 0,
+    activeLiveSessions: value.activeLiveConsumers,
+    activePlaybackSessions: value.activeRecorderConsumers,
     durationSeconds: value.durationSeconds,
     positionSeconds: value.positionSeconds,
     playbackRate: value.playbackRate,
     decodedFrames: value.decodedFrames,
+    metrics: value.metrics,
     muted: value.muted,
     volume: value.volume,
+    audioMonitoring: value.audioMonitoring,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -215,6 +222,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
       usedSpaceBytes: 0,
     },
     errorMessage: value.lastError,
+    pipelineErrorMessage: value.lastPipelineError,
   };
 }
 
@@ -277,6 +285,10 @@ export class TauriMediaService implements MediaService {
     return invokeCommand<VideoEncoderCapabilities>('get_video_encoder_capabilities');
   }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
+    const current = await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status');
+    if (current.activeLiveConsumers > 0 || current.activeRecorderConsumers > 0) {
+      return toRuntime(await invokeCommand<BackendRuntimeStatus>('attach_media_preview'));
+    }
     await this.open(config);
     await invokeCommand<BackendRuntimeStatus>('attach_media_preview');
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('play_media'));
@@ -301,6 +313,11 @@ export class TauriMediaService implements MediaService {
   async setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus> {
     return toRuntime(
       await invokeCommand<BackendRuntimeStatus>('set_media_audio_control', { muted, volume }),
+    );
+  }
+  async setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus> {
+    return toRuntime(
+      await invokeCommand<BackendRuntimeStatus>('set_media_audio_monitoring', { enabled }),
     );
   }
   async stepFrame(): Promise<MediaVideoFrame | null> {

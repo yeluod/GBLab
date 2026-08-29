@@ -30,9 +30,16 @@ if [[ -n "$platform" ]]; then
 fi
 actual_architecture="$(jq -er '.architecture' "$manifest")"
 [[ -n "$actual_architecture" ]] || { printf 'FFmpeg SDK architecture is missing.\n' >&2; exit 1; }
-source="$(jq -er '.source' "$manifest")"
-archive_sha="$(jq -er '.archiveSha256' "$manifest")"
-[[ -n "$source" && "$source" != "null" && -n "$archive_sha" && "$archive_sha" != "null" ]] || { printf 'FFmpeg SDK source identity/checksum is missing.\n' >&2; exit 1; }
+platform_key="$(jq -er --arg platform "$platform" --arg architecture "$actual_architecture" '.platforms | to_entries[] | select(.value.platform == $platform and .value.architecture == $architecture) | .key' "$lockfile")"
+expected_source="$(jq -er --arg key "$platform_key" '.platforms[$key].source.url' "$lockfile")"
+actual_source="$(jq -er '.source' "$manifest")"
+[[ "$actual_source" == "$expected_source" ]] || { printf 'FFmpeg SDK source mismatch: expected %s, got %s\n' "$expected_source" "$actual_source" >&2; exit 1; }
+expected_archive_sha="$(jq -er --arg key "$platform_key" '.platforms[$key].source.sha256' "$lockfile")"
+actual_archive_sha="$(jq -er '.archiveSha256' "$manifest")"
+[[ "$actual_archive_sha" == "$expected_archive_sha" ]] || { printf 'FFmpeg SDK archive checksum mismatch: expected %s, got %s\n' "$expected_archive_sha" "$actual_archive_sha" >&2; exit 1; }
+expected_libraries="$(jq -cS '.requiredLibraries | sort' "$lockfile")"
+actual_libraries="$(jq -cS '.requiredLibraries | sort' "$manifest")"
+[[ "$actual_libraries" == "$expected_libraries" ]] || { printf 'FFmpeg SDK required library set mismatch.\n' >&2; exit 1; }
 jq -er '.requiredLibraries[]' "$lockfile" | while IFS= read -r name; do
   found=0
   for directory in "$sdk_root/lib" "$sdk_root/frameworks" "$sdk_root/frameworks/lib"; do

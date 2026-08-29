@@ -108,6 +108,9 @@
           @audio-control-change="
             (muted, volume) => runOperation(() => store.setAudioControl(muted, volume))
           "
+          @audio-monitoring-change="
+            (enabled) => runOperation(() => store.setAudioMonitoring(enabled))
+          "
         />
       </div>
 

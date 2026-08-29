@@ -64,6 +64,7 @@ $manifest = [ordered]@{
   architecture = $architecture
   linkMode = $lock.linkMode
   license = $lock.license
+  requiredLibraries = @($lock.requiredLibraries)
   source = $source.url
   archiveSha256 = $actual
 }

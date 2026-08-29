@@ -13,7 +13,14 @@ cat > "$lockfile" <<'JSON'
   "ffmpegVersion": "8.1",
   "license": "LGPL-2.1-or-later",
   "linkMode": "dynamic",
-  "requiredLibraries": ["avcodec"]
+  "requiredLibraries": ["avcodec"],
+  "platforms": {
+    "linux-x86_64": {
+      "platform": "linux",
+      "architecture": "x86_64",
+      "source": {"url": "fixture", "sha256": "fixture"}
+    }
+  }
 }
 JSON
 cat > "$sdk_root/manifest.json" <<'JSON'
@@ -25,6 +32,7 @@ cat > "$sdk_root/manifest.json" <<'JSON'
   "architecture": "x86_64",
   "linkMode": "dynamic",
   "license": "LGPL-2.1-or-later",
+  "requiredLibraries": ["avcodec"],
   "source": "fixture",
   "archiveSha256": "fixture"
 }
@@ -32,6 +40,13 @@ JSON
 printf '%s\n' 'fixture license' > "$sdk_root/FFMPEG-LICENSE.txt"
 : > "$sdk_root/lib/libavcodec.so.62"
 FFMPEG_SDK_LOCKFILE="$lockfile" bash scripts/verify-ffmpeg-sdk.sh "$sdk_root" linux
+cp "$sdk_root/manifest.json" "$test_root/manifest.json"
+jq '.archiveSha256 = "mismatch"' "$test_root/manifest.json" > "$sdk_root/manifest.json"
+if FFMPEG_SDK_LOCKFILE="$lockfile" bash scripts/verify-ffmpeg-sdk.sh "$sdk_root" linux; then
+  printf '%s\n' 'verifier unexpectedly accepted a mismatched manifest checksum' >&2
+  exit 1
+fi
+cp "$test_root/manifest.json" "$sdk_root/manifest.json"
 rm "$sdk_root/lib/libavcodec.so.62"
 if FFMPEG_SDK_LOCKFILE="$lockfile" bash scripts/verify-ffmpeg-sdk.sh "$sdk_root" linux; then
   printf '%s\n' 'verifier unexpectedly accepted a missing library' >&2

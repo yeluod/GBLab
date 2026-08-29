@@ -35,6 +35,9 @@ pub enum MediaError {
     /// 摄像头设备输入不可用或配置无效。
     #[error("摄像头输入不可用: {0}")]
     Camera(String),
+    /// Native speaker output or PCM preview conversion failed.
+    #[error("本地音频预览失败: {0}")]
+    AudioPreview(String),
     /// The dedicated media owner or one of its bounded channels is unavailable.
     #[error("媒体运行时不可用: {0}")]
     RuntimeUnavailable(String),

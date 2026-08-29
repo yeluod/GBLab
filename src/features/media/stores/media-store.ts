@@ -12,6 +12,7 @@ import {
   type GlobalMediaConfig,
 } from '../types/media-config';
 import {
+  createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
   RecordingStatus,
   type MediaProbeResult,
@@ -54,8 +55,10 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     positionSeconds: 0,
     playbackRate: 1,
     decodedFrames: 0,
+    metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
+    audioMonitoring: false,
     recording: {
       status: RecordingStatus.Error,
       currentFile: null,
@@ -63,6 +66,7 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
       usedSpaceBytes: 0,
     },
     errorMessage: message,
+    pipelineErrorMessage: null,
   };
 }
 
@@ -140,8 +144,10 @@ export const useMediaStore = defineStore('media', () => {
     positionSeconds: 0,
     playbackRate: 1,
     decodedFrames: 0,
+    metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
+    audioMonitoring: false,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -149,6 +155,7 @@ export const useMediaStore = defineStore('media', () => {
       usedSpaceBytes: 0,
     },
     errorMessage: null,
+    pipelineErrorMessage: null,
   });
   const probeResult = ref<MediaProbeResult | null>(null);
   const fieldErrors = ref<MediaFieldErrors>({});
@@ -479,6 +486,15 @@ export const useMediaStore = defineStore('media', () => {
     }
   }
 
+  async function setAudioMonitoring(enabled: boolean): Promise<MediaOperationResult> {
+    try {
+      runtimeStatus.value = await service.setAudioMonitoring(enabled);
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error, true);
+    }
+  }
+
   async function stepPreviewFrame(): Promise<MediaOperationResult> {
     try {
       await preview.step();
@@ -549,6 +565,7 @@ export const useMediaStore = defineStore('media', () => {
     seekPreview,
     setPlaybackRate,
     setAudioControl,
+    setAudioMonitoring,
     stepPreviewFrame,
   };
 });

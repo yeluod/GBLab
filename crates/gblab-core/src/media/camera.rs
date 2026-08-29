@@ -5,16 +5,20 @@ use std::{
 };
 
 use rsmpeg::{
+    avcodec::AVCodecParameters,
     avformat::{AVFormatContextInput, AVInputFormat, AVInputFormatRef},
     avutil::AVDictionary,
+    error::RsmpegError,
+    ffi,
 };
 
 use super::{
     AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists, FrameRate,
-    FrameRateCapability, MediaError, MediaResult, MediaTimeBase, Mp4ProbeResult,
-    VideoCaptureCapabilities, VideoCaptureMode, VideoEncoderCapabilities, VideoEncoderCapability,
-    VideoStreamInfo,
+    FrameRateCapability, MediaError, MediaResult, MediaRuntimeMetrics, MediaTimeBase,
+    Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode, VideoEncoderCapabilities,
+    VideoEncoderCapability, VideoStreamInfo,
     audio_encoder::CameraAudioEncoder,
+    audio_preview::{AudioOutputFormat, AudioPreviewDecoder, audio_levels},
     decoder::VideoDecoder,
     types::{MediaSource, MediaSourceSession, SourceReadOutput},
     video_encoder::CameraVideoEncoder,
@@ -304,39 +308,58 @@ impl MediaSource for CameraMediaSource {
             MediaTimeBase::new(video_stream.time_base.num, video_stream.time_base.den)
                 .ok_or_else(|| MediaError::Camera("摄像头视频时间基无效".to_owned()))?;
         let decoder = VideoDecoder::new(&video_stream.codecpar(), video_stream)?;
-        let encoder = CameraVideoEncoder::new(&self.settings)?;
-        let (audio_stream_index, audio_encoder, audio_time_base) = if self.settings.audio_enabled {
-            let audio_stream = context
-                .streams()
-                .iter()
-                .find(|stream| stream.codecpar().codec_type().is_audio())
-                .ok_or_else(|| {
-                    MediaError::Camera("已启用麦克风，但采集输入没有音频流".to_owned())
-                })?;
-            let index = usize::try_from(audio_stream.index)
-                .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的音频流索引".to_owned()))?;
-            let audio_time_base =
-                MediaTimeBase::new(audio_stream.time_base.num, audio_stream.time_base.den)
-                    .ok_or_else(|| MediaError::Camera("摄像头音频时间基无效".to_owned()))?;
-            let encoder = CameraAudioEncoder::new(&self.settings, &audio_stream.codecpar())?;
-            (Some(index), Some(encoder), Some(audio_time_base))
-        } else {
-            (None, None, None)
-        };
+        let (audio_stream_index, audio_parameters, audio_preview_decoder, audio_time_base) =
+            if self.settings.audio_enabled {
+                let audio_stream = context
+                    .streams()
+                    .iter()
+                    .find(|stream| stream.codecpar().codec_type().is_audio())
+                    .ok_or_else(|| {
+                        MediaError::Camera("已启用麦克风，但采集输入没有音频流".to_owned())
+                    })?;
+                let index = usize::try_from(audio_stream.index)
+                    .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的音频流索引".to_owned()))?;
+                let audio_time_base =
+                    MediaTimeBase::new(audio_stream.time_base.num, audio_stream.time_base.den)
+                        .ok_or_else(|| MediaError::Camera("摄像头音频时间基无效".to_owned()))?;
+                let mut parameters = AVCodecParameters::new();
+                parameters.copy(&audio_stream.codecpar());
+                let preview_decoder = AudioPreviewDecoder::new(
+                    &audio_stream.codecpar(),
+                    audio_time_base,
+                    AudioOutputFormat {
+                        sample_rate: 48_000,
+                        channels: 2,
+                    },
+                )?;
+                (
+                    Some(index),
+                    Some(parameters),
+                    Some(preview_decoder),
+                    Some(audio_time_base),
+                )
+            } else {
+                (None, None, None, None)
+            };
         Ok(MediaSourceSession::Camera(Box::new(CameraSession {
             _interrupt_guard: interrupt_guard,
             context,
             probe,
             playing: false,
             decoder,
-            encoder,
+            settings: self.settings.clone(),
+            encoder: None,
             pending_encoded: VecDeque::new(),
             video_stream_index,
             video_time_base,
             audio_stream_index,
-            audio_encoder,
+            audio_parameters,
+            audio_preview_decoder,
+            audio_encoder: None,
             audio_time_base,
             preview_enabled: true,
+            encoded_enabled: false,
+            encoded_error: None,
         })))
     }
 }
@@ -349,14 +372,19 @@ pub struct CameraSession {
     probe: Mp4ProbeResult,
     playing: bool,
     decoder: VideoDecoder,
-    encoder: CameraVideoEncoder,
+    settings: CameraCaptureSettings,
+    encoder: Option<CameraVideoEncoder>,
     pending_encoded: VecDeque<super::EncodedMediaPacket>,
     video_stream_index: usize,
     video_time_base: MediaTimeBase,
     audio_stream_index: Option<usize>,
+    audio_parameters: Option<AVCodecParameters>,
+    audio_preview_decoder: Option<AudioPreviewDecoder>,
     audio_encoder: Option<CameraAudioEncoder>,
     audio_time_base: Option<MediaTimeBase>,
     preview_enabled: bool,
+    encoded_enabled: bool,
+    encoded_error: Option<String>,
 }
 
 impl CameraSession {
@@ -366,6 +394,39 @@ impl CameraSession {
 
     pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
         self.preview_enabled = enabled;
+    }
+
+    pub(crate) fn set_audio_output_format(
+        &mut self,
+        output_format: AudioOutputFormat,
+    ) -> MediaResult<()> {
+        self.audio_preview_decoder = match (&self.audio_parameters, self.audio_time_base) {
+            (Some(parameters), Some(time_base)) => Some(AudioPreviewDecoder::new(
+                parameters,
+                time_base,
+                output_format,
+            )?),
+            _ => None,
+        };
+        Ok(())
+    }
+
+    pub(crate) fn set_encoded_enabled(&mut self, enabled: bool) -> MediaResult<()> {
+        self.encoded_enabled = enabled;
+        if !enabled {
+            self.encoder = None;
+            self.audio_encoder = None;
+            self.pending_encoded.clear();
+            return Ok(());
+        }
+        if self.encoder.is_none() {
+            self.encoder = Some(CameraVideoEncoder::new(&self.settings)?);
+        }
+        if self.settings.audio_enabled && self.audio_encoder.is_none() {
+            self.audio_encoder = Some(CameraAudioEncoder::new(&self.settings)?);
+        }
+        self.encoded_error = None;
+        Ok(())
     }
 
     pub(crate) const fn play(&mut self) {
@@ -395,38 +456,90 @@ impl CameraSession {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single capture read keeps preview and encoded branches visibly independent"
+    )]
     pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
         if let Some(packet) = self.pending_encoded.pop_front() {
             return Ok(SourceReadOutput {
                 packet: Some(packet),
                 preview_frames: Vec::new(),
+                audio_frames: Vec::new(),
+                metrics: MediaRuntimeMetrics::new(),
+                branch_errors: Vec::new(),
+                retry_after: None,
                 looped: false,
                 end_of_stream: false,
             });
         }
-        let packet = self
-            .context
-            .read_packet()
-            .map_err(|error| MediaError::Camera(error.to_string()))?;
+        let packet = match self.context.read_packet() {
+            Ok(packet) => packet,
+            Err(error) if is_transient_capture_error(&error) => {
+                return Ok(SourceReadOutput {
+                    packet: None,
+                    preview_frames: Vec::new(),
+                    audio_frames: Vec::new(),
+                    metrics: MediaRuntimeMetrics::new(),
+                    branch_errors: Vec::new(),
+                    retry_after: Some(std::time::Duration::from_millis(10)),
+                    looped: false,
+                    end_of_stream: false,
+                });
+            }
+            Err(error) => {
+                return Err(MediaError::Camera(format!("FatalSource/Capture: {error}")));
+            }
+        };
         let Some(packet) = packet else {
             return Ok(SourceReadOutput::end_of_stream());
         };
         let stream_index = usize::try_from(packet.stream_index).ok();
         if stream_index == self.audio_stream_index {
-            let audio_encoder = self
-                .audio_encoder
-                .as_mut()
-                .ok_or_else(|| MediaError::Camera("音频流缺少编码器运行时".to_owned()))?;
-            audio_encoder.encode_packet(
-                &packet,
-                self.audio_time_base.unwrap_or(MediaTimeBase::MPEG_CLOCK),
-            )?;
-            while let Some(packet) = audio_encoder.take_pending() {
-                self.pending_encoded.push_back(packet);
+            let mut metrics = MediaRuntimeMetrics::new();
+            metrics.audio_packets_captured = 1;
+            let mut branch_errors = Vec::new();
+            let audio_frames =
+                self.audio_preview_decoder
+                    .as_mut()
+                    .map_or_else(Vec::new, |decoder| match decoder.decode(&packet) {
+                        Ok(frames) => frames,
+                        Err(error) => {
+                            branch_errors.push(format!("AudioDecode: {error}"));
+                            Vec::new()
+                        }
+                    });
+            metrics.audio_frames_decoded = audio_frames.len() as u64;
+            if let Some(frame) = audio_frames.last() {
+                (metrics.audio_rms, metrics.audio_peak) = audio_levels(&frame.samples);
+            }
+            if self.encoded_enabled
+                && let Some(audio_encoder) = self.audio_encoder.as_mut()
+            {
+                let encode_result = audio_frames
+                    .iter()
+                    .try_for_each(|frame| audio_encoder.encode_pcm(frame));
+                match encode_result {
+                    Ok(()) => {
+                        while let Some(packet) = audio_encoder.take_pending() {
+                            metrics.audio_packets_encoded =
+                                metrics.audio_packets_encoded.saturating_add(1);
+                            self.pending_encoded.push_back(packet);
+                        }
+                    }
+                    Err(error) => {
+                        branch_errors.push(format!("AudioEncode: {error}"));
+                        self.audio_encoder = None;
+                    }
+                }
             }
             return Ok(SourceReadOutput {
                 packet: self.pending_encoded.pop_front(),
                 preview_frames: Vec::new(),
+                audio_frames,
+                metrics,
+                branch_errors,
+                retry_after: None,
                 looped: false,
                 end_of_stream: false,
             });
@@ -435,6 +548,10 @@ impl CameraSession {
             return Ok(SourceReadOutput {
                 packet: None,
                 preview_frames: Vec::new(),
+                audio_frames: Vec::new(),
+                metrics: MediaRuntimeMetrics::new(),
+                branch_errors: Vec::new(),
+                retry_after: None,
                 looped: false,
                 end_of_stream: false,
             });
@@ -442,41 +559,87 @@ impl CameraSession {
         let raw_frames = self
             .decoder
             .decode_raw_frames(&packet)
-            .map_err(|error| MediaError::Camera(error.to_string()))?;
+            .map_err(|error| MediaError::Camera(format!("FatalSource/Decode: {error}")))?;
+        let mut metrics = MediaRuntimeMetrics::new();
+        metrics.video_packets_captured = 1;
+        metrics.video_frames_decoded = raw_frames.len() as u64;
+        let mut branch_errors = Vec::new();
         let mut preview_frames = Vec::with_capacity(raw_frames.len());
         for frame in raw_frames {
             if self.preview_enabled {
-                preview_frames.push(
-                    self.decoder
-                        .preview_frame(&frame)
-                        .map_err(|error| MediaError::Camera(error.to_string()))?,
-                );
+                match self.decoder.preview_frame(&frame) {
+                    Ok(frame) => preview_frames.push(frame),
+                    Err(error) => branch_errors.push(format!("PreviewConversion: {error}")),
+                }
             }
-            self.encoder.encode(&frame, self.video_time_base)?;
-            while let Some(packet) = self.encoder.take_pending() {
-                self.pending_encoded.push_back(packet);
+            if self.encoded_enabled
+                && let Some(encoder) = self.encoder.as_mut()
+            {
+                match encoder.encode(&frame, self.video_time_base) {
+                    Ok(()) => {
+                        while let Some(packet) = encoder.take_pending() {
+                            metrics.video_packets_encoded =
+                                metrics.video_packets_encoded.saturating_add(1);
+                            self.pending_encoded.push_back(packet);
+                        }
+                    }
+                    Err(error) => {
+                        branch_errors.push(format!("VideoEncode: {error}"));
+                        self.encoder = None;
+                    }
+                }
             }
         }
+        metrics.video_preview_frames = preview_frames.len() as u64;
         Ok(SourceReadOutput {
             packet: self.pending_encoded.pop_front(),
             preview_frames,
+            audio_frames: Vec::new(),
+            metrics,
+            branch_errors,
+            retry_after: None,
             looped: false,
             end_of_stream: false,
         })
     }
 
     pub(crate) fn finish_encoded_packets(&mut self) -> MediaResult<Vec<super::EncodedMediaPacket>> {
-        self.encoder.finish()?;
+        if let Some(encoder) = self.encoder.as_mut() {
+            encoder.finish()?;
+            while let Some(packet) = encoder.take_pending() {
+                self.pending_encoded.push_back(packet);
+            }
+        }
         if let Some(audio_encoder) = self.audio_encoder.as_mut() {
             audio_encoder.finish()?;
             while let Some(packet) = audio_encoder.take_pending() {
                 self.pending_encoded.push_back(packet);
             }
         }
-        while let Some(packet) = self.encoder.take_pending() {
-            self.pending_encoded.push_back(packet);
-        }
         Ok(self.pending_encoded.drain(..).collect())
+    }
+}
+
+fn is_transient_capture_error(error: &RsmpegError) -> bool {
+    error.raw_error() == Some(ffi::AVERROR(ffi::EAGAIN))
+}
+
+#[cfg(test)]
+mod capture_error_tests {
+    use rsmpeg::{error::RsmpegError, ffi};
+
+    use super::is_transient_capture_error;
+
+    #[test]
+    fn eagain_capture_error_should_be_retryable() {
+        assert!(is_transient_capture_error(&RsmpegError::AVError(
+            ffi::AVERROR(ffi::EAGAIN),
+        )));
+    }
+
+    #[test]
+    fn other_capture_error_should_remain_fatal() {
+        assert!(!is_transient_capture_error(&RsmpegError::AVError(-1)));
     }
 }
 
@@ -555,7 +718,9 @@ mod platform_tests {
     #[ignore = "requires a connected camera and local camera permission"]
     fn camera_runtime_should_repeatedly_open_capture_preview_and_release()
     -> Result<(), Box<dyn std::error::Error>> {
-        let Some(camera) = list_capture_devices()?.video.into_iter().next() else {
+        let devices = list_capture_devices()?;
+        let microphone = devices.audio.into_iter().next();
+        let Some(camera) = devices.video.into_iter().next() else {
             return Ok(());
         };
         let Some(mode) = video_capture_capabilities(&camera.id)?
@@ -579,8 +744,8 @@ mod platform_tests {
             video_codec: encoder.codec,
             video_bitrate: 1_000_000,
             encoder_backend: encoder.backend,
-            audio_enabled: false,
-            audio_device_id: String::new(),
+            audio_enabled: microphone.is_some(),
+            audio_device_id: microphone.map_or_else(String::new, |device| device.id),
             audio_codec: AudioCodec::Aac,
             audio_sample_rate: 48_000,
             audio_channels: 2,
@@ -591,12 +756,15 @@ mod platform_tests {
         };
         let runtime = GlobalMediaRuntime::start();
         let handle = runtime.handle();
-        handle.attach_preview()?;
+        handle.open_camera(settings.clone())?;
         let mut live =
-            handle.subscribe(MediaConsumerKind::Live, 8, BackpressurePolicy::Disconnect)?;
+            handle.subscribe(MediaConsumerKind::Live, 512, BackpressurePolicy::Disconnect)?;
 
         for _ in 0..2 {
-            handle.open_camera(settings.clone())?;
+            if handle.status().source_status == MediaSourceStatus::Stopped {
+                handle.open_camera(settings.clone())?;
+            }
+            handle.attach_preview()?;
             handle.play()?;
             for _ in 0..100 {
                 if handle.status().decoded_frames > 0 {
@@ -605,6 +773,18 @@ mod platform_tests {
                 thread::sleep(Duration::from_millis(20));
             }
             assert!(handle.status().decoded_frames > 0);
+            if settings.audio_enabled {
+                for _ in 0..100 {
+                    let metrics = handle.status().metrics;
+                    if metrics.audio_packets_captured > 0 && metrics.audio_frames_decoded > 0 {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                let metrics = handle.status().metrics;
+                assert!(metrics.audio_packets_captured > 0);
+                assert!(metrics.audio_frames_decoded > 0);
+            }
             handle.detach_preview()?;
             let mut received_live_packet = false;
             for _ in 0..100 {

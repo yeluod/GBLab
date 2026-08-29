@@ -32,6 +32,7 @@ export interface MediaService {
   seek(positionSeconds: number): Promise<MediaRuntimeStatus>;
   setPlaybackRate(rate: number): Promise<MediaRuntimeStatus>;
   setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus>;
+  setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus>;
   stepFrame(): Promise<MediaVideoFrame | null>;
   getRuntimeStatus(): Promise<MediaRuntimeStatus>;
   readFrame(): Promise<MediaVideoFrame | null>;

@@ -6,6 +6,7 @@ use super::{EncodedMediaPacket, MediaTimeBase};
 #[derive(Debug, Default)]
 pub struct MediaClock {
     loop_offset: i64,
+    source_epoch: Option<i64>,
     iteration_origin: Option<i64>,
     last_end: i64,
     seek_generation: u64,
@@ -17,6 +18,7 @@ impl MediaClock {
     pub const fn new() -> Self {
         Self {
             loop_offset: 0,
+            source_epoch: None,
             iteration_origin: None,
             last_end: 0,
             seek_generation: 0,
@@ -26,7 +28,7 @@ impl MediaClock {
     /// Starts a new source loop while retaining a monotonic output timeline.
     pub const fn begin_loop(&mut self) {
         self.loop_offset = self.last_end;
-        self.iteration_origin = None;
+        self.iteration_origin = self.source_epoch;
     }
 
     /// Resets a local timeline, as required by independent preview seek sessions.
@@ -37,7 +39,17 @@ impl MediaClock {
     /// Starts an independent seek generation while retaining the monotonic output offset.
     pub const fn begin_seek(&mut self) {
         self.seek_generation = self.seek_generation.saturating_add(1);
-        self.iteration_origin = None;
+        self.iteration_origin = self.source_epoch;
+    }
+
+    /// Configures the earliest selected stream timestamp as the source epoch.
+    ///
+    /// MP4 tracks may start at different timestamps.  Supplying the earliest
+    /// stream start time before packet delivery preserves their relative offset
+    /// even when a negative audio timestamp arrives after the first video packet.
+    pub const fn set_source_epoch(&mut self, source_epoch: Option<i64>) {
+        self.source_epoch = source_epoch;
+        self.iteration_origin = source_epoch;
     }
 
     /// Returns the generation of the current source timeline.
@@ -153,6 +165,20 @@ mod tests {
         assert_eq!(packet.pts, Some(3_600));
         assert_eq!(packet.dts, Some(0));
         assert!(packet.dts < packet.pts);
+    }
+
+    #[test]
+    fn configured_source_epoch_should_preserve_later_negative_track_offset() {
+        let mut clock = MediaClock::new();
+        clock.set_source_epoch(Some(-7_200));
+        let mut video = packet(0);
+        let mut audio = packet(-80);
+
+        clock.normalize(&mut video);
+        clock.normalize(&mut audio);
+
+        assert_eq!(video.pts, Some(7_200));
+        assert_eq!(audio.pts, Some(0));
     }
 
     #[test]

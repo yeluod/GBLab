@@ -191,8 +191,10 @@ pub enum CodecConfigurationFormat {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EncodedStreamDescriptor {
-    /// Stream generation, incremented when a source is reconfigured or seeked.
-    pub generation: u64,
+    /// Source generation, incremented only when tracks may change.
+    pub source_generation: u64,
+    /// Timeline generation, incremented on seek/loop without discarding track structure.
+    pub timeline_generation: u64,
     /// Logical track.
     pub track: MediaTrackKind,
     /// Encoded codec.
@@ -207,6 +209,8 @@ pub struct EncodedStreamDescriptor {
     pub sample_rate: Option<u32>,
     /// Audio channels when the track is audio.
     pub channels: Option<u32>,
+    /// Encoded audio bitrate when known.
+    pub bitrate: Option<u64>,
     /// Integer timestamp time base.
     pub time_base: MediaTimeBase,
     /// Codec initialization bytes with explicit semantics.

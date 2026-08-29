@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::audio_preview::AudioPreviewSink;
 use super::{
     BackpressurePolicy, CameraCaptureSettings, CameraMediaSource, MediaClock, MediaConsumerKind,
     MediaError, MediaResult, MediaRuntimeStatus, MediaSourceKind, MediaSourceStatus,
@@ -48,6 +49,10 @@ enum MediaCommand {
     SetAudioControl {
         muted: bool,
         volume: f64,
+        reply: StatusReply,
+    },
+    SetAudioMonitoring {
+        enabled: bool,
         reply: StatusReply,
     },
     StepFrame(mpsc::SyncSender<MediaResult<Option<MediaVideoFrame>>>),
@@ -159,6 +164,11 @@ impl GlobalMediaHandle {
             volume,
             reply,
         })
+    }
+
+    /// Enables or disables local microphone monitoring for a camera source.
+    pub fn set_audio_monitoring(&self, enabled: bool) -> MediaResult<MediaRuntimeStatus> {
+        self.request_status(|reply| MediaCommand::SetAudioMonitoring { enabled, reply })
     }
 
     /// Reads one frame while paused.
@@ -362,6 +372,7 @@ struct MediaWorker {
     last_media_timestamp: Option<i64>,
     interrupt: Arc<AtomicU8>,
     preview_attached: bool,
+    audio_sink: Option<AudioPreviewSink>,
 }
 
 impl MediaWorker {
@@ -384,6 +395,7 @@ impl MediaWorker {
             last_media_timestamp: None,
             interrupt,
             preview_attached: false,
+            audio_sink: None,
         }
     }
 
@@ -440,7 +452,7 @@ impl MediaWorker {
                     continue;
                 }
                 self.status.source_status = MediaSourceStatus::Stopped;
-                self.status.last_error = Some(error.to_string());
+                self.status.last_error = Some(format!("FatalSource: {error}"));
                 self.publish_status();
             }
         }
@@ -450,8 +462,13 @@ impl MediaWorker {
     fn produce_once(&mut self) -> MediaResult<()> {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         let mut output = session.read_source_output()?;
+        let retry_after = output.retry_after;
         if output.looped {
             self.clock.begin_loop();
+            self.hub.begin_timeline();
+            if let Some(sink) = self.audio_sink.as_ref() {
+                sink.clear();
+            }
         }
         if output.end_of_stream {
             self.status.source_status = MediaSourceStatus::Stopped;
@@ -459,7 +476,7 @@ impl MediaWorker {
         if let Some(mut packet) = output.packet.take() {
             self.clock.normalize(&mut packet);
             self.status.position_seconds = packet.position_seconds();
-            self.schedule_next_read(packet.pts.or(packet.dts));
+            self.schedule_next_read(packet.dts.or(packet.pts));
             let packet = Arc::new(packet);
             let report = self.hub.broadcast(&packet);
             if report.disconnected > 0 {
@@ -470,6 +487,22 @@ impl MediaWorker {
             self.status.position_seconds = frame.position_seconds;
             self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
             let _ = self.preview.try_send(frame);
+        }
+        self.status.metrics.merge(output.metrics);
+        if let Some(error) = output.branch_errors.into_iter().last() {
+            self.status.last_pipeline_error = Some(error);
+        }
+        if self.preview_attached
+            && (self.status.source_kind == Some(MediaSourceKind::Mp4)
+                || self.status.audio_monitoring)
+            && let Some(sink) = self.audio_sink.as_ref()
+        {
+            for frame in output.audio_frames {
+                sink.push(frame.samples);
+            }
+        }
+        if let Some(delay) = retry_after {
+            self.next_read_at = Instant::now() + delay;
         }
         self.publish_status();
         Ok(())
@@ -542,11 +575,20 @@ impl MediaWorker {
                     // the anchor to `now` makes a resumed file wait from its
                     // original timestamp (for example ~10 seconds after a
                     // pause at 10s).
-                    let position = self.status.position_seconds.max(0.0);
+                    let position = self
+                        .last_media_timestamp
+                        .map(MediaClock::timestamp_seconds)
+                        .unwrap_or_default()
+                        .max(0.0);
                     self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
                         position / self.status.playback_rate.max(0.01),
                     ));
-                    self.last_media_timestamp = None;
+                    if let Some(sink) = self.audio_sink.as_ref()
+                        && (self.status.source_kind == Some(MediaSourceKind::Mp4)
+                            || self.status.audio_monitoring)
+                    {
+                        let _ = sink.resume();
+                    }
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
@@ -555,17 +597,54 @@ impl MediaWorker {
                 if let Some(session) = self.session.as_mut() {
                     session.set_preview_enabled(true);
                 }
+                if self.status.audio.is_some() && self.audio_sink.is_none() {
+                    match AudioPreviewSink::open() {
+                        Ok(sink) => {
+                            let configure_result = self
+                                .session
+                                .as_mut()
+                                .ok_or(MediaError::NoSourceOpen)
+                                .and_then(|session| session.set_audio_output_format(sink.format()));
+                            if let Err(error) = configure_result {
+                                self.status.last_pipeline_error =
+                                    Some(format!("AudioDecode: {error}"));
+                            }
+                            sink.set_control(self.status.muted, self.status.volume);
+                            if self.status.source_kind == Some(MediaSourceKind::Camera)
+                                && !self.status.audio_monitoring
+                            {
+                                let _ = sink.pause();
+                            }
+                            self.audio_sink = Some(sink);
+                        }
+                        Err(error) => {
+                            self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
+                        }
+                    }
+                }
                 Self::reply_status(&reply, Ok(self.status.clone()));
             }
             MediaCommand::DetachPreview(reply) => {
                 self.preview_attached = false;
+                if let Some(sink) = self.audio_sink.take() {
+                    sink.clear();
+                }
                 let result = self.reconcile_runtime_demand();
                 Self::reply_status(&reply, result);
             }
             MediaCommand::Pause(reply) => {
-                let result = self.with_session(MediaSourceSession::pause);
+                let result = if self.hub.consumer_count() > 0 {
+                    Err(MediaError::Playback(
+                        "存在 Live/Recorder 消费者时不能暂停全局源".to_owned(),
+                    ))
+                } else {
+                    self.with_session(MediaSourceSession::pause)
+                };
                 if result.is_ok() {
                     self.status.source_status = MediaSourceStatus::Paused;
+                    if let Some(sink) = self.audio_sink.as_ref() {
+                        let _ = sink.pause();
+                    }
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
@@ -585,18 +664,33 @@ impl MediaWorker {
                 position_seconds,
                 reply,
             } => {
-                let result = self.seek_source(position_seconds);
+                let result = if self.hub.consumer_count() > 0 {
+                    Err(MediaError::Playback(
+                        "存在 Live/Recorder 消费者时不能跳转全局源".to_owned(),
+                    ))
+                } else {
+                    self.seek_source(position_seconds)
+                };
                 Self::reply_status(&reply, result);
             }
             MediaCommand::SetPlaybackRate { rate, reply } => {
-                let result = if rate.is_finite() && (0.25..=4.0).contains(&rate) {
+                let result = if self.hub.consumer_count() > 0 {
+                    Err(MediaError::Playback(
+                        "存在 Live/Recorder 消费者时不能修改全局播放倍速".to_owned(),
+                    ))
+                } else if rate.is_finite() && (0.25..=4.0).contains(&rate) {
                     self.status.playback_rate = rate;
                     if self
                         .session
                         .as_ref()
                         .is_some_and(|session| !session.is_live_capture())
                     {
-                        let current = self.status.position_seconds.max(0.0) / rate;
+                        let current = self
+                            .last_media_timestamp
+                            .map(MediaClock::timestamp_seconds)
+                            .unwrap_or_default()
+                            .max(0.0)
+                            / rate;
                         self.pacing_anchor =
                             Instant::now().checked_sub(Duration::from_secs_f64(current));
                     }
@@ -616,9 +710,30 @@ impl MediaWorker {
                 let result = if volume.is_finite() && (0.0..=1.0).contains(&volume) {
                     self.status.muted = muted;
                     self.status.volume = volume;
+                    if let Some(sink) = self.audio_sink.as_ref() {
+                        sink.set_control(muted, volume);
+                    }
                     Ok(self.status.clone())
                 } else {
                     Err(MediaError::Playback("音量必须介于 0.0 和 1.0".to_owned()))
+                };
+                Self::reply_status(&reply, result);
+            }
+            MediaCommand::SetAudioMonitoring { enabled, reply } => {
+                let result = if self.status.source_kind != Some(MediaSourceKind::Camera) {
+                    Err(MediaError::UnsupportedSource(
+                        "音频监听仅适用于摄像头".to_owned(),
+                    ))
+                } else if self.status.audio.is_none() {
+                    Err(MediaError::UnsupportedSource(
+                        "当前摄像头未启用麦克风".to_owned(),
+                    ))
+                } else if let Some(sink) = self.audio_sink.as_ref() {
+                    self.status.audio_monitoring = enabled;
+                    if enabled { sink.resume() } else { sink.pause() }.map(|()| self.status.clone())
+                } else {
+                    self.status.audio_monitoring = enabled;
+                    Ok(self.status.clone())
                 };
                 Self::reply_status(&reply, result);
             }
@@ -633,8 +748,16 @@ impl MediaWorker {
                 reply,
             } => {
                 let subscription = self.hub.subscribe(kind, capacity, policy);
-                let _ = self.reconcile_runtime_demand();
-                let _ = reply.try_send(Ok(subscription));
+                let id = subscription.id;
+                match self.reconcile_runtime_demand() {
+                    Ok(_) => {
+                        let _ = reply.try_send(Ok(subscription));
+                    }
+                    Err(error) => {
+                        let _ = self.hub.unsubscribe(id);
+                        let _ = reply.try_send(Err(error));
+                    }
+                }
             }
             MediaCommand::Unsubscribe(id) => {
                 let _ = self.hub.unsubscribe(id);
@@ -659,7 +782,7 @@ impl MediaWorker {
         self.finalize_current_session()?;
         let probe = session.probe().clone();
         self.session = Some(session);
-        self.hub.bump_generation();
+        self.hub.replace_source(probe.clone());
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
         self.reset_or_continue_clock();
@@ -671,12 +794,23 @@ impl MediaWorker {
             probe.audio,
             probe.duration_seconds,
         );
+        self.status.active_live_consumers =
+            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
+                .unwrap_or(u64::MAX);
+        self.status.active_recorder_consumers =
+            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Recorder))
+                .unwrap_or(u64::MAX);
+        if let Some(session) = self.session.as_mut() {
+            session.set_preview_enabled(self.preview_attached);
+            session.set_encoded_enabled(self.hub.consumer_count() > 0)?;
+        }
         Ok(self.status.clone())
     }
 
     fn release_current_source(&mut self) -> MediaResult<()> {
         self.finalize_current_session()?;
         self.session = None;
+        self.audio_sink = None;
         self.clock.reset();
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
@@ -701,6 +835,7 @@ impl MediaWorker {
     fn close_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
         self.finalize_current_session()?;
         self.session = None;
+        self.audio_sink = None;
         self.clock.reset();
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
@@ -740,7 +875,7 @@ impl MediaWorker {
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         let frame = session.seek_frame(position_seconds)?;
-        self.hub.bump_generation();
+        self.hub.begin_timeline();
         self.clock.begin_seek();
         self.reset_or_continue_clock();
         self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
@@ -779,13 +914,28 @@ impl MediaWorker {
         } else {
             self.clock.reset();
         }
+        self.clock.set_source_epoch(
+            self.session
+                .as_ref()
+                .and_then(MediaSourceSession::timestamp_origin),
+        );
     }
 
     fn reconcile_runtime_demand(&mut self) -> MediaResult<MediaRuntimeStatus> {
         let has_encoded_consumer = self.hub.consumer_count() > 0;
+        self.status.active_live_consumers =
+            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
+                .unwrap_or(u64::MAX);
+        self.status.active_recorder_consumers =
+            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Recorder))
+                .unwrap_or(u64::MAX);
         let has_demand = self.preview_attached || has_encoded_consumer;
+        if has_demand && self.session.is_none() {
+            return Err(MediaError::NoSourceOpen);
+        }
         if let Some(session) = self.session.as_mut() {
             session.set_preview_enabled(self.preview_attached);
+            session.set_encoded_enabled(has_encoded_consumer)?;
         }
         if !has_demand && self.session.is_some() {
             return self.stop_source();
@@ -908,6 +1058,35 @@ mod tests {
             handle.status().source_status,
             MediaSourceStatus::Unconfigured
         );
+        assert!(runtime.shutdown().is_ok());
+    }
+
+    #[test]
+    fn mp4_aac_preview_should_decode_pcm_without_an_encoded_consumer() {
+        let runtime = GlobalMediaRuntime::start();
+        let handle = runtime.handle();
+        let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("assets")
+            .join("h264-aac.mp4");
+        assert!(handle.open_mp4(asset, true).is_ok());
+        assert!(handle.attach_preview().is_ok());
+        assert!(handle.play().is_ok());
+        std::thread::sleep(Duration::from_millis(350));
+        assert!(handle.set_audio_control(true, 0.25).is_ok());
+        assert!(handle.pause().is_ok());
+        assert!(handle.seek(0.1).is_ok());
+        assert!(handle.play().is_ok());
+        assert!(handle.set_audio_control(false, 0.75).is_ok());
+        std::thread::sleep(Duration::from_millis(150));
+
+        let status = handle.status();
+        assert!(status.metrics.audio_packets_captured > 0);
+        assert!(status.metrics.audio_frames_decoded > 0);
+        assert_eq!(status.active_live_consumers, 0);
+        assert!(!status.muted);
+        assert!((status.volume - 0.75).abs() < f64::EPSILON);
+        assert!(status.last_pipeline_error.is_none());
         assert!(runtime.shutdown().is_ok());
     }
 }

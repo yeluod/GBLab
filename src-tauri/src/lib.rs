@@ -76,6 +76,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::seek_media,
             commands::set_media_playback_rate,
             commands::set_media_audio_control,
+            commands::set_media_audio_monitoring,
             commands::step_media_frame,
             commands::get_media_runtime_status,
             commands::read_media_frame,

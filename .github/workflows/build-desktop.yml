@@ -120,11 +120,23 @@ jobs:
         run: |
           if ($null -eq (Get-ChildItem 'target/release/bundle/nsis/*-setup.exe' -File | Select-Object -First 1)) { throw 'No Windows NSIS installer generated.' }
           if ($null -eq (Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1)) { throw 'No Windows MSI installer generated.' }
-          $bundleFiles = Get-ChildItem 'target/release/bundle' -File -Recurse
-          if ($null -eq ($bundleFiles | Where-Object { $_.Name -match 'av(codec|device|format|util)|sw(resample|scale).*\.dll$' } | Select-Object -First 1)) { throw 'Final Windows bundle has no FFmpeg DLL.' }
-          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Final Windows bundle is missing FFmpeg manifest.' }
-          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Final Windows bundle is missing FFmpeg license.' }
-          if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Final Windows bundle must not contain FFmpeg CLI executables.' }
+          $msi = Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'gblab-msi-contents'
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$extractRoot`"")
+          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed with exit code $($process.ExitCode)." }
+          $bundleFiles = Get-ChildItem $extractRoot -File -Recurse
+          $application = $bundleFiles | Where-Object { $_.Name -eq 'gblab-desktop.exe' } | Select-Object -First 1
+          if ($null -eq $application) { throw 'Extracted MSI is missing gblab-desktop.exe.' }
+          $lock = Get-Content -Raw 'toolchains/ffmpeg-sdk.lock.json' | ConvertFrom-Json
+          foreach ($name in $lock.requiredLibraries) {
+            if ($null -eq ($bundleFiles | Where-Object { $_.Name -like "*$name*.dll" } | Select-Object -First 1)) { throw "Extracted MSI is missing FFmpeg DLL: $name" }
+          }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg manifest.' }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg license.' }
+          if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Extracted MSI must not contain FFmpeg CLI executables.' }
+          $headers = & dumpbin.exe /HEADERS $application.FullName | Out-String
+          if ($headers -notmatch 'machine \(x64\)') { throw 'Extracted application executable is not x64.' }
       - name: Upload macOS artifacts
         if: ${{ inputs.bundle && matrix.platform == 'macos' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

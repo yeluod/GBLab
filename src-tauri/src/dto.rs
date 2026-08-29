@@ -406,9 +406,14 @@ pub struct MediaRuntimeStatusDto {
     position_seconds: f64,
     playback_rate: f64,
     decoded_frames: u64,
+    metrics: gblab_core::media::MediaRuntimeMetrics,
     muted: bool,
     volume: f64,
+    audio_monitoring: bool,
+    active_live_consumers: u64,
+    active_recorder_consumers: u64,
     last_error: Option<String>,
+    last_pipeline_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -486,9 +491,14 @@ impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
             position_seconds: value.position_seconds,
             playback_rate: value.playback_rate,
             decoded_frames: value.decoded_frames,
+            metrics: value.metrics,
             muted: value.muted,
             volume: value.volume,
+            audio_monitoring: value.audio_monitoring,
+            active_live_consumers: value.active_live_consumers,
+            active_recorder_consumers: value.active_recorder_consumers,
             last_error: value.last_error,
+            last_pipeline_error: value.last_pipeline_error,
         }
     }
 }

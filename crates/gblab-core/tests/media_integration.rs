@@ -163,3 +163,42 @@ fn looping_output_timestamps_should_remain_monotonic() {
     assert!(timestamps.windows(2).all(|window| window[0] <= window[1]));
     assert!(timestamps.last() > timestamps.first());
 }
+
+#[test]
+fn third_loop_pause_resume_should_not_wait_for_the_accumulated_session_time() {
+    let runtime = GlobalMediaRuntime::start();
+    let handle = runtime.handle();
+    assert!(handle.open_mp4(asset("h264-noaudio.mp4"), true).is_ok());
+    let subscription =
+        handle.subscribe(MediaConsumerKind::Live, 512, BackpressurePolicy::Disconnect);
+    assert!(subscription.is_ok());
+    let Ok(mut subscription) = subscription else {
+        let _ = runtime.shutdown();
+        return;
+    };
+    assert!(handle.play().is_ok());
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut latest = 0;
+    while Instant::now() < deadline && latest < 180_000 {
+        match subscription.try_recv() {
+            Ok(packet) => latest = latest.max(packet.dts.or(packet.pts).unwrap_or_default()),
+            Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(5)),
+            Err(TryRecvError::Disconnected) => break,
+        }
+    }
+    assert!(latest >= 180_000, "did not reach the third loop: {latest}");
+    assert!(handle.attach_preview().is_ok());
+    assert!(handle.unsubscribe(subscription.id).is_ok());
+    assert!(handle.pause().is_ok());
+    thread::sleep(Duration::from_millis(150));
+    let decoded_before = handle.status().decoded_frames;
+    let resumed_at = Instant::now();
+    assert!(handle.play().is_ok());
+    while Instant::now().duration_since(resumed_at) < Duration::from_millis(600)
+        && handle.status().decoded_frames == decoded_before
+    {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(handle.status().decoded_frames > decoded_before);
+    assert!(runtime.shutdown().is_ok());
+}

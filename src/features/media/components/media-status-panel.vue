@@ -30,6 +30,7 @@
     seek: [positionSeconds: number];
     playbackRateChange: [rate: number];
     audioControlChange: [muted: boolean, volume: number];
+    audioMonitoringChange: [enabled: boolean];
   }>();
 
   const sourceStatusText: Record<MediaSourceStatus, string> = {
@@ -335,6 +336,36 @@
           <dd>{{ runtimeStatus.activePlaybackSessions }}</dd>
           <dt>Decoded Frames</dt>
           <dd>{{ runtimeStatus.decodedFrames }}</dd>
+          <dt>Capture / Preview</dt>
+          <dd>
+            {{ runtimeStatus.metrics.videoPacketsCaptured }} /
+            {{ runtimeStatus.metrics.videoPreviewFrames }}
+          </dd>
+          <dt>Encoded Video</dt>
+          <dd>{{ runtimeStatus.metrics.videoPacketsEncoded }}</dd>
+          <dt>Mic Packets / PCM</dt>
+          <dd>
+            {{ runtimeStatus.metrics.audioPacketsCaptured }} /
+            {{ runtimeStatus.metrics.audioFramesDecoded }}
+          </dd>
+          <dt>Audio RMS / Peak</dt>
+          <dd>
+            {{ runtimeStatus.metrics.audioRms.toFixed(3) }} /
+            {{ runtimeStatus.metrics.audioPeak.toFixed(3) }}
+          </dd>
+          <template v-if="sourceType === MediaSourceType.Camera && displayedAudio !== null">
+            <dt>音频监听</dt>
+            <dd>
+              <NSwitch
+                :value="runtimeStatus.audioMonitoring"
+                @update:value="emit('audioMonitoringChange', $event)"
+              />
+            </dd>
+          </template>
+          <template v-if="runtimeStatus.pipelineErrorMessage !== null">
+            <dt>Pipeline Error</dt>
+            <dd class="runtime-error">{{ runtimeStatus.pipelineErrorMessage }}</dd>
+          </template>
           <dt>Recording</dt>
           <dd>{{ recordingStatusText[runtimeStatus.recording.status] }}</dd>
           <dt>Current File</dt>

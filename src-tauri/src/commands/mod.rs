@@ -247,12 +247,39 @@ pub fn get_media_runtime_status(state: State<'_, AppState>) -> MediaRuntimeStatu
     state.media.handle().status().into()
 }
 
-/// Reads one bounded preview frame as raw binary, never as a JSON number array.
 #[tauri::command]
-pub fn read_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+pub fn set_media_audio_monitoring(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
     state
         .media
         .handle()
+        .set_audio_monitoring(enabled)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+/// Reads one bounded preview frame as raw binary, never as a JSON number array.
+#[tauri::command]
+pub fn read_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+    let handle = state.media.handle();
+    let status = handle.status();
+    if let Some(error) = status.last_error {
+        return Err(CommandErrorDto::media(&gblab_core::MediaError::Playback(
+            error,
+        )));
+    }
+    if matches!(
+        status.source_status,
+        gblab_core::media::MediaSourceStatus::Stopped
+            | gblab_core::media::MediaSourceStatus::Unconfigured
+    ) {
+        return Err(CommandErrorDto::media(&gblab_core::MediaError::Playback(
+            "媒体源已停止，无法继续读取预览帧".to_owned(),
+        )));
+    }
+    handle
         .try_preview_frame()
         .map(|frame| Response::new(frame.map_or_else(Vec::new, encode_preview_frame)))
         .map_err(|error| CommandErrorDto::media(&error))

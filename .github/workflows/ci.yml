@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow + '-' + (github.event.pull_request.number || github.ref) }}
+  group: ${{ format('{0}-{1}', github.workflow, github.event.pull_request.number || github.ref) }}
   cancel-in-progress: true
 
 jobs:
@@ -35,13 +35,7 @@ jobs:
       - name: Validate JSON manifests
         run: node -e "JSON.parse(require('fs').readFileSync('toolchains/ffmpeg-sdk.lock.json', 'utf8')); JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'))"
       - name: Validate pinned workflow actions
-        shell: bash
-        run: |
-          set -euo pipefail
-          if rg -n '^[[:space:]-]*uses: [^[:space:]]+@(v[0-9]|master|main)([[:space:]]|$)' .github; then
-            echo 'Every external GitHub Action must be pinned to a full commit SHA.' >&2
-            exit 1
-          fi
+        run: bash scripts/verify-action-pins.sh
       - name: Parse PowerShell scripts
         shell: pwsh
         run: |

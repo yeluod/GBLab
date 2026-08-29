@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 
 use bytes::Bytes;
 use rsmpeg::{
-    avcodec::{AVCodec, AVCodecContext, AVCodecParametersRef, AVPacket},
-    avutil::{AVChannelLayout, AVFrame, AVRational},
+    avcodec::{AVCodec, AVCodecContext, AVCodecParameters},
+    avutil::{AVAudioFifo, AVChannelLayout, AVFrame, AVRational},
     error::RsmpegError,
     ffi,
     swresample::SwrContext,
@@ -16,29 +16,25 @@ use super::{
     MediaResult, MediaTimeBase, MediaTrackKind,
 };
 
-/// Owns the microphone decoder, resampler and target audio encoder.
+/// Resamples the single decoded microphone PCM branch into the target encoder.
 pub(super) struct CameraAudioEncoder {
-    decoder: AVCodecContext,
     encoder: AVCodecContext,
     resampler: Option<SwrContext>,
     output_layout: AVChannelLayout,
     output_sample_format: ffi::AVSampleFormat,
     sample_rate: i32,
     frame_size: i32,
+    fifo: AVAudioFifo,
     next_pts: i64,
     codec: AudioCodec,
     time_base: MediaTimeBase,
     pending: VecDeque<EncodedMediaPacket>,
     codec_configuration: Option<Bytes>,
     config_sent: bool,
-    source_time_base: Option<MediaTimeBase>,
 }
 
 impl CameraAudioEncoder {
-    pub(super) fn new(
-        settings: &CameraCaptureSettings,
-        parameters: &AVCodecParametersRef<'_>,
-    ) -> MediaResult<Self> {
+    pub(super) fn new(settings: &CameraCaptureSettings) -> MediaResult<Self> {
         if matches!(settings.audio_codec, AudioCodec::G711a | AudioCodec::G711u)
             && (settings.audio_sample_rate != 8_000
                 || settings.audio_channels != 1
@@ -48,18 +44,6 @@ impl CameraAudioEncoder {
                 "G.711 音频必须使用 8000 Hz、单声道、64000 bit/s".to_owned(),
             ));
         }
-        let decoder_codec = AVCodec::find_decoder(parameters.codec_id)
-            .ok_or_else(|| MediaError::Camera("未找到麦克风输入解码器".to_owned()))?;
-        let mut decoder = AVCodecContext::new(&decoder_codec);
-        let mut owned_parameters = rsmpeg::avcodec::AVCodecParameters::new();
-        owned_parameters.copy(parameters);
-        decoder
-            .apply_codecpar(&owned_parameters)
-            .map_err(|error| MediaError::Camera(format!("初始化音频解码器失败：{error}")))?;
-        decoder
-            .open(None)
-            .map_err(|error| MediaError::Camera(format!("打开音频解码器失败：{error}")))?;
-
         let codec_id = match settings.audio_codec {
             AudioCodec::Aac => ffi::AV_CODEC_ID_AAC,
             AudioCodec::G711a => ffi::AV_CODEC_ID_PCM_ALAW,
@@ -113,51 +97,56 @@ impl CameraAudioEncoder {
             .open(None)
             .map_err(|error| MediaError::Camera(format!("打开音频编码器失败：{error}")))?;
         let frame_size = encoder.frame_size;
+        let fifo = AVAudioFifo::new(output_sample_format, channels, frame_size.max(1));
         let time_base = MediaTimeBase::new(1, sample_rate)
             .ok_or_else(|| MediaError::Camera("音频编码器时间基无效".to_owned()))?;
-        let mut codec_parameters = rsmpeg::avcodec::AVCodecParameters::new();
+        let mut codec_parameters = AVCodecParameters::new();
         codec_parameters.from_context(&encoder);
         let codec_configuration =
             gblab_ffmpeg_device::copy_owned_codec_extradata(&codec_parameters).map(Bytes::from);
         Ok(Self {
-            decoder,
             encoder,
             resampler: None,
             output_layout,
             output_sample_format,
             sample_rate,
             frame_size,
+            fifo,
             next_pts: 0,
             codec: settings.audio_codec,
             time_base,
             pending: VecDeque::new(),
             codec_configuration,
             config_sent: false,
-            source_time_base: None,
         })
     }
 
-    pub(super) fn encode_packet(
+    pub(super) fn encode_pcm(
         &mut self,
-        packet: &AVPacket,
-        source_time_base: MediaTimeBase,
+        pcm: &super::audio_preview::AudioPcmFrame,
     ) -> MediaResult<()> {
-        self.source_time_base = Some(source_time_base);
-        self.decoder
-            .send_packet(Some(packet))
-            .map_err(|error| MediaError::Camera(format!("提交麦克风 packet 失败：{error}")))?;
-        loop {
-            match self.decoder.receive_frame() {
-                Ok(frame) => self.encode_frame(&frame, source_time_base)?,
-                Err(RsmpegError::DecoderDrainError) => break,
-                Err(error) => {
-                    return Err(MediaError::Camera(format!(
-                        "解码麦克风 packet 失败：{error}"
-                    )));
-                }
-            }
+        let sample_rate = i32::try_from(pcm.sample_rate)
+            .map_err(|_| MediaError::Camera("麦克风 PCM 采样率超出范围".to_owned()))?;
+        let channels = i32::from(pcm.channels);
+        let sample_count = pcm.samples.len() / usize::from(pcm.channels.max(1));
+        let mut frame = AVFrame::new();
+        frame.set_format(ffi::AV_SAMPLE_FMT_FLT);
+        frame.set_sample_rate(sample_rate);
+        frame.set_ch_layout(AVChannelLayout::from_nb_channels(channels).into_inner());
+        frame.set_nb_samples(
+            i32::try_from(sample_count)
+                .map_err(|_| MediaError::Camera("麦克风 PCM 样本数超出范围".to_owned()))?,
+        );
+        frame.set_pts(pcm.pts.unwrap_or(ffi::AV_NOPTS_VALUE));
+        frame
+            .alloc_buffer()
+            .map_err(|error| MediaError::Camera(format!("分配麦克风 PCM 帧失败：{error}")))?;
+        if !gblab_ffmpeg_device::write_interleaved_f32(&mut frame, &pcm.samples) {
+            return Err(MediaError::Camera("写入麦克风 PCM 帧失败".to_owned()));
         }
-        Ok(())
+        let source_time_base = MediaTimeBase::new(1, sample_rate)
+            .ok_or_else(|| MediaError::Camera("麦克风 PCM 时间基无效".to_owned()))?;
+        self.encode_frame(&frame, source_time_base)
     }
 
     pub(super) fn take_pending(&mut self) -> Option<EncodedMediaPacket> {
@@ -165,25 +154,8 @@ impl CameraAudioEncoder {
     }
 
     pub(super) fn finish(&mut self) -> MediaResult<()> {
-        match self.decoder.send_packet(None) {
-            Ok(()) | Err(RsmpegError::DecoderFlushedError) => {}
-            Err(error) => {
-                return Err(MediaError::Camera(format!("结束麦克风解码器失败：{error}")));
-            }
-        }
-        loop {
-            match self.decoder.receive_frame() {
-                Ok(frame) => self.encode_frame(
-                    &frame,
-                    self.source_time_base.unwrap_or(MediaTimeBase::MPEG_CLOCK),
-                )?,
-                Err(RsmpegError::DecoderDrainError | RsmpegError::DecoderFlushedError) => break,
-                Err(error) => {
-                    return Err(MediaError::Camera(format!("排空麦克风解码器失败：{error}")));
-                }
-            }
-        }
         self.flush_resampler()?;
+        self.submit_fifo_frames(true)?;
         match self.encoder.send_frame(None) {
             Ok(()) | Err(RsmpegError::EncoderFlushedError) => self.drain_packets(),
             Err(error) => Err(MediaError::Camera(format!("结束音频编码器失败：{error}"))),
@@ -213,12 +185,7 @@ impl CameraAudioEncoder {
             resampler
         };
         let available_samples = resampler.get_out_samples(input.nb_samples).max(1);
-        let output_samples = if self.frame_size > 0 {
-            self.frame_size
-        } else {
-            available_samples
-        };
-        let mut output = self.allocate_output_frame(output_samples)?;
+        let mut output = self.allocate_output_frame(available_samples)?;
         resampler
             .convert_frame(Some(input), &mut output)
             .map_err(|error| MediaError::Camera(format!("音频重采样失败：{error}")))?;
@@ -226,10 +193,12 @@ impl CameraAudioEncoder {
         if output.nb_samples <= 0 {
             return Ok(());
         }
-        if input.pts != ffi::AV_NOPTS_VALUE {
-            output.set_pts(source_time_base.rescale(input.pts, self.time_base));
+        if input.pts != ffi::AV_NOPTS_VALUE && self.fifo.size() == 0 {
+            self.next_pts = source_time_base.rescale(input.pts, self.time_base);
         }
-        self.submit_output_frame(&output)
+        gblab_ffmpeg_device::audio_fifo_write(&mut self.fifo, &output)
+            .map_err(|error| MediaError::Camera(format!("写入音频 FIFO 失败：{error}")))?;
+        self.submit_fifo_frames(false)
     }
 
     fn flush_resampler(&mut self) -> MediaResult<()> {
@@ -241,21 +210,33 @@ impl CameraAudioEncoder {
             if delayed_samples <= 0 {
                 break;
             }
-            let output_samples = if self.frame_size > 0 {
-                self.frame_size.min(delayed_samples).max(1)
-            } else {
-                delayed_samples
-            };
-            let mut output = self.allocate_output_frame(output_samples)?;
+            let mut output = self.allocate_output_frame(delayed_samples)?;
             resampler
                 .convert_frame(None, &mut output)
                 .map_err(|error| MediaError::Camera(format!("排空音频重采样器失败：{error}")))?;
             if output.nb_samples <= 0 {
                 break;
             }
-            self.submit_output_frame(&output)?;
+            gblab_ffmpeg_device::audio_fifo_write(&mut self.fifo, &output)
+                .map_err(|error| MediaError::Camera(format!("写入排空音频 FIFO 失败：{error}")))?;
         }
         self.resampler = Some(resampler);
+        Ok(())
+    }
+
+    fn submit_fifo_frames(&mut self, flushing: bool) -> MediaResult<()> {
+        let preferred = self.frame_size.max(1);
+        while self.fifo.size() >= preferred || (flushing && self.fifo.size() > 0) {
+            let samples = if self.fifo.size() >= preferred {
+                preferred
+            } else {
+                self.fifo.size()
+            };
+            let mut output = self.allocate_output_frame(samples)?;
+            gblab_ffmpeg_device::audio_fifo_read(&mut self.fifo, &mut output)
+                .map_err(|error| MediaError::Camera(format!("读取音频 FIFO 失败：{error}")))?;
+            self.submit_output_frame(&output)?;
+        }
         Ok(())
     }
 
@@ -280,7 +261,7 @@ impl CameraAudioEncoder {
         self.encoder
             .send_frame(Some(output))
             .map_err(|error| MediaError::Camera(format!("提交音频编码帧失败：{error}")))?;
-        self.next_pts = self.next_pts.saturating_add(i64::from(output.nb_samples));
+        self.next_pts = output.pts.saturating_add(i64::from(output.nb_samples));
         self.drain_packets()
     }
 
@@ -328,7 +309,10 @@ mod tests {
     use super::CameraAudioEncoder;
     use crate::{
         configuration::EncoderBackend,
-        media::{AudioCodec, CameraCaptureSettings, VideoCodec},
+        media::{
+            AudioCodec, CameraCaptureSettings, MediaTimeBase, VideoCodec,
+            audio_preview::{AudioOutputFormat, AudioPcmFrame, AudioPreviewDecoder},
+        },
     };
 
     fn asset() -> PathBuf {
@@ -372,13 +356,26 @@ mod tests {
                 .find(|stream| stream.codecpar().codec_type().is_audio())
                 .ok_or("fixture lacks audio stream")?;
             let audio_stream_index = audio_stream.index;
-            let mut encoder = CameraAudioEncoder::new(&settings(codec), &audio_stream.codecpar())?;
+            let time_base =
+                MediaTimeBase::new(audio_stream.time_base.num, audio_stream.time_base.den)
+                    .ok_or("invalid audio time base")?;
+            let mut decoder = AudioPreviewDecoder::new(
+                &audio_stream.codecpar(),
+                time_base,
+                AudioOutputFormat {
+                    sample_rate: 48_000,
+                    channels: 2,
+                },
+            )?;
+            let mut encoder = CameraAudioEncoder::new(&settings(codec))?;
             let mut encoded_packet = None;
             while let Some(packet) = context.read_packet()? {
                 if packet.stream_index != audio_stream_index {
                     continue;
                 }
-                encoder.encode_packet(&packet, crate::media::MediaTimeBase::MPEG_CLOCK)?;
+                for frame in decoder.decode(&packet)? {
+                    encoder.encode_pcm(&frame)?;
+                }
                 if let Some(packet) = encoder.take_pending() {
                     encoded_packet = Some(packet);
                     break;
@@ -392,6 +389,27 @@ mod tests {
             assert_eq!(packet.codec, crate::media::EncodedMediaCodec::Audio(codec));
             assert!(!packet.data.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_audio_pts_should_continue_after_the_latest_valid_jump()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut encoder = CameraAudioEncoder::new(&settings(AudioCodec::Aac))?;
+        let frame = |pts| AudioPcmFrame {
+            samples: vec![0.0; 2_048],
+            sample_rate: 48_000,
+            channels: 2,
+            pts,
+        };
+        encoder.encode_pcm(&frame(Some(0)))?;
+        encoder.encode_pcm(&frame(Some(48_000)))?;
+        let after_jump = encoder.next_pts;
+        encoder.encode_pcm(&frame(None))?;
+
+        assert!(after_jump > 48_000);
+        assert!(encoder.next_pts > after_jump);
+        encoder.finish()?;
         Ok(())
     }
 }
