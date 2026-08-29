@@ -32,7 +32,28 @@ pub(super) struct CameraVideoEncoder {
 
 impl CameraVideoEncoder {
     pub(super) fn new(settings: &CameraCaptureSettings) -> MediaResult<Self> {
-        let capability = super::camera::select_video_encoder(settings)?;
+        let candidates = super::camera::video_encoder_candidates(settings);
+        if candidates.is_empty() {
+            return Err(MediaError::Camera(format!(
+                "没有可用于 {:?}/{:?} 的视频编码器",
+                settings.video_codec, settings.encoder_backend
+            )));
+        }
+        let mut last_error = None;
+        for capability in candidates {
+            match Self::try_new(settings, capability) {
+                Ok(encoder) => return Ok(encoder),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| MediaError::Camera("所有候选视频编码器均无法打开".to_owned())))
+    }
+
+    fn try_new(
+        settings: &CameraCaptureSettings,
+        capability: super::VideoEncoderCapability,
+    ) -> MediaResult<Self> {
         let encoder_name = std::ffi::CString::new(capability.encoder_name)
             .map_err(|_| MediaError::Camera("编码器名称无效".to_owned()))?;
         let encoder = AVCodec::find_encoder_by_name(encoder_name.as_c_str()).ok_or_else(|| {

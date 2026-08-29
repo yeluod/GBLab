@@ -59,7 +59,7 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: gblab-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
+        key: gblab-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', 'toolchains/ffmpeg-sdk.lock.json') }}
     - name: Install frontend dependencies
       if: ${{ inputs.frontend == 'true' }}
       shell: bash

@@ -4,7 +4,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use tokio::sync::mpsc;
 
-use super::EncodedMediaPacket;
+use super::{
+    CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket, EncodedStreamDescriptor,
+    MediaTrackKind,
+};
 
 /// Downstream role consuming the single global encoded stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +35,10 @@ pub struct MediaSubscription {
     pub id: u64,
     /// Consumer role.
     pub kind: MediaConsumerKind,
+    /// Latest codec descriptor snapshot available at subscription time.
+    pub descriptor: Option<EncodedStreamDescriptor>,
+    /// All currently known track descriptors at subscription time.
+    pub descriptors: Vec<EncodedStreamDescriptor>,
     receiver: mpsc::Receiver<Arc<EncodedMediaPacket>>,
 }
 
@@ -71,6 +78,8 @@ pub struct BroadcastReport {
 pub struct MediaStreamHub {
     next_id: u64,
     consumers: BTreeMap<u64, Consumer>,
+    descriptors: BTreeMap<MediaTrackKind, EncodedStreamDescriptor>,
+    generation: u64,
 }
 
 impl MediaStreamHub {
@@ -80,6 +89,8 @@ impl MediaStreamHub {
         Self {
             next_id: 1,
             consumers: BTreeMap::new(),
+            descriptors: BTreeMap::new(),
+            generation: 0,
         }
     }
 
@@ -102,7 +113,15 @@ impl MediaStreamHub {
                 dropped_packets: 0,
             },
         );
-        MediaSubscription { id, kind, receiver }
+        let descriptors = self.descriptors.values().cloned().collect::<Vec<_>>();
+        let descriptor = descriptors.first().cloned();
+        MediaSubscription {
+            id,
+            kind,
+            descriptor,
+            descriptors,
+            receiver,
+        }
     }
 
     /// Removes a consumer explicitly.
@@ -112,6 +131,7 @@ impl MediaStreamHub {
 
     /// Broadcasts without waiting for any consumer.
     pub fn broadcast(&mut self, packet: &Arc<EncodedMediaPacket>) -> BroadcastReport {
+        self.update_descriptor(packet);
         let mut report = BroadcastReport::default();
         self.consumers.retain(|_, consumer| {
             match consumer.sender.try_send(Arc::clone(packet)) {
@@ -144,6 +164,66 @@ impl MediaStreamHub {
         self.consumers
             .values()
             .any(|consumer| consumer.kind == kind)
+    }
+
+    /// Returns the latest descriptor for a logical track.
+    #[must_use]
+    pub fn descriptor(&self, track: MediaTrackKind) -> Option<&EncodedStreamDescriptor> {
+        self.descriptors.get(&track)
+    }
+
+    /// Starts a new source generation while retaining existing consumers.
+    pub fn bump_generation(&mut self) {
+        self.generation = self.generation.saturating_add(1);
+        for descriptor in self.descriptors.values_mut() {
+            descriptor.generation = self.generation;
+        }
+    }
+
+    fn update_descriptor(&mut self, packet: &EncodedMediaPacket) {
+        let configuration = packet
+            .codec_configuration
+            .clone()
+            .map(|bytes| bytes.to_vec());
+        let configuration_format = configuration
+            .as_deref()
+            .and_then(|bytes| configuration_format(packet.codec, bytes));
+        self.descriptors.insert(
+            packet.track,
+            EncodedStreamDescriptor {
+                generation: self.generation,
+                track: packet.track,
+                codec: packet.codec,
+                width: None,
+                height: None,
+                frame_rate: None,
+                sample_rate: None,
+                channels: None,
+                time_base: packet.time_base,
+                configuration,
+                configuration_format,
+            },
+        );
+    }
+}
+
+fn configuration_format(
+    codec: EncodedMediaCodec,
+    bytes: &[u8],
+) -> Option<CodecConfigurationFormat> {
+    match codec {
+        EncodedMediaCodec::Video(super::VideoCodec::H264) => Some(if bytes.first() == Some(&1) {
+            CodecConfigurationFormat::H264Avcc
+        } else {
+            CodecConfigurationFormat::H264AnnexBParameterSets
+        }),
+        EncodedMediaCodec::Video(super::VideoCodec::H265) => Some(if bytes.first() == Some(&1) {
+            CodecConfigurationFormat::H265Hvcc
+        } else {
+            CodecConfigurationFormat::H265AnnexBParameterSets
+        }),
+        EncodedMediaCodec::Audio(super::AudioCodec::Aac) => Some(CodecConfigurationFormat::AacAsc),
+        _ => None,
     }
 }
 
@@ -248,5 +328,24 @@ mod tests {
         assert!(!hub.unsubscribe(preview.id));
         assert_eq!(hub.consumer_count(), 1);
         drop(recorder);
+    }
+
+    #[test]
+    fn late_subscriber_should_receive_latest_codec_descriptor_snapshot() {
+        let mut hub = MediaStreamHub::new();
+        let mut packet = packet();
+        Arc::make_mut(&mut packet).codec_configuration = Some(Bytes::from_static(&[1, 2, 3]));
+        let _ = hub.broadcast(&packet);
+
+        let subscription =
+            hub.subscribe(MediaConsumerKind::Live, 2, BackpressurePolicy::Disconnect);
+        assert_eq!(subscription.descriptors.len(), 1);
+        assert_eq!(
+            subscription
+                .descriptor
+                .as_ref()
+                .and_then(|d| d.configuration_format),
+            Some(crate::media::CodecConfigurationFormat::H264Avcc)
+        );
     }
 }

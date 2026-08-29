@@ -9,7 +9,7 @@ use std::{
     slice,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 
@@ -27,7 +27,46 @@ mod windows_capture;
 /// RAII guard connecting a Rust cancellation flag to an `AVFormatContext` interrupt callback.
 pub struct InputInterruptGuard {
     context: NonNull<ffi::AVFormatContext>,
-    opaque: NonNull<Arc<AtomicBool>>,
+    opaque: NonNull<Arc<AtomicU8>>,
+}
+
+/// Why an FFmpeg input read was interrupted.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptReason {
+    /// No interrupt is pending.
+    None = 0,
+    /// The preview consumer was detached.
+    PreviewDetach = 1,
+    /// Playback was paused.
+    Pause = 2,
+    /// Playback was stopped.
+    Stop = 3,
+    /// The source was closed.
+    Close = 4,
+    /// The runtime is shutting down.
+    Shutdown = 5,
+    /// A source is being replaced or reconfigured.
+    Reconfigure = 6,
+    /// The command response deadline elapsed.
+    Timeout = 7,
+}
+
+impl InterruptReason {
+    /// Decodes the atomic representation.
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::PreviewDetach,
+            2 => Self::Pause,
+            3 => Self::Stop,
+            4 => Self::Close,
+            5 => Self::Shutdown,
+            6 => Self::Reconfigure,
+            7 => Self::Timeout,
+            _ => Self::None,
+        }
+    }
 }
 
 impl Drop for InputInterruptGuard {
@@ -53,7 +92,7 @@ pub fn open_input_with_interrupt(
     url: &CStr,
     format: &AVInputFormatRef<'_>,
     options: Option<AVDictionary>,
-    flag: Arc<AtomicBool>,
+    flag: Arc<AtomicU8>,
 ) -> Result<(AVFormatContextInput, InputInterruptGuard), RsmpegError> {
     let mut context = unsafe { ffi::avformat_alloc_context() };
     let Some(context_pointer) = NonNull::new(context) else {
@@ -110,8 +149,8 @@ pub fn open_input_with_interrupt(
 
 fn attach_raw_interrupt(
     context_ptr: NonNull<ffi::AVFormatContext>,
-    flag: Arc<AtomicBool>,
-) -> NonNull<Arc<AtomicBool>> {
+    flag: Arc<AtomicU8>,
+) -> NonNull<Arc<AtomicU8>> {
     let opaque = NonNull::from(Box::leak(Box::new(flag)));
     // SAFETY: Both pointers remain valid until `InputInterruptGuard` clears the callback and frees
     // the opaque Arc. FFmpeg only reads the callback structure while operating on this context.
@@ -123,7 +162,7 @@ fn attach_raw_interrupt(
     opaque
 }
 
-fn drop_opaque(opaque: NonNull<Arc<AtomicBool>>) {
+fn drop_opaque(opaque: NonNull<Arc<AtomicU8>>) {
     // SAFETY: The pointer was allocated by attach_raw_interrupt and is released exactly once.
     unsafe { drop(Box::from_raw(opaque.as_ptr())) };
 }
@@ -139,10 +178,10 @@ unsafe extern "C" fn media_interrupt_callback(opaque: *mut c_void) -> i32 {
     if opaque.is_null() {
         return 0;
     }
-    // SAFETY: `open_input_with_interrupt` stores an `Arc<AtomicBool>` allocation at this address,
+    // SAFETY: `open_input_with_interrupt` stores an `Arc<AtomicU8>` allocation at this address,
     // and its guard keeps it alive until after the callback is detached.
-    let flag = unsafe { &*opaque.cast::<Arc<AtomicBool>>() };
-    i32::from(flag.load(Ordering::Acquire))
+    let flag = unsafe { &*opaque.cast::<Arc<AtomicU8>>() };
+    i32::from(flag.load(Ordering::Acquire) != 0)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -800,8 +839,8 @@ mod pure_tests {
     use std::collections::BTreeMap;
 
     use super::{
-        NativeFrameRateCapability, NativeVideoCaptureMode, frame_rate_capabilities,
-        merge_capture_modes,
+        InterruptReason, NativeFrameRateCapability, NativeVideoCaptureMode,
+        frame_rate_capabilities, merge_capture_modes,
     };
 
     #[test]
@@ -836,5 +875,22 @@ mod pure_tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn interrupt_reason_wire_values_should_round_trip_and_ignore_unknown_values() {
+        for reason in [
+            InterruptReason::None,
+            InterruptReason::PreviewDetach,
+            InterruptReason::Pause,
+            InterruptReason::Stop,
+            InterruptReason::Close,
+            InterruptReason::Shutdown,
+            InterruptReason::Reconfigure,
+            InterruptReason::Timeout,
+        ] {
+            assert_eq!(InterruptReason::from_u8(reason as u8), reason);
+        }
+        assert_eq!(InterruptReason::from_u8(255), InterruptReason::None);
     }
 }

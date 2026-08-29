@@ -149,12 +149,19 @@ impl SipRegistrationClient {
                 let local_tag = if method.as_deref() == Some("ACK") {
                     None
                 } else if let Some(call_id) = call_id.as_ref() {
-                    let mut tags = self.uas_tags.lock().await;
-                    Some(
-                        tags.entry(call_id.clone())
-                            .or_insert_with(|| Tag::new().to_string())
-                            .clone(),
-                    )
+                    if is_subscribe {
+                        let mut tags = self.uas_tags.lock().await;
+                        Some(
+                            tags.entry(call_id.clone())
+                                .or_insert_with(|| Tag::new().to_string())
+                                .clone(),
+                        )
+                    } else {
+                        // Non-dialog requests only need a tag for this response;
+                        // retaining every transient Call-ID would create an
+                        // unbounded map under MESSAGE/OPTIONS traffic.
+                        Some(Tag::new().to_string())
+                    }
                 } else {
                     None
                 };
@@ -182,6 +189,26 @@ impl SipRegistrationClient {
                         &catalog_devices,
                     )
                     .await;
+                let query_permit = if matches!(
+                    disposition,
+                    InboundRequestDisposition::RespondAndQuery { .. }
+                ) {
+                    reserve_query_permit(&self.query_executor)
+                } else {
+                    None
+                };
+                let disposition = if matches!(
+                    disposition,
+                    InboundRequestDisposition::RespondAndQuery { .. }
+                ) && query_permit.is_none()
+                {
+                    InboundRequestDisposition::Respond {
+                        status: 503,
+                        reason: "Service Unavailable",
+                    }
+                } else {
+                    disposition
+                };
                 let response = disposition.response().map(|(status, reason)| {
                     build_request_response(
                         parse_text,
@@ -231,7 +258,8 @@ impl SipRegistrationClient {
                 }
                 if let InboundRequestDisposition::RespondAndQuery { body } = disposition {
                     let client = Arc::clone(&self);
-                    let Ok(permit) = Arc::clone(&self.query_executor).try_acquire_owned() else {
+                    let Some(permit) = query_permit else {
+                        drop(query_permit);
                         continue;
                     };
                     let request = request.clone();
@@ -243,6 +271,8 @@ impl SipRegistrationClient {
                             .send_query_response(&device_id, &request, body, &cancellation)
                             .await;
                     });
+                } else {
+                    drop(query_permit);
                 }
                 continue;
             };
@@ -566,6 +596,17 @@ impl SipRegistrationClient {
     }
 }
 
+/// Reserves a bounded query worker slot before acknowledging the SIP request.
+///
+/// Keeping this decision synchronous and non-blocking means saturation is exposed as a
+/// protocol-level 503 instead of accepting a request and silently dropping its business
+/// response later.
+fn reserve_query_permit(
+    executor: &Arc<tokio::sync::Semaphore>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    Arc::clone(executor).try_acquire_owned().ok()
+}
+
 fn cancel_invite_transaction(
     invites: &mut HashMap<TransactionKey, InviteServerTransaction>,
     key: Option<&TransactionKey>,
@@ -600,9 +641,9 @@ mod tests {
     use std::{collections::HashMap, time::Duration};
 
     use siprs::siprs_message::Method;
-    use tokio::time::Instant;
+    use tokio::{sync::Semaphore, time::Instant};
 
-    use super::{InboundRequestDisposition, cancel_invite_transaction};
+    use super::{InboundRequestDisposition, cancel_invite_transaction, reserve_query_permit};
     use crate::sip::{
         registration::{InviteServerTransaction, InviteServerTransactionState},
         transaction::TransactionKey,
@@ -661,5 +702,17 @@ mod tests {
             invites.get(&key).map(|transaction| transaction.state),
             Some(InviteServerTransactionState::Terminated)
         );
+    }
+
+    #[test]
+    fn query_capacity_should_be_rejected_before_ack_when_saturated() {
+        let executor = std::sync::Arc::new(Semaphore::new(1));
+        let permit = reserve_query_permit(&executor);
+
+        assert!(permit.is_some());
+        assert!(reserve_query_permit(&executor).is_none());
+
+        drop(permit);
+        assert!(reserve_query_permit(&executor).is_some());
     }
 }

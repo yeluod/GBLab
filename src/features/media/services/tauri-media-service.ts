@@ -198,10 +198,10 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
           : '未配置',
     video: value.video ? frontendVideo(value.video) : null,
     audio: value.audio ? frontendAudio(value.audio) : null,
-    activeLiveSessions:
-      value.sourceKind === MediaSourceType.Camera && value.sourceStatus === 'playing' ? 1 : 0,
-    activePlaybackSessions:
-      value.sourceKind === MediaSourceType.Mp4 && value.sourceStatus === 'playing' ? 1 : 0,
+    // Live/Playback managers are not implemented yet; never expose source
+    // type as a fabricated business-session count.
+    activeLiveSessions: 0,
+    activePlaybackSessions: 0,
     durationSeconds: value.durationSeconds,
     positionSeconds: value.positionSeconds,
     playbackRate: value.playbackRate,

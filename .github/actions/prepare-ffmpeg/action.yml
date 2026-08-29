@@ -33,7 +33,7 @@ runs:
     - name: Verify Unix FFmpeg SDK integrity
       if: ${{ inputs.platform == 'linux' || inputs.platform == 'macos' }}
       shell: bash
-      run: bash scripts/verify-ffmpeg-sdk.sh .ffmpeg-sdk/${{ inputs.platform }}
+      run: bash scripts/verify-ffmpeg-sdk.sh .ffmpeg-sdk/${{ inputs.platform }} ${{ inputs.platform }}
     - name: Verify Windows FFmpeg SDK integrity
       if: ${{ inputs.platform == 'windows' }}
       shell: pwsh

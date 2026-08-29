@@ -128,7 +128,8 @@ impl MediaTimeBase {
 }
 
 /// Logical encoded track identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum MediaTrackKind {
     /// Encoded video track.
     Video,
@@ -161,12 +162,57 @@ pub enum AudioCodec {
 }
 
 /// Codec carried by an encoded media packet.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "track", content = "codec")]
 pub enum EncodedMediaCodec {
     /// Encoded video.
     Video(VideoCodec),
     /// Encoded audio.
     Audio(AudioCodec),
+}
+
+/// Explicit byte semantics for codec initialization data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodecConfigurationFormat {
+    /// H.264 AVCC extradata from a container.
+    H264Avcc,
+    /// H.264 Annex-B parameter sets.
+    H264AnnexBParameterSets,
+    /// H.265 HVCC extradata from a container.
+    H265Hvcc,
+    /// H.265 Annex-B VPS/SPS/PPS.
+    H265AnnexBParameterSets,
+    /// AAC `AudioSpecificConfig`.
+    AacAsc,
+}
+
+/// Describes one encoded track for late subscribers and future muxers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodedStreamDescriptor {
+    /// Stream generation, incremented when a source is reconfigured or seeked.
+    pub generation: u64,
+    /// Logical track.
+    pub track: MediaTrackKind,
+    /// Encoded codec.
+    pub codec: EncodedMediaCodec,
+    /// Video width when the track is video.
+    pub width: Option<u32>,
+    /// Video height when the track is video.
+    pub height: Option<u32>,
+    /// Frame rate when known.
+    pub frame_rate: Option<FrameRate>,
+    /// Audio sample rate when the track is audio.
+    pub sample_rate: Option<u32>,
+    /// Audio channels when the track is audio.
+    pub channels: Option<u32>,
+    /// Integer timestamp time base.
+    pub time_base: MediaTimeBase,
+    /// Codec initialization bytes with explicit semantics.
+    pub configuration: Option<Vec<u8>>,
+    /// Configuration byte format.
+    pub configuration_format: Option<CodecConfigurationFormat>,
 }
 
 /// Packet ready for recorder, live-session and preview consumers.

@@ -2,7 +2,7 @@
 
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
     sync::{Arc, Mutex, RwLock, mpsc},
     thread,
     time::{Duration, Instant},
@@ -14,6 +14,7 @@ use super::{
     MediaStreamHub, MediaSubscription, MediaVideoFrame, Mp4MediaSource,
     types::{MediaSource, MediaSourceSession},
 };
+use gblab_ffmpeg_device::InterruptReason;
 
 const COMMAND_CAPACITY: usize = 32;
 const PREVIEW_CAPACITY: usize = 2;
@@ -68,30 +69,34 @@ pub struct GlobalMediaHandle {
     commands: mpsc::SyncSender<MediaCommand>,
     status: Arc<RwLock<MediaRuntimeStatus>>,
     preview: Arc<Mutex<mpsc::Receiver<MediaVideoFrame>>>,
-    interrupt: Arc<AtomicBool>,
+    interrupt: Arc<AtomicU8>,
 }
 
 impl GlobalMediaHandle {
     /// Opens the single MP4 source on the owner worker.
     pub fn open_mp4(&self, path: PathBuf, looping: bool) -> MediaResult<MediaRuntimeStatus> {
-        self.interrupt.store(true, Ordering::Release);
+        self.interrupt
+            .store(InterruptReason::Reconfigure as u8, Ordering::Release);
         let result = self.request_status(|reply| MediaCommand::OpenMp4 {
             path,
             looping,
             reply,
         });
         if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
-            self.interrupt.store(false, Ordering::Release);
+            self.interrupt
+                .store(InterruptReason::None as u8, Ordering::Release);
         }
         result
     }
 
     /// Opens the single camera source on the owner worker.
     pub fn open_camera(&self, settings: CameraCaptureSettings) -> MediaResult<MediaRuntimeStatus> {
-        self.interrupt.store(true, Ordering::Release);
+        self.interrupt
+            .store(InterruptReason::Reconfigure as u8, Ordering::Release);
         let result = self.request_status(|reply| MediaCommand::OpenCamera { settings, reply });
         if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
-            self.interrupt.store(false, Ordering::Release);
+            self.interrupt
+                .store(InterruptReason::None as u8, Ordering::Release);
         }
         result
     }
@@ -108,22 +113,25 @@ impl GlobalMediaHandle {
 
     /// Detaches the UI preview consumer; source shutdown is demand-driven.
     pub fn detach_preview(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(MediaCommand::DetachPreview)
+        self.request_interrupting_status(
+            InterruptReason::PreviewDetach,
+            MediaCommand::DetachPreview,
+        )
     }
 
     /// Pauses source production.
     pub fn pause(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(MediaCommand::Pause)
+        self.request_interrupting_status(InterruptReason::Pause, MediaCommand::Pause)
     }
 
     /// Stops production and releases live capture devices.
     pub fn stop(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(MediaCommand::Stop)
+        self.request_interrupting_status(InterruptReason::Stop, MediaCommand::Stop)
     }
 
     /// Closes the current source and releases every owned codec/input context.
     pub fn close(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(MediaCommand::Close)
+        self.request_interrupting_status(InterruptReason::Close, MediaCommand::Close)
     }
 
     /// Resets an MP4 source to its beginning.
@@ -222,7 +230,8 @@ impl GlobalMediaHandle {
                 // Cancel blocking capture/open work before reporting timeout. The worker checks
                 // this interrupt flag in the FFmpeg input callback and will not keep a stale
                 // device read alive after the caller has abandoned the request.
-                self.interrupt.store(true, Ordering::Release);
+                self.interrupt
+                    .store(InterruptReason::Timeout as u8, Ordering::Release);
                 Err(MediaError::CommandTimedOut)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaError::RuntimeUnavailable(
@@ -233,12 +242,14 @@ impl GlobalMediaHandle {
 
     fn request_interrupting_status(
         &self,
+        reason: InterruptReason,
         build: impl FnOnce(StatusReply) -> MediaCommand,
     ) -> MediaResult<MediaRuntimeStatus> {
-        self.interrupt.store(true, Ordering::Release);
+        self.interrupt.store(reason as u8, Ordering::Release);
         let result = self.request_status(build);
         if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
-            self.interrupt.store(false, Ordering::Release);
+            self.interrupt
+                .store(InterruptReason::None as u8, Ordering::Release);
         }
         result
     }
@@ -270,7 +281,7 @@ impl GlobalMediaRuntime {
         let (commands, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (preview_sender, preview_receiver) = mpsc::sync_channel(PREVIEW_CAPACITY);
         let status = Arc::new(RwLock::new(MediaRuntimeStatus::unconfigured()));
-        let interrupt = Arc::new(AtomicBool::new(false));
+        let interrupt = Arc::new(AtomicU8::new(InterruptReason::None as u8));
         let worker_status = Arc::clone(&status);
         let worker_interrupt = Arc::clone(&interrupt);
         let worker = thread::Builder::new()
@@ -298,7 +309,9 @@ impl GlobalMediaRuntime {
 
     /// Stops and joins the owner thread. Calling this more than once is harmless.
     pub fn shutdown(&self) -> MediaResult<()> {
-        self.handle.interrupt.store(true, Ordering::Release);
+        self.handle
+            .interrupt
+            .store(InterruptReason::Shutdown as u8, Ordering::Release);
         let (reply, receiver) = mpsc::sync_channel(1);
         if self
             .handle
@@ -347,7 +360,7 @@ struct MediaWorker {
     next_read_at: Instant,
     pacing_anchor: Option<Instant>,
     last_media_timestamp: Option<i64>,
-    interrupt: Arc<AtomicBool>,
+    interrupt: Arc<AtomicU8>,
     preview_attached: bool,
 }
 
@@ -356,7 +369,7 @@ impl MediaWorker {
         commands: mpsc::Receiver<MediaCommand>,
         preview: mpsc::SyncSender<MediaVideoFrame>,
         shared_status: Arc<RwLock<MediaRuntimeStatus>>,
-        interrupt: Arc<AtomicBool>,
+        interrupt: Arc<AtomicU8>,
     ) -> Self {
         Self {
             commands,
@@ -415,6 +428,17 @@ impl MediaWorker {
                 continue;
             }
             if let Err(error) = self.produce_once() {
+                let interrupt = InterruptReason::from_u8(
+                    self.interrupt
+                        .swap(InterruptReason::None as u8, Ordering::AcqRel),
+                );
+                if interrupt != InterruptReason::None {
+                    // An interrupt is the expected wake-up path for pause, stop,
+                    // close, detach and reconfigure.  The queued command owns
+                    // the final state transition; do not expose AVERROR_EXIT as
+                    // a user-visible source failure.
+                    continue;
+                }
                 self.status.source_status = MediaSourceStatus::Stopped;
                 self.status.last_error = Some(error.to_string());
                 self.publish_status();
@@ -437,7 +461,10 @@ impl MediaWorker {
             self.status.position_seconds = packet.position_seconds();
             self.schedule_next_read(packet.pts.or(packet.dts));
             let packet = Arc::new(packet);
-            let _ = self.hub.broadcast(&packet);
+            let report = self.hub.broadcast(&packet);
+            if report.disconnected > 0 {
+                let _ = self.reconcile_runtime_demand();
+            }
         }
         for frame in output.preview_frames {
             self.status.position_seconds = frame.position_seconds;
@@ -471,8 +498,7 @@ impl MediaWorker {
         let deadline = if previous.is_none() {
             anchor
         } else {
-            let elapsed = Duration::from_secs_f64((media_seconds / rate).max(0.0));
-            anchor.checked_add(elapsed).unwrap_or_else(Instant::now)
+            pacing_deadline(anchor, media_seconds, rate)
         };
         self.next_read_at = deadline;
     }
@@ -483,7 +509,8 @@ impl MediaWorker {
         reason = "The owner thread keeps serialized media commands in one explicit dispatcher"
     )]
     fn handle_command(&mut self, command: MediaCommand) -> bool {
-        self.interrupt.store(false, Ordering::Release);
+        self.interrupt
+            .store(InterruptReason::None as u8, Ordering::Release);
         match command {
             MediaCommand::OpenMp4 {
                 path,
@@ -511,22 +538,28 @@ impl MediaWorker {
                     self.status.source_status = MediaSourceStatus::Playing;
                     self.status.last_error = None;
                     self.next_read_at = Instant::now();
-                    self.pacing_anchor = Some(Instant::now());
+                    // Re-anchor against the current media position.  Resetting
+                    // the anchor to `now` makes a resumed file wait from its
+                    // original timestamp (for example ~10 seconds after a
+                    // pause at 10s).
+                    let position = self.status.position_seconds.max(0.0);
+                    self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
+                        position / self.status.playback_rate.max(0.01),
+                    ));
                     self.last_media_timestamp = None;
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
             MediaCommand::AttachPreview(reply) => {
                 self.preview_attached = true;
+                if let Some(session) = self.session.as_mut() {
+                    session.set_preview_enabled(true);
+                }
                 Self::reply_status(&reply, Ok(self.status.clone()));
             }
             MediaCommand::DetachPreview(reply) => {
                 self.preview_attached = false;
-                let result = if !self.preview_attached && self.hub.consumer_count() == 0 {
-                    self.stop_source()
-                } else {
-                    Ok(self.status.clone())
-                };
+                let result = self.reconcile_runtime_demand();
                 Self::reply_status(&reply, result);
             }
             MediaCommand::Pause(reply) => {
@@ -600,10 +633,12 @@ impl MediaWorker {
                 reply,
             } => {
                 let subscription = self.hub.subscribe(kind, capacity, policy);
+                let _ = self.reconcile_runtime_demand();
                 let _ = reply.try_send(Ok(subscription));
             }
             MediaCommand::Unsubscribe(id) => {
                 let _ = self.hub.unsubscribe(id);
+                let _ = self.reconcile_runtime_demand();
             }
             MediaCommand::Shutdown(reply) => {
                 let _ = self.finalize_current_session();
@@ -624,6 +659,7 @@ impl MediaWorker {
         self.finalize_current_session()?;
         let probe = session.probe().clone();
         self.session = Some(session);
+        self.hub.bump_generation();
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
         self.reset_or_continue_clock();
@@ -704,6 +740,7 @@ impl MediaWorker {
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         let frame = session.seek_frame(position_seconds)?;
+        self.hub.bump_generation();
         self.clock.begin_seek();
         self.reset_or_continue_clock();
         self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
@@ -744,6 +781,18 @@ impl MediaWorker {
         }
     }
 
+    fn reconcile_runtime_demand(&mut self) -> MediaResult<MediaRuntimeStatus> {
+        let has_encoded_consumer = self.hub.consumer_count() > 0;
+        let has_demand = self.preview_attached || has_encoded_consumer;
+        if let Some(session) = self.session.as_mut() {
+            session.set_preview_enabled(self.preview_attached);
+        }
+        if !has_demand && self.session.is_some() {
+            return self.stop_source();
+        }
+        Ok(self.status.clone())
+    }
+
     fn with_session(&mut self, operation: impl FnOnce(&mut MediaSourceSession)) -> MediaResult<()> {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         operation(session);
@@ -761,11 +810,19 @@ impl MediaWorker {
     }
 }
 
+fn pacing_deadline(anchor: Instant, media_seconds: f64, rate: f64) -> Instant {
+    let elapsed = Duration::from_secs_f64((media_seconds / rate.max(0.01)).max(0.0));
+    anchor.checked_add(elapsed).unwrap_or_else(Instant::now)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
 
-    use super::GlobalMediaRuntime;
+    use super::{GlobalMediaRuntime, pacing_deadline};
     use crate::media::{MediaError, MediaSourceStatus};
 
     #[test]
@@ -787,6 +844,41 @@ mod tests {
             runtime.handle().play(),
             Err(MediaError::NoSourceOpen)
         ));
+        assert!(runtime.shutdown().is_ok());
+    }
+
+    #[test]
+    fn resume_anchor_should_not_reintroduce_the_already_played_gap() {
+        let now = Instant::now();
+        let anchor = now.checked_sub(Duration::from_secs(10)).unwrap_or(now);
+        let deadline = pacing_deadline(anchor, 10.04, 1.0);
+
+        assert!(deadline.duration_since(now) < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn resume_anchor_should_scale_with_playback_rate() {
+        let now = Instant::now();
+        let anchor = now.checked_sub(Duration::from_secs(10)).unwrap_or(now);
+        let deadline = pacing_deadline(anchor, 10.5, 2.0);
+
+        assert!(deadline.duration_since(now) < Duration::from_millis(400));
+    }
+
+    #[test]
+    fn lifecycle_interrupts_should_not_publish_a_source_error() {
+        let runtime = GlobalMediaRuntime::start();
+        let handle = runtime.handle();
+        let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("assets")
+            .join("h264-noaudio.mp4");
+        assert!(handle.open_mp4(asset, true).is_ok());
+        assert!(handle.attach_preview().is_ok());
+        assert!(handle.play().is_ok());
+        assert!(handle.pause().is_ok());
+        assert!(handle.detach_preview().is_ok());
+        assert!(handle.status().last_error.is_none());
         assert!(runtime.shutdown().is_ok());
     }
 

@@ -65,7 +65,8 @@ cat > "$output_root/manifest.json" <<EOF
 EOF
 if [[ ! -f "$output_root/FFMPEG-LICENSE.txt" ]]; then
   license_file="$(find "$extract_root" -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -print -quit)"
-  if [[ -n "$license_file" ]]; then cp "$license_file" "$output_root/FFMPEG-LICENSE.txt"; else printf '%s\n' 'FFmpeg is distributed under the LGPL-2.1-or-later license.' > "$output_root/FFMPEG-LICENSE.txt"; fi
+  [[ -n "$license_file" ]] || { printf 'FFmpeg license file was not found in SDK archive.\n' >&2; exit 1; }
+  cp "$license_file" "$output_root/FFMPEG-LICENSE.txt"
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   { printf 'FFMPEG_INCLUDE_DIR=%s\n' "$output_root/include"; printf 'FFMPEG_LIBS_DIR=%s\n' "$output_root/lib"; printf 'FFMPEG_LINK_MODE=dynamic\n'; } >> "$GITHUB_ENV"

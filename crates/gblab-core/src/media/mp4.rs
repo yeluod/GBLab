@@ -131,6 +131,8 @@ impl MediaSource for Mp4MediaSource {
             video_config_sent: false,
             audio_config_sent: false,
             pending_packets: VecDeque::new(),
+            preview_enabled: true,
+            loop_pending: false,
         })))
     }
 }
@@ -154,11 +156,17 @@ pub struct Mp4Session {
     video_config_sent: bool,
     audio_config_sent: bool,
     pending_packets: VecDeque<EncodedMediaPacket>,
+    preview_enabled: bool,
+    loop_pending: bool,
 }
 
 impl Mp4Session {
     pub(crate) const fn probe(&self) -> &Mp4ProbeResult {
         &self.probe
+    }
+
+    pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
+        self.preview_enabled = enabled;
     }
 }
 
@@ -234,11 +242,22 @@ impl Mp4Session {
         let mut packet = match self.context.read_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) if self.looping => {
+                self.drain_video_for_loop()?;
                 self.reset()?;
-                return Ok(SourceReadOutput::looped());
+                self.loop_pending = true;
+                return Ok(SourceReadOutput {
+                    packet: self.pending_packets.pop_front(),
+                    preview_frames: Vec::new(),
+                    looped: false,
+                    end_of_stream: false,
+                });
             }
             Ok(None) => {
-                let preview_frames = self.decoder.finish_preview()?;
+                let preview_frames = if self.preview_enabled {
+                    self.decoder.finish_preview()?
+                } else {
+                    Vec::new()
+                };
                 let video_time_base = self
                     .context
                     .streams()
@@ -300,11 +319,13 @@ impl Mp4Session {
 
         if stream_index == self.video_stream_index {
             let mut preview_frames = Vec::new();
-            if let Some(frame) = self.decoder.decode_packet(&packet)? {
-                preview_frames.push(frame);
-            }
-            while let Some(frame) = self.decoder.take_pending_frame() {
-                preview_frames.push(frame);
+            if self.preview_enabled {
+                if let Some(frame) = self.decoder.decode_packet(&packet)? {
+                    preview_frames.push(frame);
+                }
+                while let Some(frame) = self.decoder.take_pending_frame() {
+                    preview_frames.push(frame);
+                }
             }
             self.video_bsf
                 .send_packet(Some(&mut packet))
@@ -336,10 +357,12 @@ impl Mp4Session {
                     }
                 }
             }
+            let looped = self.loop_pending;
+            self.loop_pending = false;
             return Ok(SourceReadOutput {
                 packet: self.pending_packets.pop_front(),
                 preview_frames,
-                looped: false,
+                looped,
                 end_of_stream: false,
             });
         }
@@ -443,6 +466,49 @@ impl Mp4Session {
                 return Ok(Some(frame));
             }
         }
+    }
+
+    fn drain_video_for_loop(&mut self) -> MediaResult<()> {
+        if self.preview_enabled {
+            let _ = self.decoder.finish_preview()?;
+        }
+        self.video_bsf.send_packet(None).map_err(|error| {
+            MediaError::Playback(format!("排空循环 Annex-B 过滤器失败：{error}"))
+        })?;
+        let mut packet = AVPacket::new();
+        loop {
+            match self.video_bsf.receive_packet(&mut packet) {
+                Ok(()) => {
+                    let stream = self
+                        .context
+                        .streams()
+                        .get(self.video_stream_index)
+                        .ok_or_else(|| MediaError::Playback("视频流已不可用".to_owned()))?;
+                    let time_base = MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
+                        .ok_or_else(|| MediaError::Playback("视频流时间基无效".to_owned()))?;
+                    let mut output = encoded_packet(
+                        &packet,
+                        MediaTrackKind::Video,
+                        EncodedMediaCodec::Video(self.probe.video.codec),
+                        time_base,
+                    );
+                    if !self.video_config_sent {
+                        output
+                            .codec_configuration
+                            .clone_from(&self.video_codec_configuration);
+                        self.video_config_sent = true;
+                    }
+                    self.pending_packets.push_back(output);
+                }
+                Err(RsmpegError::BitstreamDrainError | RsmpegError::BitstreamFlushedError) => break,
+                Err(error) => {
+                    return Err(MediaError::Playback(format!(
+                        "读取循环 Annex-B packet 失败：{error}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

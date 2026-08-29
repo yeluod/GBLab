@@ -30,28 +30,34 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow + '-' + github.ref }}
-  cancel-in-progress: true
-
 jobs:
+  prepare-matrix:
+    name: Select desktop matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            all) printf 'matrix={"include":[{"platform":"macos","runner":"macos-14","architecture":"arm64","timeout":45},{"platform":"windows","runner":"windows-2025","architecture":"x86_64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            macos) printf 'matrix={"include":[{"platform":"macos","runner":"macos-14","architecture":"arm64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            windows) printf 'matrix={"include":[{"platform":"windows","runner":"windows-2025","architecture":"x86_64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            *) printf 'Unsupported platform: %s\n' "$PLATFORM" >&2; exit 1 ;;
+          esac
+
   build:
+    needs: prepare-matrix
     name: Build ${{ matrix.platform }} (${{ matrix.architecture }})
-    if: ${{ inputs.platform == 'all' || inputs.platform == matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: macos
-            runner: macos-14
-            architecture: arm64
-            timeout: 45
-          - platform: windows
-            runner: windows-2025
-            architecture: x86_64
-            timeout: 45
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
     steps:
       - name: Checkout exact source
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -103,12 +109,22 @@ jobs:
           set -euo pipefail
           compgen -G 'target/release/bundle/dmg/*.dmg' >/dev/null || { echo 'No macOS DMG generated.' >&2; exit 1; }
           compgen -G 'target/release/bundle/macos/*.app' >/dev/null || { echo 'No macOS app generated.' >&2; exit 1; }
+          app="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          compgen -G "$app/Contents/Frameworks/*.dylib" >/dev/null || { echo 'Final macOS app has no bundled FFmpeg dylibs.' >&2; exit 1; }
+          test -f "$app/Contents/Resources/manifest.json" || { echo 'Final macOS app is missing FFmpeg manifest.' >&2; exit 1; }
+          test -f "$app/Contents/Resources/FFMPEG-LICENSE.txt" || { echo 'Final macOS app is missing FFmpeg license.' >&2; exit 1; }
+          ! rg -n '/opt/homebrew|/usr/local|/Users/runner' "$app/Contents/Frameworks" || { echo 'Final macOS app contains a build-machine absolute path.' >&2; exit 1; }
       - name: Verify Windows artifacts
         if: ${{ inputs.bundle && matrix.platform == 'windows' }}
         shell: pwsh
         run: |
           if ($null -eq (Get-ChildItem 'target/release/bundle/nsis/*-setup.exe' -File | Select-Object -First 1)) { throw 'No Windows NSIS installer generated.' }
           if ($null -eq (Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1)) { throw 'No Windows MSI installer generated.' }
+          $bundleFiles = Get-ChildItem 'target/release/bundle' -File -Recurse
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -match 'av(codec|device|format|util)|sw(resample|scale).*\.dll$' } | Select-Object -First 1)) { throw 'Final Windows bundle has no FFmpeg DLL.' }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Final Windows bundle is missing FFmpeg manifest.' }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Final Windows bundle is missing FFmpeg license.' }
+          if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Final Windows bundle must not contain FFmpeg CLI executables.' }
       - name: Upload macOS artifacts
         if: ${{ inputs.bundle && matrix.platform == 'macos' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

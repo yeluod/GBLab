@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     ffi::CString,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicU8},
 };
 
 use rsmpeg::{
@@ -89,24 +89,18 @@ pub fn video_encoder_capabilities() -> VideoEncoderCapabilities {
     VideoEncoderCapabilities { encoders }
 }
 
-pub fn select_video_encoder(
+pub(super) fn video_encoder_candidates(
     settings: &CameraCaptureSettings,
-) -> MediaResult<VideoEncoderCapability> {
-    let capabilities = video_encoder_capabilities();
-    capabilities
+) -> Vec<VideoEncoderCapability> {
+    video_encoder_capabilities()
         .encoders
         .into_iter()
-        .find(|capability| {
+        .filter(|capability| {
             capability.codec == settings.video_codec
                 && (settings.encoder_backend == EncoderBackend::Auto
                     || capability.backend == settings.encoder_backend)
         })
-        .ok_or_else(|| {
-            MediaError::Camera(format!(
-                "没有可用于 {:?}/{:?} 的视频编码器",
-                settings.video_codec, settings.encoder_backend
-            ))
-        })
+        .collect()
 }
 
 fn capture_device_info(device: gblab_ffmpeg_device::NativeCaptureDevice) -> CaptureDeviceInfo {
@@ -119,13 +113,13 @@ fn capture_device_info(device: gblab_ffmpeg_device::NativeCaptureDevice) -> Capt
 /// `FFmpeg` 摄像头输入源。
 pub struct CameraMediaSource {
     settings: CameraCaptureSettings,
-    interrupt: Arc<AtomicBool>,
+    interrupt: Arc<AtomicU8>,
 }
 
 impl CameraMediaSource {
     /// 创建摄像头源描述。
     #[must_use]
-    pub const fn new(settings: CameraCaptureSettings, interrupt: Arc<AtomicBool>) -> Self {
+    pub const fn new(settings: CameraCaptureSettings, interrupt: Arc<AtomicU8>) -> Self {
         Self {
             settings,
             interrupt,
@@ -342,6 +336,7 @@ impl MediaSource for CameraMediaSource {
             audio_stream_index,
             audio_encoder,
             audio_time_base,
+            preview_enabled: true,
         })))
     }
 }
@@ -361,11 +356,16 @@ pub struct CameraSession {
     audio_stream_index: Option<usize>,
     audio_encoder: Option<CameraAudioEncoder>,
     audio_time_base: Option<MediaTimeBase>,
+    preview_enabled: bool,
 }
 
 impl CameraSession {
     pub(crate) const fn probe(&self) -> &Mp4ProbeResult {
         &self.probe
+    }
+
+    pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
+        self.preview_enabled = enabled;
     }
 
     pub(crate) const fn play(&mut self) {
@@ -445,11 +445,13 @@ impl CameraSession {
             .map_err(|error| MediaError::Camera(error.to_string()))?;
         let mut preview_frames = Vec::with_capacity(raw_frames.len());
         for frame in raw_frames {
-            preview_frames.push(
-                self.decoder
-                    .preview_frame(&frame)
-                    .map_err(|error| MediaError::Camera(error.to_string()))?,
-            );
+            if self.preview_enabled {
+                preview_frames.push(
+                    self.decoder
+                        .preview_frame(&frame)
+                        .map_err(|error| MediaError::Camera(error.to_string()))?,
+                );
+            }
             self.encoder.encode(&frame, self.video_time_base)?;
             while let Some(packet) = self.encoder.take_pending() {
                 self.pending_encoded.push_back(packet);
@@ -545,8 +547,8 @@ mod platform_tests {
 
     use super::{list_capture_devices, video_capture_capabilities, video_encoder_capabilities};
     use crate::media::{
-        AudioCodec, CameraCaptureSettings, FrameRateCapability, GlobalMediaRuntime,
-        MediaSourceStatus,
+        AudioCodec, BackpressurePolicy, CameraCaptureSettings, FrameRateCapability,
+        GlobalMediaRuntime, MediaConsumerKind, MediaSourceStatus,
     };
 
     #[test]
@@ -589,6 +591,9 @@ mod platform_tests {
         };
         let runtime = GlobalMediaRuntime::start();
         let handle = runtime.handle();
+        handle.attach_preview()?;
+        let mut live =
+            handle.subscribe(MediaConsumerKind::Live, 8, BackpressurePolicy::Disconnect)?;
 
         for _ in 0..2 {
             handle.open_camera(settings.clone())?;
@@ -600,6 +605,16 @@ mod platform_tests {
                 thread::sleep(Duration::from_millis(20));
             }
             assert!(handle.status().decoded_frames > 0);
+            handle.detach_preview()?;
+            let mut received_live_packet = false;
+            for _ in 0..100 {
+                if live.try_recv().is_ok() {
+                    received_live_packet = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(received_live_packet);
             let stopped = handle.stop()?;
             assert_eq!(stopped.source_status, MediaSourceStatus::Stopped);
         }

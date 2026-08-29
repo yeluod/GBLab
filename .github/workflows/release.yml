@@ -123,11 +123,14 @@ jobs:
           [[ ${#dmg[@]} -gt 0 ]] || { printf 'Missing macOS DMG artifact.\n' >&2; exit 1; }
           [[ ${#nsis[@]} -gt 0 ]] || { printf 'Missing Windows NSIS artifact.\n' >&2; exit 1; }
           [[ ${#msi[@]} -gt 0 ]] || { printf 'Missing Windows MSI artifact.\n' >&2; exit 1; }
-          find release-assets -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS.txt
+          (cd release-assets && : > SHA256SUMS.txt && while IFS= read -r -d '' file; do
+            checksum="$(sha256sum "$file" | awk '{print $1}')"
+            printf '%s  %s\n' "$checksum" "${file##*/}" >> SHA256SUMS.txt
+          done < <(find . -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) -print0 | sort -z))
           test -s release-assets/SHA256SUMS.txt
       - name: Verify draft tag and source SHA
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
@@ -143,7 +146,7 @@ jobs:
           [[ "$tag_sha" == "$RELEASE_SHA" ]] || { printf 'Release tag SHA mismatch: expected=%s actual=%s\\n' "$RELEASE_SHA" "$tag_sha" >&2; exit 1; }
       - name: Upload all artifacts to draft release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         shell: bash
@@ -153,7 +156,7 @@ jobs:
           gh release upload "$TAG_NAME" "${assets[@]}" --repo "$GH_REPO" --clobber
       - name: Publish completed draft release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         shell: bash

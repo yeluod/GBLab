@@ -32,7 +32,12 @@ if (manifest.license !== lock.license || manifest.linkMode !== lock.linkMode) {
   throw new Error('FFmpeg SDK license or link mode does not match lockfile');
 }
 if (manifest.architecture !== expectedArchitecture) {
-  throw new Error('FFmpeg SDK architecture mismatch: expected ' + expectedArchitecture + ', got ' + manifest.architecture);
+  throw new Error(
+    'FFmpeg SDK architecture mismatch: expected ' +
+      expectedArchitecture +
+      ', got ' +
+      manifest.architecture,
+  );
 }
 
 if (platform === 'macos') {

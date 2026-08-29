@@ -25,8 +25,9 @@ pub use hub::{
 };
 use mp4::Mp4MediaSource;
 pub use packet::{
-    AudioCodec, EncodedMediaCodec, EncodedMediaPacket, FrameRate, MediaTimeBase, MediaTrackKind,
-    RawAudioFrame, RawVideoFrame, VideoCodec,
+    AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket,
+    EncodedStreamDescriptor, FrameRate, MediaTimeBase, MediaTrackKind, RawAudioFrame,
+    RawVideoFrame, VideoCodec,
 };
 pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{
@@ -47,7 +48,9 @@ pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeRes
     use types::MediaSource;
     CameraMediaSource::new(
         settings.clone(),
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            gblab_ffmpeg_device::InterruptReason::None as u8,
+        )),
     )
     .probe()
 }

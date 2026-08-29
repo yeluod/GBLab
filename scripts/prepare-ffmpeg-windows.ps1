@@ -28,7 +28,6 @@ function Download-Archive {
 if (Test-Path $archive) {
   $actual = Get-Sha256 $archive
   if ($actual -ne $source.sha256) {
-    Write-Error "FFmpeg SDK checksum mismatch: expected=$($source.sha256) actual=$actual file=$archive"
     Remove-Item -Force $archive
     Download-Archive
   }

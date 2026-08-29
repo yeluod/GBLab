@@ -313,15 +313,6 @@ impl SourceReadOutput {
             end_of_stream: true,
         }
     }
-
-    pub(crate) const fn looped() -> Self {
-        Self {
-            packet: None,
-            preview_frames: Vec::new(),
-            looped: true,
-            end_of_stream: false,
-        }
-    }
 }
 
 impl MediaSourceSession {
@@ -344,6 +335,13 @@ impl MediaSourceSession {
             Self::Camera(session) => {
                 session.play();
             }
+        }
+    }
+
+    pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
+        match self {
+            Self::Mp4(session) => session.set_preview_enabled(enabled),
+            Self::Camera(session) => session.set_preview_enabled(enabled),
         }
     }
 

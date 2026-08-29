@@ -58,7 +58,14 @@ impl MediaClock {
         let duration = source_time_base
             .rescale(packet.duration.max(0), MediaTimeBase::MPEG_CLOCK)
             .max(0);
-        let first_timestamp = pts.or(dts).unwrap_or(0);
+        // Use the earliest valid decode/presentation timestamp as the iteration
+        // origin.  Taking PTS first can leave a negative DTS in the normalized
+        // session timeline and break downstream PS/RTP timestamp contracts.
+        let first_timestamp = match (pts, dts) {
+            (Some(pts), Some(dts)) => pts.min(dts),
+            (Some(timestamp), None) | (None, Some(timestamp)) => timestamp,
+            (None, None) => 0,
+        };
         let origin = *self.iteration_origin.get_or_insert(first_timestamp);
         pts = pts.map(|value| {
             value
@@ -143,8 +150,8 @@ mod tests {
         };
         clock.normalize(&mut packet);
 
-        assert_eq!(packet.pts, Some(0));
-        assert_eq!(packet.dts, Some(-3_600));
+        assert_eq!(packet.pts, Some(3_600));
+        assert_eq!(packet.dts, Some(0));
         assert!(packet.dts < packet.pts);
     }
 

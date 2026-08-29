@@ -8,7 +8,6 @@ export enum MediaSourceType {
 export enum VideoCodec {
   H264 = 'h264',
   H265 = 'h265',
-  RawVideo = 'raw-video',
 }
 
 /** 可供采集音频使用的编码。 */
@@ -16,7 +15,6 @@ export enum AudioCodec {
   G711A = 'g711a',
   G711U = 'g711u',
   Aac = 'aac',
-  Pcm = 'pcm',
 }
 
 /** 编码后端；第一阶段只开放自动选择。 */

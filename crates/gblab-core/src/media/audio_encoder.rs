@@ -31,6 +31,7 @@ pub(super) struct CameraAudioEncoder {
     pending: VecDeque<EncodedMediaPacket>,
     codec_configuration: Option<Bytes>,
     config_sent: bool,
+    source_time_base: Option<MediaTimeBase>,
 }
 
 impl CameraAudioEncoder {
@@ -132,6 +133,7 @@ impl CameraAudioEncoder {
             pending: VecDeque::new(),
             codec_configuration,
             config_sent: false,
+            source_time_base: None,
         })
     }
 
@@ -140,6 +142,7 @@ impl CameraAudioEncoder {
         packet: &AVPacket,
         source_time_base: MediaTimeBase,
     ) -> MediaResult<()> {
+        self.source_time_base = Some(source_time_base);
         self.decoder
             .send_packet(Some(packet))
             .map_err(|error| MediaError::Camera(format!("提交麦克风 packet 失败：{error}")))?;
@@ -170,7 +173,10 @@ impl CameraAudioEncoder {
         }
         loop {
             match self.decoder.receive_frame() {
-                Ok(frame) => self.encode_frame(&frame, MediaTimeBase::MPEG_CLOCK)?,
+                Ok(frame) => self.encode_frame(
+                    &frame,
+                    self.source_time_base.unwrap_or(MediaTimeBase::MPEG_CLOCK),
+                )?,
                 Err(RsmpegError::DecoderDrainError | RsmpegError::DecoderFlushedError) => break,
                 Err(error) => {
                     return Err(MediaError::Camera(format!("排空麦克风解码器失败：{error}")));
@@ -222,7 +228,6 @@ impl CameraAudioEncoder {
         }
         if input.pts != ffi::AV_NOPTS_VALUE {
             output.set_pts(source_time_base.rescale(input.pts, self.time_base));
-            self.next_pts = output.pts.saturating_add(i64::from(output.nb_samples));
         }
         self.submit_output_frame(&output)
     }
