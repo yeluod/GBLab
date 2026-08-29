@@ -2,108 +2,92 @@
 set -euo pipefail
 
 output_root="${1:-.ffmpeg-sdk/macos}"
-ffmpeg_version="${FFMPEG_VERSION:-8.1.2}"
-source_url="${FFMPEG_SOURCE_URL:-https://ffmpeg.org/releases/ffmpeg-${ffmpeg_version}.tar.xz}"
-source_sha256="${FFMPEG_SOURCE_SHA256:-464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c}"
-
+lockfile="${FFMPEG_SDK_LOCKFILE:-toolchains/ffmpeg-sdk.lock.json}"
+architecture="$(uname -m)"
+platform_key="macos-$architecture"
+command -v jq >/dev/null 2>&1 || { printf 'jq is required to prepare FFmpeg.\n' >&2; exit 1; }
+[[ -f "$lockfile" ]] || { printf 'FFmpeg lockfile not found: %s\n' "$lockfile" >&2; exit 1; }
+source_url="$(jq -er ".platforms[\"$platform_key\"].source.url" "$lockfile")"
+filename="$(jq -er ".platforms[\"$platform_key\"].source.filename" "$lockfile")"
+expected_sha256="$(jq -er ".platforms[\"$platform_key\"].source.sha256" "$lockfile")"
+ffmpeg_version="$(jq -er '.ffmpegVersion' "$lockfile")"
 mkdir -p "$output_root"
 output_root="$(cd "$output_root" && pwd)"
-archive="$output_root/ffmpeg-${ffmpeg_version}.tar.xz"
-source_dir="$output_root/source/ffmpeg-${ffmpeg_version}"
+archive="$output_root/$filename"
+source_root="$output_root/source"
 install_dir="$output_root/install"
-
-if [[ ! -f "$archive" ]]; then
-  curl --fail --location --retry 3 --output "$archive" "$source_url"
+download_archive() {
+  printf 'Downloading FFmpeg source: platform=macos architecture=%s version=%s url=%s\n' "$architecture" "$ffmpeg_version" "$source_url"
+  curl --fail --location --retry 3 --retry-all-errors --show-error --output "$archive" "$source_url" || {
+    printf 'FFmpeg source download failed: platform=macos architecture=%s filename=%s url=%s\n' "$architecture" "$filename" "$source_url" >&2
+    exit 1
+  }
+}
+if [[ -f "$archive" ]]; then
+  actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+    printf 'FFmpeg source checksum mismatch: expected=%s actual=%s file=%s\n' "$expected_sha256" "$actual_sha256" "$archive" >&2
+    rm -f "$archive"
+    download_archive
+  fi
+else
+  download_archive
 fi
-printf '%s  %s\n' "$source_sha256" "$archive" | shasum -a 256 -c -
-
+actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+[[ "$actual_sha256" == "$expected_sha256" ]] || { printf 'FFmpeg source checksum mismatch after download: expected=%s actual=%s\n' "$expected_sha256" "$actual_sha256" >&2; exit 1; }
 if [[ ! -f "$install_dir/lib/libavformat.dylib" ]]; then
-  rm -rf "$output_root/source" "$install_dir"
-  mkdir -p "$output_root/source"
-  tar -xJf "$archive" -C "$output_root/source"
+  rm -rf "$source_root" "$install_dir"
+  mkdir -p "$source_root"
+  tar -xJf "$archive" -C "$source_root"
+  source_dir="$(find "$source_root" -mindepth 1 -maxdepth 2 -type d -name 'ffmpeg-*' -print -quit)"
+  [[ -n "$source_dir" ]] || { printf 'Unable to locate FFmpeg source directory in %s.\n' "$archive" >&2; exit 1; }
   pushd "$source_dir" >/dev/null
-  ./configure \
-    --prefix="$install_dir" \
-    --disable-programs \
-    --disable-doc \
-    --disable-debug \
-    --disable-gpl \
-    --disable-version3 \
-    --disable-nonfree \
-    --disable-static \
-    --enable-shared \
-    --enable-pic \
-    --disable-network
+  ./configure --prefix="$install_dir" --disable-programs --disable-doc --disable-debug --disable-gpl --disable-version3 --disable-nonfree --disable-static --enable-shared --enable-pic --disable-network
   make -j"$(sysctl -n hw.ncpu)"
   make install
   popd >/dev/null
+else
+  source_dir="$(find "$source_root" -mindepth 1 -maxdepth 2 -type d -name 'ffmpeg-*' -print -quit)"
 fi
-
 framework_dir="$output_root/frameworks"
 rm -rf "$framework_dir"
 mkdir -p "$framework_dir"
-for name in avcodec avdevice avfilter avformat avutil swresample swscale; do
-  source_lib=""
-  for candidate in "$install_dir/lib/lib${name}."*.dylib; do
-    candidate_base="$(basename "$candidate")"
-    if [[ "$candidate_base" =~ ^lib${name}\.[0-9]+\.dylib$ ]]; then
-      source_lib="$candidate"
-      break
-    fi
-  done
-  if [[ -z "$source_lib" ]]; then
-    source_lib="$(find "$install_dir/lib" -maxdepth 1 -name "lib${name}.*.dylib" | sort | head -n 1)"
-  fi
-  if [[ -z "$source_lib" ]]; then
-    printf 'Missing FFmpeg library: %s\n' "$name" >&2
-    exit 1
-  fi
+for name in $(jq -er '.requiredLibraries[]' "$lockfile"); do
+  source_lib="$(find "$install_dir/lib" -maxdepth 1 -name "lib${name}.*.dylib" -print -quit)"
+  [[ -n "$source_lib" ]] || { printf 'Missing FFmpeg library: %s\n' "$name" >&2; exit 1; }
   cp -L "$source_lib" "$framework_dir/$(basename "$source_lib")"
 done
-
 for library in "$framework_dir"/*.dylib; do
   base="$(basename "$library")"
   install_name_tool -id "@rpath/$base" "$library"
-  while IFS= read -r dependency; do
+  for dependency in $(otool -L "$library" | sed -n 's/^[[:space:]]*\([^ ]*\.dylib\).*/\1/p'); do
     dependency_base="$(basename "$dependency")"
     case "$dependency_base" in
-      libav*.dylib|libsw*.dylib)
-        install_name_tool -change "$dependency" "@rpath/$dependency_base" "$library"
-        ;;
+      libav*.dylib|libsw*.dylib) install_name_tool -change "$dependency" "@rpath/$dependency_base" "$library" ;;
     esac
-  done < <(otool -L "$library" | sed -n 's/^[[:space:]]*\([^ ]*\.dylib\).*/\1/p')
+  done
 done
-
+cp "$lockfile" "$output_root/lockfile.json"
 cat > "$output_root/manifest.json" <<EOF
 {
-  "source": "$source_url",
-  "version": "$ffmpeg_version",
-  "sourceSha256": "$source_sha256",
+  "schemaVersion": $(jq -er '.schemaVersion' "$lockfile"),
+  "sdkRevision": $(jq -er '.sdkRevision' "$lockfile"),
+  "ffmpegVersion": "$ffmpeg_version",
   "platform": "macos",
-  "architecture": "$(uname -m)",
-  "license": "LGPL-2.1-or-later"
+  "architecture": "$architecture",
+  "linkMode": $(jq -er '.linkMode' "$lockfile"),
+  "license": $(jq -er '.license' "$lockfile"),
+  "source": "$source_url",
+  "archiveSha256": "$actual_sha256"
 }
 EOF
-
 if [[ ! -f "$output_root/FFMPEG-LICENSE.txt" ]]; then
   for license_file in COPYING.LGPLv2.1 COPYING.LGPLv2 COPYING; do
-    if [[ -f "$source_dir/$license_file" ]]; then
-      cp "$source_dir/$license_file" "$output_root/FFMPEG-LICENSE.txt"
-      break
-    fi
+    if [[ -f "$source_dir/$license_file" ]]; then cp "$source_dir/$license_file" "$output_root/FFMPEG-LICENSE.txt"; break; fi
   done
 fi
-[[ -f "$output_root/FFMPEG-LICENSE.txt" ]] || {
-  printf 'FFmpeg license file was not found in source archive.\n' >&2
-  exit 1
-}
-
+[[ -f "$output_root/FFMPEG-LICENSE.txt" ]] || { printf 'FFmpeg license file was not found in source archive.\n' >&2; exit 1; }
 if [[ -n "${GITHUB_ENV:-}" ]]; then
-  {
-    printf 'FFMPEG_INCLUDE_DIR=%s\n' "$install_dir/include"
-    printf 'FFMPEG_LIBS_DIR=%s\n' "$install_dir/lib"
-    printf 'FFMPEG_LINK_MODE=dynamic\n'
-  } >> "$GITHUB_ENV"
+  { printf 'FFMPEG_INCLUDE_DIR=%s\n' "$install_dir/include"; printf 'FFMPEG_LIBS_DIR=%s\n' "$install_dir/lib"; printf 'FFMPEG_LINK_MODE=dynamic\n'; } >> "$GITHUB_ENV"
 fi
-
 printf 'FFmpeg macOS SDK ready: %s\n' "$output_root"

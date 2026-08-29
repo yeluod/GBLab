@@ -50,12 +50,14 @@ just verify
 
 macOS 与 Windows 应用分别在对应原生平台构建和验证。
 
+桌面构建统一由 .github/workflows/build-desktop.yml 提供；FFmpeg SDK 的版本、来源、架构、许可证和 SHA-256 统一记录在 toolchains/ffmpeg-sdk.lock.json。CI 使用内容寻址缓存并在缓存恢复后重新校验 SDK，正常构建不依赖 rolling asset ID。
+
 ## 发布
 
 `main` 分支使用 Release Please 自动维护版本号、`CHANGELOG.md`、`v<version>` Tag 和 GitHub Release：
 
 1. 功能提交合并到 `main` 后，Release Please 创建或更新 Release PR。
-2. 合并 Release PR 后，GitHub Actions 分别在 macOS 与 Windows 原生 runner 构建 DMG、NSIS 和 MSI。
-3. 两个平台的安装包全部上传成功后，草稿 Release 自动发布；任一构建失败时保留草稿，不发布不完整版本。
+2. 合并 Release PR 后，Release 工作流以 Release Please 输出的精确提交 SHA 调用统一桌面构建，在 macOS 与 Windows 原生 runner 构建 DMG、NSIS 和 MSI。
+3. Builder 只上传 Actions artifact；Publisher 校验完整性、生成 SHA256SUMS.txt，再一次性上传并发布草稿 Release。任一构建失败时保留草稿，不发布不完整版本。
 
 提交信息使用 Conventional Commits，例如 `feat: ...`、`fix: ...`。

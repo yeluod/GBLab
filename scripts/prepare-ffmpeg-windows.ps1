@@ -1,26 +1,42 @@
 param(
-  [string]$OutputRoot = '.ffmpeg-sdk\windows'
+  [string]$OutputRoot = '.ffmpeg-sdk\\windows',
+  [string]$LockFile = 'toolchains/ffmpeg-sdk.lock.json'
 )
 
 $ErrorActionPreference = 'Stop'
-
-$releaseId = '377995260'
-$assetId = '532622813'
-$assetSha256 = '54b56d8f7e3fdeb3a987650a93cf4d4ed2f446f893f109dce191deec2007d155'
-$assetUrl = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/assets/$assetId"
-New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
-$root = (Resolve-Path $OutputRoot).Path
-$archive = Join-Path $root 'ffmpeg-win64-lgpl-shared-8.1.zip'
+$architecture = 'x86_64'
+$lock = Get-Content -Raw -Path $LockFile | ConvertFrom-Json
+$platform = $lock.platforms.'windows-x86_64'
+$source = $platform.source
+$root = (New-Item -ItemType Directory -Force -Path $OutputRoot).FullName
+$archive = Join-Path $root $source.filename
 $extractRoot = Join-Path $root 'extract'
 
-if (-not (Test-Path $archive)) {
-  Invoke-WebRequest -Headers @{ Accept = 'application/octet-stream' } -Uri $assetUrl -OutFile $archive
+function Get-Sha256([string]$Path) {
+  return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
 }
 
-$actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
-if ($actualSha256 -ne $assetSha256) {
-  throw "FFmpeg archive checksum mismatch. Expected $assetSha256, got $actualSha256"
+function Download-Archive {
+  Write-Host "Downloading FFmpeg SDK: platform=windows architecture=$architecture version=$($lock.ffmpegVersion) url=$($source.url)"
+  try {
+    Invoke-WebRequest -MaximumRedirection 5 -Uri $source.url -OutFile $archive
+  } catch {
+    throw "FFmpeg SDK download failed: platform=windows architecture=$architecture filename=$($source.filename) url=$($source.url). $($_.Exception.Message)"
+  }
 }
+
+if (Test-Path $archive) {
+  $actual = Get-Sha256 $archive
+  if ($actual -ne $source.sha256) {
+    Write-Error "FFmpeg SDK checksum mismatch: expected=$($source.sha256) actual=$actual file=$archive"
+    Remove-Item -Force $archive
+    Download-Archive
+  }
+} else {
+  Download-Archive
+}
+$actual = Get-Sha256 $archive
+if ($actual -ne $source.sha256) { throw "FFmpeg SDK checksum mismatch after download: expected=$($source.sha256) actual=$actual" }
 
 if (Test-Path $extractRoot) { Remove-Item -Recurse -Force $extractRoot }
 Expand-Archive -Path $archive -DestinationPath $extractRoot
@@ -35,27 +51,26 @@ foreach ($directory in @('include', 'lib', 'bin')) {
   Copy-Item -Recurse -Force (Join-Path $packageRoot.FullName $directory) $destination
 }
 
-$requiredLibraries = @('avcodec', 'avdevice', 'avfilter', 'avformat', 'avutil', 'swresample', 'swscale')
-foreach ($name in $requiredLibraries) {
-  if (-not (Get-ChildItem (Join-Path $root 'lib') -Filter "*$name*.lib")) { throw "Missing FFmpeg import library: $name" }
-  if (-not (Get-ChildItem (Join-Path $root 'bin') -Filter "*$name*.dll")) { throw "Missing FFmpeg runtime DLL: $name" }
+foreach ($name in $lock.requiredLibraries) {
+  if ($null -eq (Get-ChildItem (Join-Path $root 'lib') -Filter "*$name*.lib" | Select-Object -First 1)) { throw "Missing FFmpeg import library: $name" }
+  if ($null -eq (Get-ChildItem (Join-Path $root 'bin') -Filter "*$name*.dll" | Select-Object -First 1)) { throw "Missing FFmpeg runtime DLL: $name" }
 }
 
-$manifest = @{
-  source = $assetUrl
-  releaseId = $releaseId
-  assetId = $assetId
-  version = '8.1'
-  archiveSha256 = $assetSha256
+Copy-Item -Force $LockFile (Join-Path $root 'lockfile.json')
+$manifest = [ordered]@{
+  schemaVersion = $lock.schemaVersion
+  sdkRevision = $lock.sdkRevision
+  ffmpegVersion = $lock.ffmpegVersion
   platform = 'windows'
-  architecture = 'x86_64'
-  license = 'LGPL-2.1-or-later'
-} | ConvertTo-Json
-Set-Content -Path (Join-Path $root 'manifest.json') -Value $manifest -Encoding UTF8
-$licenseFile = Get-ChildItem -Path $packageRoot.FullName -File -Recurse |
-  Where-Object { $_.Name -match '^(LICENSE|COPYING).*' } |
-  Select-Object -First 1
-if ($null -eq $licenseFile) { throw "FFmpeg license file was not found in SDK archive" }
+  architecture = $architecture
+  linkMode = $lock.linkMode
+  license = $lock.license
+  source = $source.url
+  archiveSha256 = $actual
+}
+$manifest | ConvertTo-Json | Set-Content -Path (Join-Path $root 'manifest.json') -Encoding UTF8
+$licenseFile = Get-ChildItem -Path $packageRoot.FullName -File -Recurse | Where-Object { $_.Name -match '^(LICENSE|COPYING).*' } | Select-Object -First 1
+if ($null -eq $licenseFile) { throw 'FFmpeg license file was not found in SDK archive' }
 Copy-Item -Force $licenseFile.FullName (Join-Path $root 'FFMPEG-LICENSE.txt')
 
 if ($env:GITHUB_ENV) {
@@ -65,5 +80,4 @@ if ($env:GITHUB_ENV) {
     'FFMPEG_LINK_MODE=dynamic'
   ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
-
 Write-Host "FFmpeg Windows SDK ready: $root"

@@ -20,6 +20,20 @@ const requiredResource = (filePath) => {
   if (!fs.existsSync(resolved)) throw new Error(`Missing FFmpeg resource: ${resolved}`);
   return resolved;
 };
+const lockPath = path.join(projectRoot, 'toolchains', 'ffmpeg-sdk.lock.json');
+const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+const manifestPath = requiredResource(path.join(sdkRoot, 'manifest.json'));
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const expectedArchitecture = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+if (manifest.ffmpegVersion !== lock.ffmpegVersion || manifest.sdkRevision !== lock.sdkRevision) {
+  throw new Error('FFmpeg SDK does not match lockfile version or revision');
+}
+if (manifest.license !== lock.license || manifest.linkMode !== lock.linkMode) {
+  throw new Error('FFmpeg SDK license or link mode does not match lockfile');
+}
+if (manifest.architecture !== expectedArchitecture) {
+  throw new Error('FFmpeg SDK architecture mismatch: expected ' + expectedArchitecture + ', got ' + manifest.architecture);
+}
 
 if (platform === 'macos') {
   const frameworkRoot = path.join(sdkRoot, 'frameworks');
@@ -30,7 +44,7 @@ if (platform === 'macos') {
     .map((name) => configPathValue(path.join(frameworkRoot, name)));
   if (frameworks.length === 0) throw new Error(`No macOS FFmpeg dylibs found in ${frameworkRoot}`);
   config.bundle.resources = [
-    requiredResource(path.join(sdkRoot, 'manifest.json')),
+    manifestPath,
     requiredResource(path.join(sdkRoot, 'FFMPEG-LICENSE.txt')),
   ];
   config.bundle.macOS = { ...(config.bundle.macOS ?? {}), frameworks };
@@ -40,7 +54,7 @@ if (platform === 'macos') {
   if (dlls.length === 0) throw new Error(`No Windows FFmpeg DLLs found in ${binRoot}`);
   config.bundle.resources = {
     [`${configPathValue(binRoot)}/*.dll`]: '',
-    [requiredResource(path.join(sdkRoot, 'manifest.json'))]: '',
+    [manifestPath]: '',
     [requiredResource(path.join(sdkRoot, 'FFMPEG-LICENSE.txt'))]: '',
   };
 } else {

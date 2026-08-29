@@ -4,109 +4,124 @@ on:
   push:
     branches: [develop]
   pull_request:
-    branches:
-      - develop
-      - main
+    branches: [develop, main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow + '-' + (github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: true
+
 jobs:
-  pull-request-title:
-    name: Pull request title
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    env:
-      PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+  workflow-static:
+    name: Workflow and script static checks
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Validate Conventional Commit title
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+      - name: Actionlint
         shell: bash
         run: |
           set -euo pipefail
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint"
+      - name: Validate JSON manifests
+        run: node -e "JSON.parse(require('fs').readFileSync('toolchains/ffmpeg-sdk.lock.json', 'utf8')); JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'))"
+      - name: Validate pinned workflow actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if rg -n '^[[:space:]-]*uses: [^[:space:]]+@(v[0-9]|master|main)([[:space:]]|$)' .github; then
+            echo 'Every external GitHub Action must be pinned to a full commit SHA.' >&2
+            exit 1
+          fi
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = $null
+          foreach ($path in @('scripts/prepare-ffmpeg-windows.ps1', 'scripts/verify-ffmpeg-windows.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$null, [ref]$errors) | Out-Null
+          }
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
 
+  pull-request-title:
+    name: Pull request title
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate Conventional Commit title
+        env:
+          PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
           title_pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([[:alnum:]_./-]+\))?(!)?:[[:space:]]+.+$'
           if [[ ! "$PULL_REQUEST_TITLE" =~ $title_pattern ]]; then
-            printf '%s\n' \
-              'Pull request title must follow Conventional Commit format.' \
-              'Examples:' \
-              '  feat(media): improve preview controls' \
-              '  fix(release): upload desktop installers' \
-              '  chore(main): release 0.4.0' >&2
+            printf '%s\n' 'Pull request title must follow Conventional Commit format.' 'Examples: feat(media): improve preview controls' '             fix(release): upload desktop installers' >&2
             exit 1
           fi
 
   quick-develop:
-    name: Quick check (develop)
+    name: Quick develop checks
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       - uses: ./.github/actions/setup-build
       - uses: ./.github/actions/prepare-ffmpeg
         with:
           platform: linux
-      - name: Check frontend formatting
-        run: pnpm run format:check
-      - name: Lint frontend
-        run: pnpm run lint
-      - name: Check frontend types
-        run: pnpm run type:check
-      - name: Check Rust core
-        run: cargo check -p gblab-core --locked
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run type:check
+      - run: cargo check -p gblab-core --locked
 
-  quality:
-    name: Quality
+  frontend-quality:
+    name: Frontend quality
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       - uses: ./.github/actions/setup-build
         with:
+          rust: 'false'
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run test:run
+      - run: pnpm run build
+
+  rust-quality:
+    name: Rust quality
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: ./.github/actions/setup-build
+        with:
+          frontend: 'false'
           rust-components: clippy
       - uses: ./.github/actions/prepare-ffmpeg
         with:
           platform: linux
-      - name: Verify frontend
-        run: pnpm run check
-      - name: Verify Rust
-        run: cargo clippy -p gblab-core --all-targets --all-features --locked -- -D warnings
-      - name: Test Rust
-        run: cargo test -p gblab-core --locked
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p gblab-core -p gblab-ffmpeg-device --all-targets --all-features --locked -- -D warnings
+      - run: cargo test -p gblab-core -p gblab-ffmpeg-device --locked
 
-  verify:
-    name: Verify (${{ matrix.os }})
+  native-verify:
+    name: Native desktop verification
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-build
-      - uses: ./.github/actions/prepare-ffmpeg
-        if: ${{ matrix.os == 'macos-latest' || matrix.os == 'windows-latest' }}
-        with:
-          platform: ${{ matrix.os == 'macos-latest' && 'macos' || 'windows' }}
-      - name: Generate release Tauri configuration
-        if: ${{ matrix.os == 'macos-latest' || matrix.os == 'windows-latest' }}
-        shell: bash
-        run: |
-          node scripts/generate-tauri-release-config.mjs \
-            --platform "${{ matrix.os == 'macos-latest' && 'macos' || 'windows' }}" \
-            --sdk-root "${{ matrix.os == 'macos-latest' && '.ffmpeg-sdk/macos' || '.ffmpeg-sdk/windows' }}" \
-            --output src-tauri/tauri.release.generated.json
-      - name: Build desktop without bundle
-        run: pnpm exec tauri build --no-bundle --config src-tauri/tauri.release.generated.json
-      - name: Stage Windows FFmpeg DLLs beside application
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: pwsh
-        run: Copy-Item -Force .ffmpeg-sdk\windows\bin\*.dll target\release\
-      - name: Verify macOS FFmpeg linkage
-        if: ${{ matrix.os == 'macos-latest' }}
-        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks
-      - name: Verify Windows FFmpeg linkage
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: pwsh
-        run: ./scripts/verify-ffmpeg-windows.ps1 -Binary target\release\gblab-desktop.exe -SdkRoot .ffmpeg-sdk\windows
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      platform: all
+      ref: ${{ github.sha }}
+      bundle: false
+    secrets: inherit
