@@ -1,6 +1,6 @@
 //! `GBLab` 的高性能 GB28181 多设备模拟核心。
 //!
-//! 本 crate 独立于 Tauri，负责领域模型、设备与场景编排、Tokio 生命周期、
+//! 本 crate 独立于 Tauri，负责领域模型、设备运行编排、Tokio 生命周期、
 //! SIP/GB28181 适配和 JSON 配置存储。
 
 #![deny(missing_docs)]

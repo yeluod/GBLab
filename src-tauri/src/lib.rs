@@ -7,10 +7,7 @@ mod commands;
 mod dto;
 
 use app_state::AppState;
-use gblab_core::{
-    CoreService,
-    runtime::{RegistrationHandle, simulator::SimulatorRuntimeHandle},
-};
+use gblab_core::{CoreService, runtime::RegistrationHandle};
 use tauri::{Emitter, Manager};
 
 const REGISTRATION_SNAPSHOT_EVENT: &str = "registration-snapshot";
@@ -29,12 +26,9 @@ pub fn run() -> Result<(), tauri::Error> {
             let app_data_dir = app.path().app_data_dir()?;
             let configuration_path = app_data_dir.join("gblab.config.json");
             let core = CoreService::open(&configuration_path)?;
-            let simulator_devices = core.device_snapshot().devices;
             let (registration, supervisor) = RegistrationHandle::prepare();
             tauri::async_runtime::spawn(supervisor);
-            let (simulator, simulator_actor) = SimulatorRuntimeHandle::prepare(simulator_devices);
-            tauri::async_runtime::spawn(simulator_actor);
-            let state = AppState::new(core, registration, simulator);
+            let state = AppState::new(core, registration);
             let mut registration_events = state.registration.subscribe();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -102,25 +96,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::control_device,
             commands::control_ptz,
             commands::get_registration_snapshot,
-            commands::get_registration_device_states,
-            commands::get_simulator_runtime_snapshot,
-            commands::get_simulator_operations,
-            commands::get_simulator_events,
-            commands::get_simulator_queries,
-            commands::get_simulator_transactions,
-            commands::get_simulator_recordings,
-            commands::get_simulator_scenarios,
-            commands::set_simulator_fault_profile,
-            commands::simulate_device_control,
-            commands::simulate_ptz_control,
-            commands::simulate_alarm,
-            commands::simulate_position,
-            commands::simulate_recording,
-            commands::simulate_subscription,
-            commands::execute_simulator_query,
-            commands::save_simulator_scenario,
-            commands::start_simulator_scenario,
-            commands::set_simulator_scenario_status
+            commands::get_registration_device_states
         ])
         .build(tauri::generate_context!())?;
     app.run(|app_handle, event| {

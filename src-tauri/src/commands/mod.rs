@@ -450,11 +450,6 @@ pub async fn add_devices_in_batch(
     })
     .await
     .map_err(|_| CommandErrorDto::task_failed())??;
-    state
-        .simulator
-        .sync_devices(snapshot.devices.clone())
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))?;
     Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
@@ -481,11 +476,6 @@ pub async fn clear_devices(
     })
     .await
     .map_err(|_| CommandErrorDto::task_failed())??;
-    state
-        .simulator
-        .sync_devices(snapshot.devices.clone())
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))?;
     Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
@@ -515,11 +505,6 @@ pub async fn update_device(
     })
     .await
     .map_err(|_| CommandErrorDto::task_failed())??;
-    state
-        .simulator
-        .sync_devices(snapshot.devices.clone())
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))?;
     Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
@@ -547,11 +532,6 @@ pub async fn delete_device(
     })
     .await
     .map_err(|_| CommandErrorDto::task_failed())??;
-    state
-        .simulator
-        .sync_devices(snapshot.devices.clone())
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))?;
     Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
@@ -707,245 +687,4 @@ pub async fn get_registration_device_states(
         .device_states()
         .await
         .map_err(|error| CommandErrorDto::registration(&error))
-}
-
-/// 返回本地模拟器统一运行态。
-#[tauri::command]
-pub fn get_simulator_runtime_snapshot(
-    state: State<'_, AppState>,
-) -> gblab_core::runtime::simulator::SimulatorRuntimeSnapshot {
-    state.simulator.snapshot()
-}
-
-/// 返回本地模拟器最近操作记录。
-#[tauri::command]
-pub async fn get_simulator_operations(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::OperationRecord>, CommandErrorDto> {
-    state
-        .simulator
-        .operations()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 返回本地模拟器运行事件。
-#[tauri::command]
-pub async fn get_simulator_events(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::RuntimeEventRecord>, CommandErrorDto> {
-    state
-        .simulator
-        .events()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 返回统一查询历史。
-#[tauri::command]
-pub async fn get_simulator_queries(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::QueryResult>, CommandErrorDto> {
-    state
-        .simulator
-        .queries()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 返回 SIP 事务可观察投影。
-#[tauri::command]
-pub async fn get_simulator_transactions(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::TransactionRecord>, CommandErrorDto> {
-    state
-        .simulator
-        .transactions()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 返回本地录像索引。
-#[tauri::command]
-pub async fn get_simulator_recordings(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::RecordingEntry>, CommandErrorDto> {
-    state
-        .simulator
-        .recordings()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 返回场景运行状态。
-#[tauri::command]
-pub async fn get_simulator_scenarios(
-    state: State<'_, AppState>,
-) -> Result<Vec<gblab_core::runtime::simulator::ScenarioRuntimeState>, CommandErrorDto> {
-    state
-        .simulator
-        .scenarios()
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 更新本地故障注入配置。
-#[tauri::command]
-pub async fn set_simulator_fault_profile(
-    profile: gblab_core::runtime::simulator::FaultProfile,
-    state: State<'_, AppState>,
-) -> Result<(), CommandErrorDto> {
-    state
-        .simulator
-        .set_fault_profile(profile)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 执行类型化设备控制。
-#[tauri::command]
-pub async fn simulate_device_control(
-    device_id: String,
-    command: gblab_core::runtime::simulator::DeviceControlCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .control_device(device_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 执行类型化 PTZ 控制。
-#[tauri::command]
-pub async fn simulate_ptz_control(
-    device_id: String,
-    channel_id: String,
-    command: gblab_core::runtime::simulator::PtzCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .control_ptz(device_id, channel_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 更新本地报警状态和周期计划。
-#[tauri::command]
-pub async fn simulate_alarm(
-    device_id: String,
-    channel_id: String,
-    command: gblab_core::runtime::simulator::AlarmCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .update_alarm(device_id, channel_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 更新本地移动位置和周期计划。
-#[tauri::command]
-pub async fn simulate_position(
-    device_id: String,
-    channel_id: String,
-    command: gblab_core::runtime::simulator::PositionCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .update_position(device_id, channel_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 控制本地模拟录像生命周期并生成可查询录像索引。
-#[tauri::command]
-pub async fn simulate_recording(
-    device_id: String,
-    channel_id: String,
-    command: gblab_core::runtime::simulator::RecordingCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .control_recording(device_id, channel_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 控制本地订阅建立、刷新、取消、失败和到期状态。
-#[tauri::command]
-pub async fn simulate_subscription(
-    device_id: String,
-    channel_id: String,
-    command: gblab_core::runtime::simulator::SubscriptionCommand,
-    mode: gblab_core::runtime::simulator::ExecutionMode,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::OperationRecord, CommandErrorDto> {
-    state
-        .simulator
-        .control_subscription(device_id, channel_id, command, mode)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 执行统一本地查询。
-#[tauri::command]
-pub async fn execute_simulator_query(
-    request: gblab_core::runtime::simulator::QueryRequest,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::QueryResult, CommandErrorDto> {
-    state
-        .simulator
-        .query(request)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 保存场景定义到当前运行内存。
-#[tauri::command]
-pub async fn save_simulator_scenario(
-    definition: gblab_core::runtime::simulator::ScenarioDefinition,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::ScenarioRuntimeState, CommandErrorDto> {
-    state
-        .simulator
-        .save_scenario(definition)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 启动场景。
-#[tauri::command]
-pub async fn start_simulator_scenario(
-    id: gblab_core::runtime::simulator::ScenarioId,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::ScenarioRuntimeState, CommandErrorDto> {
-    state
-        .simulator
-        .start_scenario(id)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
-}
-
-/// 暂停、继续或停止场景。
-#[tauri::command]
-pub async fn set_simulator_scenario_status(
-    id: gblab_core::runtime::simulator::ScenarioId,
-    status: gblab_core::runtime::simulator::ScenarioStatus,
-    state: State<'_, AppState>,
-) -> Result<gblab_core::runtime::simulator::ScenarioRuntimeState, CommandErrorDto> {
-    state
-        .simulator
-        .set_scenario_status(id, status)
-        .await
-        .map_err(|error| CommandErrorDto::simulator(&error))
 }

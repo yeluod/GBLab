@@ -394,13 +394,6 @@ impl CommandErrorDto {
             message: error.to_string(),
         }
     }
-
-    pub fn simulator(error: &gblab_core::runtime::simulator::SimulatorRuntimeError) -> Self {
-        Self {
-            code: "simulator_error",
-            message: error.to_string(),
-        }
-    }
 }
 
 #[derive(Clone, Serialize)]

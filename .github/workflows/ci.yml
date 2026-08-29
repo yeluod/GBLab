@@ -30,7 +30,7 @@ jobs:
             printf '%s\n' \
               'Pull request title must follow Conventional Commit format.' \
               'Examples:' \
-              '  feat(simulator): add device scenario' \
+              '  feat(media): improve preview controls' \
               '  fix(release): upload desktop installers' \
               '  chore(main): release 0.4.0' >&2
             exit 1

@@ -15,26 +15,6 @@ export const router = createRouter({
       component: () => import('@/pages/devices-page.vue'),
     },
     {
-      path: '/simulation',
-      name: 'Simulation',
-      component: () => import('@/pages/simulation-page.vue'),
-    },
-    {
-      path: '/query-console',
-      name: 'QueryConsole',
-      component: () => import('@/pages/query-console-page.vue'),
-    },
-    {
-      path: '/scenarios',
-      name: 'Scenarios',
-      component: () => import('@/pages/scenarios-page.vue'),
-    },
-    {
-      path: '/runtime-observability',
-      name: 'RuntimeObservability',
-      component: () => import('@/pages/runtime-observability-page.vue'),
-    },
-    {
       path: '/interaction-logs',
       name: 'InteractionLogs',
       component: () => import('@/pages/interaction-logs-page.vue'),

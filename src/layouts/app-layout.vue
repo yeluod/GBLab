@@ -13,26 +13,6 @@
     { label: '运行总览', key: 'Overview', icon: () => h(AppIcon, { icon: 'gauge', size: 18 }) },
     { label: '设备管理', key: 'Devices', icon: () => h(AppIcon, { icon: 'server', size: 18 }) },
     {
-      label: '设备模拟',
-      key: 'Simulation',
-      icon: () => h(AppIcon, { icon: 'crosshair', size: 18 }),
-    },
-    {
-      label: '查询控制台',
-      key: 'QueryConsole',
-      icon: () => h(AppIcon, { icon: 'search', size: 18 }),
-    },
-    {
-      label: '场景与故障',
-      key: 'Scenarios',
-      icon: () => h(AppIcon, { icon: 'clock', size: 18 }),
-    },
-    {
-      label: '运行观测',
-      key: 'RuntimeObservability',
-      icon: () => h(AppIcon, { icon: 'rows', size: 18 }),
-    },
-    {
       label: '交互日志',
       key: 'InteractionLogs',
       icon: () => h(AppIcon, { icon: 'logs', size: 18 }),

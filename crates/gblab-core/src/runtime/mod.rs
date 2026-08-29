@@ -6,7 +6,6 @@ mod operations;
 mod platform;
 mod registration;
 mod scheduler;
-pub mod simulator;
 mod state;
 mod time;
 mod types;
