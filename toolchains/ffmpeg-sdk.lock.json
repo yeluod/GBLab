@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sdkRevision": 1,
+  "sdkRevision": 2,
   "ffmpegVersion": "8.1",
   "license": "LGPL-2.1-or-later",
   "linkMode": "dynamic",
@@ -10,10 +10,10 @@
       "platform": "linux",
       "architecture": "x86_64",
       "source": {
-        "kind": "btbn-release",
-        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-29-13-36/ffmpeg-n8.1.2-44-g7c533d0f86-linux64-lgpl-shared-8.1.tar.xz",
-        "filename": "ffmpeg-n8.1.2-44-g7c533d0f86-linux64-lgpl-shared-8.1.tar.xz",
-        "sha256": "f640f0bcd89522c439f7d7a3d605f09a1293035b2a6ac77bf667c9ed13aa6b31"
+        "kind": "ffmpeg-source",
+        "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+        "filename": "ffmpeg-8.1.2.tar.xz",
+        "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
       }
     },
     "macos-arm64": {
