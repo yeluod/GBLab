@@ -11,6 +11,7 @@
     type MediaProbeResult,
     type MediaRuntimeStatus,
   } from '@/features/media';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const props = defineProps<{
     runtimeStatus: MediaRuntimeStatus;
@@ -137,6 +138,7 @@
           data-testid="start-preview"
           @click="emit('startPreview')"
         >
+          <template #icon><AppIcon icon="play" /></template>
           开始预览
         </NButton>
         <NButton
@@ -146,6 +148,7 @@
           data-testid="stop-preview"
           @click="emit('stopPreview')"
         >
+          <template #icon><AppIcon icon="stop" /></template>
           停止预览
         </NButton>
         <span>{{ sourceType === MediaSourceType.Camera ? '等待摄像头采集' : '等待文件播放' }}</span>

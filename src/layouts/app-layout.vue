@@ -1,19 +1,28 @@
 <script setup lang="ts">
-  import { computed } from 'vue';
+  import { computed, h } from 'vue';
   import { NButton, NMenu, type MenuOption } from 'naive-ui';
   import { useRoute, useRouter } from 'vue-router';
 
   import { useSimulatorStore } from '@/features/simulator';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const route = useRoute();
   const router = useRouter();
   const store = useSimulatorStore();
   const menuOptions: MenuOption[] = [
-    { label: '运行总览', key: 'Overview' },
-    { label: '设备管理', key: 'Devices' },
-    { label: '交互日志', key: 'InteractionLogs' },
-    { label: '音视频源', key: 'Media' },
-    { label: '全局配置', key: 'GlobalSettings' },
+    { label: '运行总览', key: 'Overview', icon: () => h(AppIcon, { icon: 'gauge', size: 18 }) },
+    { label: '设备管理', key: 'Devices', icon: () => h(AppIcon, { icon: 'server', size: 18 }) },
+    {
+      label: '交互日志',
+      key: 'InteractionLogs',
+      icon: () => h(AppIcon, { icon: 'logs', size: 18 }),
+    },
+    { label: '音视频源', key: 'Media', icon: () => h(AppIcon, { icon: 'video', size: 18 }) },
+    {
+      label: '全局配置',
+      key: 'GlobalSettings',
+      icon: () => h(AppIcon, { icon: 'settings', size: 18 }),
+    },
   ];
   const activeMenuKey = computed(() => String(route.name));
 
@@ -30,10 +39,10 @@
   <div class="app-shell">
     <aside class="app-sidebar" aria-label="主导航">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">GB</span>
+        <span class="brand-mark" aria-hidden="true"><span>GB</span><i></i></span>
         <div>
           <strong>GBLab</strong>
-          <span>Device Simulator</span>
+          <span>GB28181 Simulator</span>
         </div>
       </div>
 
@@ -47,8 +56,14 @@
           type="primary"
           :disabled="store.hasCompletedBatchAdd"
           @click="openDeviceManagement"
-          >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
         >
+          <template #icon><AppIcon icon="plus" /></template>
+          {{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}
+        </NButton>
+        <div class="sidebar-runtime">
+          <span class="runtime-dot" :class="{ 'is-active': store.isRegistrationActive }"></span>
+          <span>{{ store.isRegistrationActive ? '注册运行中' : '注册未启动' }}</span>
+        </div>
         <span>JSON 配置 · SIP 运行状态仅驻留内存</span>
       </div>
     </aside>

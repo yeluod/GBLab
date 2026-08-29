@@ -27,6 +27,7 @@
     type GlobalMediaConfig,
     type MediaFieldErrors,
   } from '@/features/media';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const config = defineModel<GlobalMediaConfig>('config', { required: true });
   const props = defineProps<{
@@ -192,8 +193,12 @@
               placeholder="请选择 MP4 文件"
               readonly
             />
-            <NButton data-testid="select-mp4" @click="emit('selectMp4')">选择文件</NButton>
+            <NButton data-testid="select-mp4" @click="emit('selectMp4')">
+              <template #icon><AppIcon icon="file" /></template>
+              选择文件
+            </NButton>
             <NButton data-testid="probe-mp4" :loading="isProbing" @click="emit('probeMp4')">
+              <template #icon><AppIcon icon="refresh" /></template>
               重新检测
             </NButton>
           </NInputGroup>
@@ -213,6 +218,7 @@
             data-testid="refresh-capture-devices"
             @click="emit('refreshDevices')"
           >
+            <template #icon><AppIcon icon="refresh" /></template>
             刷新设备
           </NButton>
         </div>
@@ -368,6 +374,7 @@
               :disabled="!config.recording.isEnabled"
               @click="emit('selectRecordingDirectory')"
             >
+              <template #icon><AppIcon icon="file" /></template>
               选择
             </NButton>
           </NInputGroup>

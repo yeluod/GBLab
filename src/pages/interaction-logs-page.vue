@@ -15,6 +15,7 @@
   } from 'naive-ui';
 
   import { useSimulatorStore, type InteractionLog } from '@/features/simulator';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const store = useSimulatorStore();
   const message = useMessage();
@@ -258,31 +259,45 @@
   <section class="page-shell interaction-logs-page" aria-labelledby="interaction-logs-title">
     <header class="page-header compact-header">
       <div>
-        <p class="eyebrow">SIP INTERACTION LOGS</p>
+        <p class="eyebrow">SIP EVENT STREAM</p>
         <h1 id="interaction-logs-title">交互日志</h1>
         <p>实时查看模拟设备与共享 SIP 服务之间的完整 SIP / GB28181 交互内容。</p>
       </div>
       <div class="log-header-actions">
-        <NButton secondary :disabled="selectedLogs.length === 0" @click="copySelectedLogs"
-          >复制选中</NButton
-        >
+        <NButton secondary :disabled="selectedLogs.length === 0" @click="copySelectedLogs">
+          <template #icon><AppIcon icon="copy" /></template>
+          复制选中
+        </NButton>
         <NButton
           secondary
           type="error"
           :disabled="store.interactionLogs.length === 0"
           @click="confirmClearLogs"
-          >清空日志</NButton
         >
-        <NButton secondary @click="scrollToLatest">回到底部</NButton>
+          <template #icon><AppIcon icon="trash" /></template>
+          清空日志
+        </NButton>
+        <NButton secondary @click="scrollToLatest">
+          <template #icon><AppIcon icon="arrowDown" /></template>
+          回到底部
+        </NButton>
       </div>
     </header>
 
     <NCard class="data-surface interaction-logs-surface" :bordered="false">
       <div class="logs-toolbar">
-        <NSelect v-model:value="directionFilter" :options="directionOptions" />
-        <NInput v-model:value="deviceKeyword" clearable placeholder="设备 ID" />
-        <NInput v-model:value="channelKeyword" clearable placeholder="通道 ID" />
-        <NInput v-model:value="messageKeyword" clearable placeholder="消息关键字" />
+        <NSelect v-model:value="directionFilter" :options="directionOptions">
+          <template #arrow><AppIcon icon="filter" :size="14" /></template>
+        </NSelect>
+        <NInput v-model:value="deviceKeyword" clearable placeholder="设备 ID">
+          <template #prefix><AppIcon icon="server" :size="15" /></template>
+        </NInput>
+        <NInput v-model:value="channelKeyword" clearable placeholder="通道 ID">
+          <template #prefix><AppIcon icon="rows" :size="15" /></template>
+        </NInput>
+        <NInput v-model:value="messageKeyword" clearable placeholder="消息关键字">
+          <template #prefix><AppIcon icon="search" :size="15" /></template>
+        </NInput>
       </div>
       <div class="interaction-log-scroll standalone-log-scroll">
         <NDataTable

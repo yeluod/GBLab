@@ -14,6 +14,7 @@
     NPagination,
     NSelect,
     NTag,
+    NTooltip,
     useDialog,
     useMessage,
     type DataTableColumns,
@@ -30,6 +31,7 @@
     type SimulatedDevice,
     type RegistrationStatus,
   } from '@/features/simulator';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const store = useSimulatorStore();
   const message = useMessage();
@@ -362,6 +364,37 @@
     });
   }
 
+  function renderTableAction(
+    label: string,
+    icon: string,
+    onClick: (event: MouseEvent) => void,
+    options: { type?: 'primary' | 'error'; disabled?: boolean } = {},
+  ) {
+    return h(
+      NTooltip,
+      { trigger: 'hover' },
+      {
+        trigger: () =>
+          h(
+            NButton,
+            {
+              size: 'small',
+              tertiary: true,
+              ...(options.type === undefined ? {} : { type: options.type }),
+              disabled: options.disabled ?? false,
+              'aria-label': label,
+              onClick,
+            },
+            {
+              icon: () => h(AppIcon, { icon, size: 15 }),
+              default: () => h('span', { class: 'sr-only' }, label),
+            },
+          ),
+        default: () => label,
+      },
+    );
+  }
+
   const columns: DataTableColumns<SimulatedDevice> = [
     { title: '设备 ID', key: 'id', minWidth: 210, align: 'center' },
     { title: '名称', key: 'name', minWidth: 160, align: 'center' },
@@ -420,45 +453,32 @@
       align: 'center',
       render: (device) =>
         h('div', { class: 'table-actions' }, [
-          h(
-            NButton,
-            {
-              size: 'small',
-              tertiary: true,
-              type: 'primary',
-              onClick: (event: MouseEvent) => {
-                event.stopPropagation();
-                void openChannels(device);
-              },
+          renderTableAction(
+            '通道',
+            'rows',
+            (event) => {
+              event.stopPropagation();
+              void openChannels(device);
             },
-            { default: () => '通道' },
+            { type: 'primary' },
           ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              tertiary: true,
-              disabled: store.isRegistrationActive,
-              onClick: (event: MouseEvent) => {
-                event.stopPropagation();
-                openEditDevice(device);
-              },
+          renderTableAction(
+            '编辑设备',
+            'edit',
+            (event) => {
+              event.stopPropagation();
+              openEditDevice(device);
             },
-            { default: () => '编辑' },
+            { disabled: store.isRegistrationActive },
           ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              tertiary: true,
-              type: 'error',
-              disabled: store.isRegistrationActive,
-              onClick: (event: MouseEvent) => {
-                event.stopPropagation();
-                confirmDeleteDevice(device);
-              },
+          renderTableAction(
+            '删除设备',
+            'trash',
+            (event) => {
+              event.stopPropagation();
+              confirmDeleteDevice(device);
             },
-            { default: () => '删除' },
+            { type: 'error', disabled: store.isRegistrationActive },
           ),
         ]),
     },
@@ -473,9 +493,10 @@
         <h1 id="devices-title">设备管理</h1>
         <p>所有设备共享 {{ store.sipService.uri }}，批量新增设备默认未注册。</p>
       </div>
-      <span class="page-count"
-        >{{ store.devices.length }} 台设备 · {{ store.registeredDeviceCount }} 已注册</span
-      >
+      <span class="page-count">
+        <AppIcon icon="server" :size="15" />
+        {{ store.devices.length }} 台设备 · {{ store.registeredDeviceCount }} 已注册
+      </span>
     </header>
 
     <div class="device-workspace">
@@ -489,8 +510,10 @@
               "
               :loading="store.isDeviceSaving"
               @click="isBatchModalOpen = true"
-              >{{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}</NButton
             >
+              <template #icon><AppIcon icon="plus" /></template>
+              {{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}
+            </NButton>
             <NButton
               secondary
               type="error"
@@ -501,8 +524,10 @@
                 store.isRegistrationActive
               "
               @click="confirmClearDevices"
-              >清空设备</NButton
             >
+              <template #icon><AppIcon icon="trash" /></template>
+              清空设备
+            </NButton>
             <NButton
               secondary
               type="primary"
@@ -513,8 +538,10 @@
               "
               :loading="store.isRegistrationCommandPending && !store.isRegistrationActive"
               @click="handleRegisterAllDevices"
-              >全量注册</NButton
             >
+              <template #icon><AppIcon icon="radio" /></template>
+              全量注册
+            </NButton>
             <NButton
               secondary
               type="warning"
@@ -525,11 +552,15 @@
               "
               :loading="store.registrationOperationStatus === 'stopping'"
               @click="handleStopAllRegistration"
-              >全量停止注册</NButton
             >
+              <template #icon><AppIcon icon="stop" /></template>
+              全量停止注册
+            </NButton>
           </div>
           <div class="toolbar-filters">
-            <NInput v-model:value="searchKeyword" clearable placeholder="搜索设备 ID 或名称" />
+            <NInput v-model:value="searchKeyword" clearable placeholder="搜索设备 ID 或名称">
+              <template #prefix><AppIcon icon="search" :size="15" /></template>
+            </NInput>
             <NSelect v-model:value="statusFilter" :options="statusOptions" />
           </div>
         </div>
@@ -619,26 +650,34 @@
             type="warning"
             :disabled="selectedDevice.registrationStatus !== 'registered'"
             @click="handleDeviceControl('restart')"
-            >远程重启</NButton
           >
+            <template #icon><AppIcon icon="refresh" /></template>
+            远程重启
+          </NButton>
           <NButton
             secondary
             :disabled="selectedDevice.registrationStatus !== 'registered'"
             @click="handleDeviceControl('guard')"
-            >布防</NButton
           >
+            <template #icon><AppIcon icon="bell" /></template>
+            布防
+          </NButton>
           <NButton
             secondary
             :disabled="selectedDevice.registrationStatus !== 'registered'"
             @click="handleDeviceControl('unguard')"
-            >撤防</NButton
           >
+            <template #icon><AppIcon icon="bell" /></template>
+            撤防
+          </NButton>
           <NButton
             secondary
             :disabled="selectedDevice.registrationStatus !== 'registered'"
             @click="handleDeviceControl('alarm-reset')"
-            >报警复位</NButton
           >
+            <template #icon><AppIcon icon="reset" /></template>
+            报警复位
+          </NButton>
         </div>
       </NDrawerContent>
     </NDrawer>
@@ -676,9 +715,10 @@
       <template #footer>
         <div class="modal-actions">
           <NButton @click="isDeviceModalOpen = false">取消</NButton>
-          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleSaveDevice"
-            >保存</NButton
-          >
+          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleSaveDevice">
+            <template #icon><AppIcon icon="save" /></template>
+            保存
+          </NButton>
         </div>
       </template>
     </NModal>
@@ -732,9 +772,10 @@
       <template #footer>
         <div class="modal-actions">
           <NButton @click="isBatchModalOpen = false">取消</NButton>
-          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleBatchCreate"
-            >创建 {{ batchDraft.count }} 台设备</NButton
-          >
+          <NButton type="primary" :loading="store.isDeviceSaving" @click="handleBatchCreate">
+            <template #icon><AppIcon icon="plus" /></template>
+            创建 {{ batchDraft.count }} 台设备
+          </NButton>
         </div>
       </template>
     </NModal>
@@ -798,16 +839,20 @@
                 secondary
                 :disabled="!canTrigger(channel, 'alarm')"
                 @click="openAlarmTrigger(channel)"
-                >报警模拟</NButton
               >
+                <template #icon><AppIcon icon="alert" :size="15" /></template>
+                报警模拟
+              </NButton>
               <NButton
                 size="small"
                 type="info"
                 secondary
                 :disabled="!canTrigger(channel, 'mobile-position')"
                 @click="openMobilePositionTrigger(channel)"
-                >移动位置</NButton
               >
+                <template #icon><AppIcon icon="pin" :size="15" /></template>
+                移动位置
+              </NButton>
             </div>
             <div v-if="channelDevice.type === '球机'" class="ptz-controls">
               <NButton size="tiny" secondary @click="handlePtz(channel, 'up')">上</NButton>
@@ -885,7 +930,10 @@
       <template #footer>
         <div class="modal-actions">
           <NButton @click="isTriggerModalOpen = false">取消</NButton>
-          <NButton type="primary" @click="submitTrigger">发送</NButton>
+          <NButton type="primary" @click="submitTrigger">
+            <template #icon><AppIcon icon="arrowRight" /></template>
+            发送
+          </NButton>
         </div>
       </template>
     </NModal>
