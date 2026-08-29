@@ -38,4 +38,7 @@ pub enum MediaError {
     /// The dedicated media owner or one of its bounded channels is unavailable.
     #[error("媒体运行时不可用: {0}")]
     RuntimeUnavailable(String),
+    /// A command exceeded the bounded worker response deadline.
+    #[error("媒体命令执行超时")]
+    CommandTimedOut,
 }

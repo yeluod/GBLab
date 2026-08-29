@@ -79,12 +79,35 @@ fn encoded_video_should_contain_real_annex_b_bytes() {
         if let Some(packet) = found {
             assert_eq!(packet.codec, EncodedMediaCodec::Video(codec));
             assert!(!packet.data.is_empty());
+            assert!(packet.codec_configuration.is_some());
             assert!(
                 packet.data.starts_with(&[0, 0, 0, 1]) || packet.data.starts_with(&[0, 0, 1]),
                 "packet is not Annex-B for {name}"
             );
         }
     }
+}
+
+#[test]
+fn preview_detach_should_keep_live_consumer_running() {
+    let runtime = GlobalMediaRuntime::start();
+    let handle = runtime.handle();
+    assert!(handle.open_mp4(asset("h264-noaudio.mp4"), true).is_ok());
+    let subscription = handle.subscribe(MediaConsumerKind::Live, 8, BackpressurePolicy::Disconnect);
+    assert!(subscription.is_ok());
+    let Ok(mut live) = subscription else {
+        let _ = runtime.shutdown();
+        return;
+    };
+    assert!(handle.attach_preview().is_ok());
+    assert!(handle.play().is_ok());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && live.try_recv().is_err() {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(handle.detach_preview().is_ok());
+    assert_eq!(handle.status().source_status, MediaSourceStatus::Playing);
+    assert!(runtime.shutdown().is_ok());
 }
 
 #[test]

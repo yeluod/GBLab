@@ -29,6 +29,8 @@ pub(super) struct CameraAudioEncoder {
     codec: AudioCodec,
     time_base: MediaTimeBase,
     pending: VecDeque<EncodedMediaPacket>,
+    codec_configuration: Option<Bytes>,
+    config_sent: bool,
 }
 
 impl CameraAudioEncoder {
@@ -36,6 +38,15 @@ impl CameraAudioEncoder {
         settings: &CameraCaptureSettings,
         parameters: &AVCodecParametersRef<'_>,
     ) -> MediaResult<Self> {
+        if matches!(settings.audio_codec, AudioCodec::G711a | AudioCodec::G711u)
+            && (settings.audio_sample_rate != 8_000
+                || settings.audio_channels != 1
+                || settings.audio_bitrate != 64_000)
+        {
+            return Err(MediaError::Camera(
+                "G.711 音频必须使用 8000 Hz、单声道、64000 bit/s".to_owned(),
+            ));
+        }
         let decoder_codec = AVCodec::find_decoder(parameters.codec_id)
             .ok_or_else(|| MediaError::Camera("未找到麦克风输入解码器".to_owned()))?;
         let mut decoder = AVCodecContext::new(&decoder_codec);
@@ -103,6 +114,10 @@ impl CameraAudioEncoder {
         let frame_size = encoder.frame_size;
         let time_base = MediaTimeBase::new(1, sample_rate)
             .ok_or_else(|| MediaError::Camera("音频编码器时间基无效".to_owned()))?;
+        let mut codec_parameters = rsmpeg::avcodec::AVCodecParameters::new();
+        codec_parameters.from_context(&encoder);
+        let codec_configuration =
+            gblab_ffmpeg_device::copy_owned_codec_extradata(&codec_parameters).map(Bytes::from);
         Ok(Self {
             decoder,
             encoder,
@@ -115,16 +130,22 @@ impl CameraAudioEncoder {
             codec: settings.audio_codec,
             time_base,
             pending: VecDeque::new(),
+            codec_configuration,
+            config_sent: false,
         })
     }
 
-    pub(super) fn encode_packet(&mut self, packet: &AVPacket) -> MediaResult<()> {
+    pub(super) fn encode_packet(
+        &mut self,
+        packet: &AVPacket,
+        source_time_base: MediaTimeBase,
+    ) -> MediaResult<()> {
         self.decoder
             .send_packet(Some(packet))
             .map_err(|error| MediaError::Camera(format!("提交麦克风 packet 失败：{error}")))?;
         loop {
             match self.decoder.receive_frame() {
-                Ok(frame) => self.encode_frame(&frame)?,
+                Ok(frame) => self.encode_frame(&frame, source_time_base)?,
                 Err(RsmpegError::DecoderDrainError) => break,
                 Err(error) => {
                     return Err(MediaError::Camera(format!(
@@ -149,7 +170,7 @@ impl CameraAudioEncoder {
         }
         loop {
             match self.decoder.receive_frame() {
-                Ok(frame) => self.encode_frame(&frame)?,
+                Ok(frame) => self.encode_frame(&frame, MediaTimeBase::MPEG_CLOCK)?,
                 Err(RsmpegError::DecoderDrainError | RsmpegError::DecoderFlushedError) => break,
                 Err(error) => {
                     return Err(MediaError::Camera(format!("排空麦克风解码器失败：{error}")));
@@ -163,7 +184,11 @@ impl CameraAudioEncoder {
         }
     }
 
-    fn encode_frame(&mut self, input: &AVFrame) -> MediaResult<()> {
+    fn encode_frame(
+        &mut self,
+        input: &AVFrame,
+        source_time_base: MediaTimeBase,
+    ) -> MediaResult<()> {
         let resampler = if let Some(resampler) = self.resampler.take() {
             resampler
         } else {
@@ -194,6 +219,10 @@ impl CameraAudioEncoder {
         self.resampler = Some(resampler);
         if output.nb_samples <= 0 {
             return Ok(());
+        }
+        if input.pts != ffi::AV_NOPTS_VALUE {
+            output.set_pts(source_time_base.rescale(input.pts, self.time_base));
+            self.next_pts = output.pts.saturating_add(i64::from(output.nb_samples));
         }
         self.submit_output_frame(&output)
     }
@@ -253,17 +282,25 @@ impl CameraAudioEncoder {
     fn drain_packets(&mut self) -> MediaResult<()> {
         loop {
             match self.encoder.receive_packet() {
-                Ok(packet) => self.pending.push_back(EncodedMediaPacket {
-                    track: MediaTrackKind::Audio,
-                    codec: EncodedMediaCodec::Audio(self.codec),
-                    data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(&packet)),
-                    pts: (packet.pts != ffi::AV_NOPTS_VALUE).then_some(packet.pts),
-                    dts: (packet.dts != ffi::AV_NOPTS_VALUE).then_some(packet.dts),
-                    duration: packet.duration.max(1),
-                    time_base: self.time_base,
-                    is_keyframe: true,
-                    codec_configuration: None,
-                }),
+                Ok(packet) => {
+                    let codec_configuration = if self.config_sent {
+                        None
+                    } else {
+                        self.config_sent = true;
+                        self.codec_configuration.clone()
+                    };
+                    self.pending.push_back(EncodedMediaPacket {
+                        track: MediaTrackKind::Audio,
+                        codec: EncodedMediaCodec::Audio(self.codec),
+                        data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(&packet)),
+                        pts: (packet.pts != ffi::AV_NOPTS_VALUE).then_some(packet.pts),
+                        dts: (packet.dts != ffi::AV_NOPTS_VALUE).then_some(packet.dts),
+                        duration: packet.duration.max(1),
+                        time_base: self.time_base,
+                        is_keyframe: true,
+                        codec_configuration,
+                    });
+                }
                 Err(RsmpegError::EncoderDrainError | RsmpegError::EncoderFlushedError) => {
                     return Ok(());
                 }
@@ -336,7 +373,7 @@ mod tests {
                 if packet.stream_index != audio_stream_index {
                     continue;
                 }
-                encoder.encode_packet(&packet)?;
+                encoder.encode_packet(&packet, crate::media::MediaTimeBase::MPEG_CLOCK)?;
                 if let Some(packet) = encoder.take_pending() {
                     encoded_packet = Some(packet);
                     break;

@@ -102,6 +102,17 @@ export function validateMediaConfig(config: GlobalMediaConfig): MediaFieldErrors
       if (audio.bitrateKbps <= 0) {
         errors['source.camera.audio.bitrateKbps'] = '请输入有效音频码率。';
       }
+      if (audio.codec === 'g711a' || audio.codec === 'g711u') {
+        if (audio.sampleRate !== 8000) {
+          errors['source.camera.audio.sampleRate'] = 'G.711 必须使用 8000 Hz。';
+        }
+        if (audio.channels !== 1) {
+          errors['source.camera.audio.channels'] = 'G.711 必须使用单声道。';
+        }
+        if (audio.bitrateKbps !== 64) {
+          errors['source.camera.audio.bitrateKbps'] = 'G.711 必须使用 64 Kbps。';
+        }
+      }
     }
   }
 

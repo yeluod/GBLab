@@ -325,6 +325,10 @@ impl SourceReadOutput {
 }
 
 impl MediaSourceSession {
+    pub(crate) const fn is_live_capture(&self) -> bool {
+        matches!(self, Self::Camera(_))
+    }
+
     pub(crate) const fn probe(&self) -> &Mp4ProbeResult {
         match self {
             Self::Mp4(session) => session.probe(),

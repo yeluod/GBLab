@@ -3,6 +3,68 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+/// Rational frame rate preserving common NTSC rates such as 30000/1001.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameRate {
+    /// Numerator.
+    pub numerator: u32,
+    /// Denominator.
+    pub denominator: u32,
+}
+
+impl FrameRate {
+    /// Creates a validated rational frame rate.
+    #[must_use]
+    pub const fn new(numerator: u32, denominator: u32) -> Option<Self> {
+        if numerator == 0 || denominator == 0 {
+            None
+        } else {
+            Some(Self {
+                numerator,
+                denominator,
+            })
+        }
+    }
+
+    /// Approximates a finite floating-point rate with the closest denominator up to 1001.
+    #[must_use]
+    pub fn from_f64(value: f64) -> Option<Self> {
+        if !value.is_finite() || value <= 0.0 {
+            return None;
+        }
+        let mut best = None;
+        let mut best_error = f64::INFINITY;
+        for denominator in 1..=1_001_u32 {
+            let numerator = (value * f64::from(denominator)).round();
+            if !(1.0..=f64::from(u32::MAX)).contains(&numerator) {
+                continue;
+            }
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "positive rounded value was range-checked against u32"
+            )]
+            let numerator = numerator as u32;
+            let error = (f64::from(numerator) / f64::from(denominator) - value).abs();
+            if error < best_error {
+                best_error = error;
+                best = Some(Self {
+                    numerator,
+                    denominator,
+                });
+            }
+        }
+        best
+    }
+
+    /// Returns the floating-point representation for UI/probing only.
+    #[must_use]
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.numerator) / f64::from(self.denominator)
+    }
+}
+
 /// Rational media time base used by integer timestamps.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

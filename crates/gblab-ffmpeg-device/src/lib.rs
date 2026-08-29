@@ -14,7 +14,7 @@ use std::{
 };
 
 use rsmpeg::{
-    avcodec::AVCodec,
+    avcodec::{AVCodec, AVCodecParametersRef},
     avformat::{AVFormatContextInput, AVInputFormatRef},
     avutil::AVDictionary,
     error::RsmpegError,
@@ -660,6 +660,33 @@ pub fn copy_packet_data(packet: &rsmpeg::avcodec::AVPacket) -> Vec<u8> {
     // SAFETY: FFmpeg guarantees that a packet with positive `size` exposes at least `size`
     // readable bytes at `data` for the lifetime of the packet. The bytes are copied immediately.
     unsafe { slice::from_raw_parts(packet.data.cast_const(), size) }.to_vec()
+}
+
+/// Copies codec initialization data (extradata) from FFmpeg-owned parameters.
+///
+/// This keeps raw-pointer validation inside the audited native boundary so higher-level media
+/// code can expose H.264/H.265 parameter sets and AAC AudioSpecificConfig safely.
+#[must_use]
+pub fn copy_codec_extradata(parameters: &AVCodecParametersRef<'_>) -> Option<Vec<u8>> {
+    copy_extradata(parameters.extradata, parameters.extradata_size)
+}
+
+/// Copies extradata from an owned codec-parameter allocation.
+#[must_use]
+pub fn copy_owned_codec_extradata(
+    parameters: &rsmpeg::avcodec::AVCodecParameters,
+) -> Option<Vec<u8>> {
+    copy_extradata(parameters.extradata, parameters.extradata_size)
+}
+
+fn copy_extradata(pointer: *mut u8, size: i32) -> Option<Vec<u8>> {
+    let size = usize::try_from(size).ok()?;
+    if size == 0 || pointer.is_null() {
+        return None;
+    }
+    // SAFETY: FFmpeg owns `extradata` for the lifetime of codec parameters and advertises its
+    // readable length through `extradata_size`; this function copies it immediately.
+    Some(unsafe { slice::from_raw_parts(pointer.cast_const(), size) }.to_vec())
 }
 
 /// Enumerate input sources for one FFmpeg device format.

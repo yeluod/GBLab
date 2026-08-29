@@ -139,6 +139,30 @@ pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, C
 }
 
 #[tauri::command]
+pub fn attach_media_preview(
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .attach_preview()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn detach_media_preview(
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .detach_preview()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
 pub fn pause_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
     state
         .media

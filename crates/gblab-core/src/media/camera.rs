@@ -10,9 +10,10 @@ use rsmpeg::{
 };
 
 use super::{
-    AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    FrameRateCapability, MediaError, MediaResult, Mp4ProbeResult, VideoCaptureCapabilities,
-    VideoCaptureMode, VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
+    AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists, FrameRate,
+    FrameRateCapability, MediaError, MediaResult, MediaTimeBase, Mp4ProbeResult,
+    VideoCaptureCapabilities, VideoCaptureMode, VideoEncoderCapabilities, VideoEncoderCapability,
+    VideoStreamInfo,
     audio_encoder::CameraAudioEncoder,
     decoder::VideoDecoder,
     types::{MediaSource, MediaSourceSession, SourceReadOutput},
@@ -132,6 +133,7 @@ impl CameraMediaSource {
     }
 
     fn input_description(&self) -> MediaResult<(CString, AVInputFormatRef<'static>)> {
+        self.validate_settings()?;
         if self.settings.video_device_id.trim().is_empty() {
             return Err(MediaError::Camera("未设置摄像头设备标识".to_owned()));
         }
@@ -140,26 +142,62 @@ impl CameraMediaSource {
         Ok((url, format))
     }
 
-    fn open_context(&self) -> MediaResult<AVFormatContextInput> {
-        let (url, format) = self.input_description()?;
-        let options = self.capture_options()?;
-        gblab_ffmpeg_device::open_input_with_interrupt(
-            url.as_c_str(),
-            &format,
-            options,
-            Arc::clone(&self.interrupt),
-        )
-        .map(|(context, _guard)| context)
-        .map_err(|error| MediaError::Camera(error.to_string()))
+    fn validate_settings(&self) -> MediaResult<()> {
+        if self.settings.width == 0 || self.settings.height == 0 {
+            return Err(MediaError::Camera("摄像头分辨率必须大于零".to_owned()));
+        }
+        if !self.settings.frames_per_second.is_finite()
+            || self.settings.frames_per_second <= 0.0
+            || self.settings.frames_per_second > 240.0
+        {
+            return Err(MediaError::Camera(
+                "摄像头帧率必须介于 0 和 240 FPS 之间".to_owned(),
+            ));
+        }
+        if self.settings.video_bitrate == 0 {
+            return Err(MediaError::Camera("视频码率必须大于零".to_owned()));
+        }
+        if self.settings.audio_enabled {
+            if self.settings.audio_device_id.trim().is_empty() {
+                return Err(MediaError::Camera(
+                    "启用音频后必须设置麦克风设备标识".to_owned(),
+                ));
+            }
+            if self.settings.audio_sample_rate == 0
+                || self.settings.audio_channels == 0
+                || self.settings.audio_bitrate == 0
+            {
+                return Err(MediaError::Camera(
+                    "音频采样率、声道和码率必须大于零".to_owned(),
+                ));
+            }
+            if matches!(
+                self.settings.audio_codec,
+                super::AudioCodec::G711a | super::AudioCodec::G711u
+            ) && (self.settings.audio_sample_rate != 8_000
+                || self.settings.audio_channels != 1
+                || self.settings.audio_bitrate != 64_000)
+            {
+                return Err(MediaError::Camera(
+                    "G.711 音频必须使用 8000 Hz、单声道、64000 bit/s".to_owned(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn capture_options(&self) -> MediaResult<Option<AVDictionary>> {
         let mut options = if self.settings.frames_per_second > 0.0 {
+            let frame_rate = FrameRate::from_f64(self.settings.frames_per_second)
+                .ok_or_else(|| MediaError::Camera("帧率配置无效".to_owned()))?;
             Some(AVDictionary::new(
                 c"framerate",
-                CString::new(self.settings.frames_per_second.to_string())
-                    .map_err(|_| MediaError::Camera("帧率配置无效".to_owned()))?
-                    .as_c_str(),
+                CString::new(format!(
+                    "{}/{}",
+                    frame_rate.numerator, frame_rate.denominator
+                ))
+                .map_err(|_| MediaError::Camera("帧率配置无效".to_owned()))?
+                .as_c_str(),
                 0,
             ))
         } else {
@@ -238,7 +276,15 @@ impl CameraMediaSource {
 
 impl MediaSource for CameraMediaSource {
     fn probe(&self) -> MediaResult<Mp4ProbeResult> {
-        let context = self.open_context()?;
+        let (url, format) = self.input_description()?;
+        let options = self.capture_options()?;
+        let (context, _interrupt_guard) = gblab_ffmpeg_device::open_input_with_interrupt(
+            url.as_c_str(),
+            &format,
+            options,
+            Arc::clone(&self.interrupt),
+        )
+        .map_err(|error| MediaError::Camera(error.to_string()))?;
         self.probe_context(&context)
     }
 
@@ -260,9 +306,12 @@ impl MediaSource for CameraMediaSource {
             .ok_or(MediaError::MissingVideoStream)?;
         let video_stream_index = usize::try_from(video_stream.index)
             .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的视频流索引".to_owned()))?;
+        let video_time_base =
+            MediaTimeBase::new(video_stream.time_base.num, video_stream.time_base.den)
+                .ok_or_else(|| MediaError::Camera("摄像头视频时间基无效".to_owned()))?;
         let decoder = VideoDecoder::new(&video_stream.codecpar(), video_stream)?;
         let encoder = CameraVideoEncoder::new(&self.settings)?;
-        let (audio_stream_index, audio_encoder) = if self.settings.audio_enabled {
+        let (audio_stream_index, audio_encoder, audio_time_base) = if self.settings.audio_enabled {
             let audio_stream = context
                 .streams()
                 .iter()
@@ -272,10 +321,13 @@ impl MediaSource for CameraMediaSource {
                 })?;
             let index = usize::try_from(audio_stream.index)
                 .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的音频流索引".to_owned()))?;
+            let audio_time_base =
+                MediaTimeBase::new(audio_stream.time_base.num, audio_stream.time_base.den)
+                    .ok_or_else(|| MediaError::Camera("摄像头音频时间基无效".to_owned()))?;
             let encoder = CameraAudioEncoder::new(&self.settings, &audio_stream.codecpar())?;
-            (Some(index), Some(encoder))
+            (Some(index), Some(encoder), Some(audio_time_base))
         } else {
-            (None, None)
+            (None, None, None)
         };
         Ok(MediaSourceSession::Camera(Box::new(CameraSession {
             _interrupt_guard: interrupt_guard,
@@ -286,8 +338,10 @@ impl MediaSource for CameraMediaSource {
             encoder,
             pending_encoded: VecDeque::new(),
             video_stream_index,
+            video_time_base,
             audio_stream_index,
             audio_encoder,
+            audio_time_base,
         })))
     }
 }
@@ -303,8 +357,10 @@ pub struct CameraSession {
     encoder: CameraVideoEncoder,
     pending_encoded: VecDeque<super::EncodedMediaPacket>,
     video_stream_index: usize,
+    video_time_base: MediaTimeBase,
     audio_stream_index: Option<usize>,
     audio_encoder: Option<CameraAudioEncoder>,
+    audio_time_base: Option<MediaTimeBase>,
 }
 
 impl CameraSession {
@@ -361,7 +417,10 @@ impl CameraSession {
                 .audio_encoder
                 .as_mut()
                 .ok_or_else(|| MediaError::Camera("音频流缺少编码器运行时".to_owned()))?;
-            audio_encoder.encode_packet(&packet)?;
+            audio_encoder.encode_packet(
+                &packet,
+                self.audio_time_base.unwrap_or(MediaTimeBase::MPEG_CLOCK),
+            )?;
             while let Some(packet) = audio_encoder.take_pending() {
                 self.pending_encoded.push_back(packet);
             }
@@ -391,7 +450,7 @@ impl CameraSession {
                     .preview_frame(&frame)
                     .map_err(|error| MediaError::Camera(error.to_string()))?,
             );
-            self.encoder.encode(&frame)?;
+            self.encoder.encode(&frame, self.video_time_base)?;
             while let Some(packet) = self.encoder.take_pending() {
                 self.pending_encoded.push_back(packet);
             }

@@ -12,8 +12,8 @@ use rsmpeg::{
 };
 
 use super::{
-    CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, MediaError, MediaResult,
-    MediaTimeBase, MediaTrackKind,
+    CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, FrameRate, MediaError,
+    MediaResult, MediaTimeBase, MediaTrackKind,
 };
 
 /// `FFmpeg` camera video encoder owned by the source worker.
@@ -26,6 +26,8 @@ pub(super) struct CameraVideoEncoder {
     time_base: MediaTimeBase,
     codec: super::VideoCodec,
     pending: VecDeque<EncodedMediaPacket>,
+    codec_configuration: Option<Bytes>,
+    config_sent: bool,
 }
 
 impl CameraVideoEncoder {
@@ -43,35 +45,29 @@ impl CameraVideoEncoder {
             .map_err(|_| MediaError::Camera("视频宽度超出编码器范围".to_owned()))?;
         let height = i32::try_from(settings.height)
             .map_err(|_| MediaError::Camera("视频高度超出编码器范围".to_owned()))?;
-        let fps_denominator = (settings.frames_per_second * 1_000.0).round();
-        if !fps_denominator.is_finite()
-            || fps_denominator <= 0.0
-            || fps_denominator > f64::from(i32::MAX)
-        {
-            return Err(MediaError::Camera("视频帧率无效".to_owned()));
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "frame rate was range-checked against i32"
-        )]
-        let fps_denominator = fps_denominator as i32;
+        let frame_rate = FrameRate::from_f64(settings.frames_per_second)
+            .ok_or_else(|| MediaError::Camera("视频帧率无效".to_owned()))?;
+        let fps_num = i32::try_from(frame_rate.numerator)
+            .map_err(|_| MediaError::Camera("视频帧率分子超出编码器范围".to_owned()))?;
+        let fps_den = i32::try_from(frame_rate.denominator)
+            .map_err(|_| MediaError::Camera("视频帧率分母超出编码器范围".to_owned()))?;
         let mut context = AVCodecContext::new(&encoder);
         context.set_width(width);
         context.set_height(height);
         context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
         context.set_time_base(AVRational {
-            num: 1_000,
-            den: fps_denominator,
+            num: fps_den,
+            den: fps_num,
         });
         context.set_framerate(AVRational {
-            num: fps_denominator,
-            den: 1_000,
+            num: fps_num,
+            den: fps_den,
         });
         context.set_bit_rate(
             i64::try_from(settings.video_bitrate)
                 .map_err(|_| MediaError::Camera("视频码率超出编码器支持范围".to_owned()))?,
         );
-        let gop_size = (settings.frames_per_second * 2.0).round().max(1.0);
+        let gop_size = (frame_rate.as_f64() * 2.0).round().max(1.0);
         if !gop_size.is_finite() || gop_size > f64::from(i32::MAX) {
             return Err(MediaError::Camera("视频 GOP 大小超出编码器范围".to_owned()));
         }
@@ -85,8 +81,12 @@ impl CameraVideoEncoder {
         context
             .open(None)
             .map_err(|error| MediaError::Camera(format!("打开视频编码器失败：{error}")))?;
-        let time_base = MediaTimeBase::new(1_000, fps_denominator)
+        let time_base = MediaTimeBase::new(fps_den, fps_num)
             .ok_or_else(|| MediaError::Camera("编码器时间基无效".to_owned()))?;
+        let mut parameters = rsmpeg::avcodec::AVCodecParameters::new();
+        parameters.from_context(&context);
+        let codec_configuration =
+            gblab_ffmpeg_device::copy_owned_codec_extradata(&parameters).map(Bytes::from);
         Ok(Self {
             context,
             scaler: None,
@@ -96,6 +96,8 @@ impl CameraVideoEncoder {
             time_base,
             codec: settings.video_codec,
             pending: VecDeque::new(),
+            codec_configuration,
+            config_sent: false,
         })
     }
 
@@ -103,7 +105,11 @@ impl CameraVideoEncoder {
         self.pending.pop_front()
     }
 
-    pub(super) fn encode(&mut self, input: &AVFrame) -> MediaResult<()> {
+    pub(super) fn encode(
+        &mut self,
+        input: &AVFrame,
+        source_time_base: MediaTimeBase,
+    ) -> MediaResult<()> {
         let scaler = self
             .scaler
             .take()
@@ -127,7 +133,12 @@ impl CameraVideoEncoder {
         frame.set_format(ffi::AV_PIX_FMT_YUV420P);
         frame.set_width(self.width);
         frame.set_height(self.height);
-        frame.set_pts(self.next_pts);
+        let frame_pts = if input.pts == ffi::AV_NOPTS_VALUE {
+            self.next_pts
+        } else {
+            source_time_base.rescale(input.pts, self.time_base)
+        };
+        frame.set_pts(frame_pts);
         frame.set_time_base(AVRational {
             num: self.time_base.numerator,
             den: self.time_base.denominator,
@@ -145,7 +156,7 @@ impl CameraVideoEncoder {
         self.context
             .send_frame(Some(&frame))
             .map_err(|error| MediaError::Camera(format!("提交编码帧失败：{error}")))?;
-        self.next_pts = self.next_pts.saturating_add(1);
+        self.next_pts = frame_pts.saturating_add(1);
         self.drain_packets()
     }
 
@@ -159,17 +170,25 @@ impl CameraVideoEncoder {
     fn drain_packets(&mut self) -> MediaResult<()> {
         loop {
             match self.context.receive_packet() {
-                Ok(packet) => self.pending.push_back(EncodedMediaPacket {
-                    track: MediaTrackKind::Video,
-                    codec: EncodedMediaCodec::Video(self.codec),
-                    data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(&packet)),
-                    pts: (packet.pts != ffi::AV_NOPTS_VALUE).then_some(packet.pts),
-                    dts: (packet.dts != ffi::AV_NOPTS_VALUE).then_some(packet.dts),
-                    duration: packet.duration.max(1),
-                    time_base: self.time_base,
-                    is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
-                    codec_configuration: None,
-                }),
+                Ok(packet) => {
+                    let codec_configuration = if self.config_sent {
+                        None
+                    } else {
+                        self.config_sent = true;
+                        self.codec_configuration.clone()
+                    };
+                    self.pending.push_back(EncodedMediaPacket {
+                        track: MediaTrackKind::Video,
+                        codec: EncodedMediaCodec::Video(self.codec),
+                        data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(&packet)),
+                        pts: (packet.pts != ffi::AV_NOPTS_VALUE).then_some(packet.pts),
+                        dts: (packet.dts != ffi::AV_NOPTS_VALUE).then_some(packet.dts),
+                        duration: packet.duration.max(1),
+                        time_base: self.time_base,
+                        is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
+                        codec_configuration,
+                    });
+                }
                 Err(RsmpegError::EncoderDrainError | RsmpegError::EncoderFlushedError) => break,
                 Err(error) => {
                     return Err(MediaError::Camera(format!("读取编码 packet 失败：{error}")));
@@ -250,7 +269,7 @@ mod tests {
                     continue;
                 }
                 for frame in decoder.decode_raw_frames(&packet)? {
-                    encoder.encode(&frame)?;
+                    encoder.encode(&frame, crate::media::MediaTimeBase::MPEG_CLOCK)?;
                 }
                 if let Some(packet) = encoder.take_pending() {
                     encoded_packet = Some(packet);

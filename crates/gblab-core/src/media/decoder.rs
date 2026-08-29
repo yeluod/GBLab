@@ -30,6 +30,27 @@ impl VideoDecoder {
         self.pending_frames.clear();
     }
 
+    /// Flushes delayed decoder frames at end-of-stream.
+    pub(super) fn finish_preview(&mut self) -> MediaResult<Vec<MediaVideoFrame>> {
+        self.context
+            .send_packet(None)
+            .map_err(|error| MediaError::Playback(format!("结束视频解码器失败：{error}")))?;
+        let mut frames = Vec::new();
+        loop {
+            match self.context.receive_frame() {
+                Ok(frame) => frames.push(self.decode_frame(&frame)?),
+                Err(
+                    rsmpeg::error::RsmpegError::DecoderDrainError
+                    | rsmpeg::error::RsmpegError::DecoderFlushedError,
+                ) => break,
+                Err(error) => {
+                    return Err(MediaError::Playback(format!("排空视频解码器失败：{error}")));
+                }
+            }
+        }
+        Ok(frames)
+    }
+
     pub(super) fn new(
         parameters: &rsmpeg::avcodec::AVCodecParametersRef<'_>,
         stream: &AVStreamRef<'_>,

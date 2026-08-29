@@ -50,6 +50,8 @@ enum MediaCommand {
         reply: StatusReply,
     },
     StepFrame(mpsc::SyncSender<MediaResult<Option<MediaVideoFrame>>>),
+    AttachPreview(StatusReply),
+    DetachPreview(StatusReply),
     Subscribe {
         kind: MediaConsumerKind,
         capacity: usize,
@@ -72,21 +74,41 @@ pub struct GlobalMediaHandle {
 impl GlobalMediaHandle {
     /// Opens the single MP4 source on the owner worker.
     pub fn open_mp4(&self, path: PathBuf, looping: bool) -> MediaResult<MediaRuntimeStatus> {
-        self.request_status(|reply| MediaCommand::OpenMp4 {
+        self.interrupt.store(true, Ordering::Release);
+        let result = self.request_status(|reply| MediaCommand::OpenMp4 {
             path,
             looping,
             reply,
-        })
+        });
+        if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
+            self.interrupt.store(false, Ordering::Release);
+        }
+        result
     }
 
     /// Opens the single camera source on the owner worker.
     pub fn open_camera(&self, settings: CameraCaptureSettings) -> MediaResult<MediaRuntimeStatus> {
-        self.request_status(|reply| MediaCommand::OpenCamera { settings, reply })
+        self.interrupt.store(true, Ordering::Release);
+        let result = self.request_status(|reply| MediaCommand::OpenCamera { settings, reply });
+        if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
+            self.interrupt.store(false, Ordering::Release);
+        }
+        result
     }
 
     /// Starts or resumes the source.
     pub fn play(&self) -> MediaResult<MediaRuntimeStatus> {
         self.request_status(MediaCommand::Play)
+    }
+
+    /// Attaches the UI preview consumer without implicitly replacing source state.
+    pub fn attach_preview(&self) -> MediaResult<MediaRuntimeStatus> {
+        self.request_status(MediaCommand::AttachPreview)
+    }
+
+    /// Detaches the UI preview consumer; source shutdown is demand-driven.
+    pub fn detach_preview(&self) -> MediaResult<MediaRuntimeStatus> {
+        self.request_interrupting_status(MediaCommand::DetachPreview)
     }
 
     /// Pauses source production.
@@ -194,9 +216,19 @@ impl GlobalMediaHandle {
     ) -> MediaResult<MediaRuntimeStatus> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.send(build(reply))?;
-        receiver
-            .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|_| MediaError::RuntimeUnavailable("媒体 worker 命令响应超时".to_owned()))?
+        match receiver.recv_timeout(COMMAND_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Cancel blocking capture/open work before reporting timeout. The worker checks
+                // this interrupt flag in the FFmpeg input callback and will not keep a stale
+                // device read alive after the caller has abandoned the request.
+                self.interrupt.store(true, Ordering::Release);
+                Err(MediaError::CommandTimedOut)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaError::RuntimeUnavailable(
+                "媒体 worker 已停止".to_owned(),
+            )),
+        }
     }
 
     fn request_interrupting_status(
@@ -205,7 +237,7 @@ impl GlobalMediaHandle {
     ) -> MediaResult<MediaRuntimeStatus> {
         self.interrupt.store(true, Ordering::Release);
         let result = self.request_status(build);
-        if result.is_err() {
+        if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
             self.interrupt.store(false, Ordering::Release);
         }
         result
@@ -313,7 +345,10 @@ struct MediaWorker {
     hub: MediaStreamHub,
     clock: MediaClock,
     next_read_at: Instant,
+    pacing_anchor: Option<Instant>,
+    last_media_timestamp: Option<i64>,
     interrupt: Arc<AtomicBool>,
+    preview_attached: bool,
 }
 
 impl MediaWorker {
@@ -332,7 +367,10 @@ impl MediaWorker {
             hub: MediaStreamHub::new(),
             clock: MediaClock::new(),
             next_read_at: Instant::now(),
+            pacing_anchor: None,
+            last_media_timestamp: None,
             interrupt,
+            preview_attached: false,
         }
     }
 
@@ -397,29 +435,53 @@ impl MediaWorker {
         if let Some(mut packet) = output.packet.take() {
             self.clock.normalize(&mut packet);
             self.status.position_seconds = packet.position_seconds();
+            self.schedule_next_read(packet.pts.or(packet.dts));
             let packet = Arc::new(packet);
             let _ = self.hub.broadcast(&packet);
         }
-        let had_preview = !output.preview_frames.is_empty();
         for frame in output.preview_frames {
             self.status.position_seconds = frame.position_seconds;
             self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
             let _ = self.preview.try_send(frame);
         }
-        if had_preview {
-            let fps = self
-                .status
-                .video
-                .as_ref()
-                .map_or(25.0, |video| video.frames_per_second.max(1.0));
-            let delay = Duration::from_secs_f64(1.0 / fps / self.status.playback_rate.max(0.25));
-            self.next_read_at = Instant::now() + delay;
-        }
         self.publish_status();
         Ok(())
     }
 
+    fn schedule_next_read(&mut self, timestamp: Option<i64>) {
+        let Some(timestamp) = timestamp else {
+            self.next_read_at = Instant::now();
+            return;
+        };
+        if self
+            .session
+            .as_ref()
+            .is_some_and(MediaSourceSession::is_live_capture)
+        {
+            // Live input pacing is owned by av_read_frame/device backend. Sleeping here would
+            // halve the effective camera rate and make the driver queue grow under load.
+            self.last_media_timestamp = Some(timestamp);
+            self.next_read_at = Instant::now();
+            return;
+        }
+        let anchor = *self.pacing_anchor.get_or_insert_with(Instant::now);
+        let previous = self.last_media_timestamp.replace(timestamp);
+        let rate = self.status.playback_rate.max(0.01);
+        let media_seconds = MediaClock::timestamp_seconds(timestamp);
+        let deadline = if previous.is_none() {
+            anchor
+        } else {
+            let elapsed = Duration::from_secs_f64((media_seconds / rate).max(0.0));
+            anchor.checked_add(elapsed).unwrap_or_else(Instant::now)
+        };
+        self.next_read_at = deadline;
+    }
+
     /// Returns true while the worker should keep running.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The owner thread keeps serialized media commands in one explicit dispatcher"
+    )]
     fn handle_command(&mut self, command: MediaCommand) -> bool {
         self.interrupt.store(false, Ordering::Release);
         match command {
@@ -428,14 +490,18 @@ impl MediaWorker {
                 looping,
                 reply,
             } => {
-                let result = Mp4MediaSource::new(path)
-                    .open(looping)
+                let result = self
+                    .release_current_source()
+                    .and_then(|()| Mp4MediaSource::new(path).open(looping))
                     .and_then(|session| self.replace_session(session, MediaSourceKind::Mp4));
                 Self::reply_status(&reply, result);
             }
             MediaCommand::OpenCamera { settings, reply } => {
-                let result = CameraMediaSource::new(settings, Arc::clone(&self.interrupt))
-                    .open(false)
+                let result = self
+                    .release_current_source()
+                    .and_then(|()| {
+                        CameraMediaSource::new(settings, Arc::clone(&self.interrupt)).open(false)
+                    })
                     .and_then(|session| self.replace_session(session, MediaSourceKind::Camera));
                 Self::reply_status(&reply, result);
             }
@@ -445,8 +511,23 @@ impl MediaWorker {
                     self.status.source_status = MediaSourceStatus::Playing;
                     self.status.last_error = None;
                     self.next_read_at = Instant::now();
+                    self.pacing_anchor = Some(Instant::now());
+                    self.last_media_timestamp = None;
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
+            }
+            MediaCommand::AttachPreview(reply) => {
+                self.preview_attached = true;
+                Self::reply_status(&reply, Ok(self.status.clone()));
+            }
+            MediaCommand::DetachPreview(reply) => {
+                self.preview_attached = false;
+                let result = if !self.preview_attached && self.hub.consumer_count() == 0 {
+                    self.stop_source()
+                } else {
+                    Ok(self.status.clone())
+                };
+                Self::reply_status(&reply, result);
             }
             MediaCommand::Pause(reply) => {
                 let result = self.with_session(MediaSourceSession::pause);
@@ -477,6 +558,15 @@ impl MediaWorker {
             MediaCommand::SetPlaybackRate { rate, reply } => {
                 let result = if rate.is_finite() && (0.25..=4.0).contains(&rate) {
                     self.status.playback_rate = rate;
+                    if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| !session.is_live_capture())
+                    {
+                        let current = self.status.position_seconds.max(0.0) / rate;
+                        self.pacing_anchor =
+                            Instant::now().checked_sub(Duration::from_secs_f64(current));
+                    }
                     Ok(self.status.clone())
                 } else {
                     Err(MediaError::Playback(
@@ -534,7 +624,11 @@ impl MediaWorker {
         self.finalize_current_session()?;
         let probe = session.probe().clone();
         self.session = Some(session);
+        self.pacing_anchor = None;
+        self.last_media_timestamp = None;
         self.reset_or_continue_clock();
+        self.pacing_anchor = None;
+        self.last_media_timestamp = None;
         self.status = MediaRuntimeStatus::ready(
             source_kind,
             probe.video,
@@ -542,6 +636,16 @@ impl MediaWorker {
             probe.duration_seconds,
         );
         Ok(self.status.clone())
+    }
+
+    fn release_current_source(&mut self) -> MediaResult<()> {
+        self.finalize_current_session()?;
+        self.session = None;
+        self.clock.reset();
+        self.pacing_anchor = None;
+        self.last_media_timestamp = None;
+        self.status = MediaRuntimeStatus::unconfigured();
+        Ok(())
     }
 
     fn stop_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
@@ -562,6 +666,8 @@ impl MediaWorker {
         self.finalize_current_session()?;
         self.session = None;
         self.clock.reset();
+        self.pacing_anchor = None;
+        self.last_media_timestamp = None;
         self.status = MediaRuntimeStatus::unconfigured();
         Ok(self.status.clone())
     }
@@ -583,6 +689,8 @@ impl MediaWorker {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         session.reset()?;
         self.reset_or_continue_clock();
+        self.pacing_anchor = None;
+        self.last_media_timestamp = None;
         self.status.source_status = MediaSourceStatus::Ready;
         self.status.position_seconds = 0.0;
         Ok(self.status.clone())
@@ -596,7 +704,12 @@ impl MediaWorker {
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         let frame = session.seek_frame(position_seconds)?;
+        self.clock.begin_seek();
         self.reset_or_continue_clock();
+        self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
+            position_seconds.max(0.0) / self.status.playback_rate.max(0.01),
+        ));
+        self.last_media_timestamp = None;
         self.status.position_seconds = frame
             .as_ref()
             .map_or(position_seconds, |frame| frame.position_seconds);

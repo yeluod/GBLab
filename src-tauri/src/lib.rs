@@ -68,6 +68,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::get_video_capture_capabilities,
             commands::get_video_encoder_capabilities,
             commands::play_media,
+            commands::attach_media_preview,
+            commands::detach_media_preview,
             commands::pause_media,
             commands::stop_media,
             commands::reset_media,

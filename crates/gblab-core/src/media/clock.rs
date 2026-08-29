@@ -8,6 +8,7 @@ pub struct MediaClock {
     loop_offset: i64,
     iteration_origin: Option<i64>,
     last_end: i64,
+    seek_generation: u64,
 }
 
 impl MediaClock {
@@ -18,6 +19,7 @@ impl MediaClock {
             loop_offset: 0,
             iteration_origin: None,
             last_end: 0,
+            seek_generation: 0,
         }
     }
 
@@ -30,6 +32,18 @@ impl MediaClock {
     /// Resets a local timeline, as required by independent preview seek sessions.
     pub const fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Starts an independent seek generation while retaining the monotonic output offset.
+    pub const fn begin_seek(&mut self) {
+        self.seek_generation = self.seek_generation.saturating_add(1);
+        self.iteration_origin = None;
+    }
+
+    /// Returns the generation of the current source timeline.
+    #[must_use]
+    pub const fn seek_generation(&self) -> u64 {
+        self.seek_generation
     }
 
     /// Converts packet timestamps to the shared clock and keeps them monotonic across loops.
@@ -65,6 +79,12 @@ impl MediaClock {
         packet.dts = dts;
         packet.duration = duration;
         packet.time_base = MediaTimeBase::MPEG_CLOCK;
+    }
+
+    /// Converts a normalized MPEG-clock timestamp to seconds for wall-clock pacing.
+    #[must_use]
+    pub fn timestamp_seconds(timestamp: i64) -> f64 {
+        MediaTimeBase::MPEG_CLOCK.seconds(timestamp)
     }
 }
 
@@ -105,5 +125,35 @@ mod tests {
         assert_eq!(first.pts, Some(0));
         assert_eq!(last.pts, Some(86_400));
         assert_eq!(loop_first.pts, Some(90_000));
+    }
+
+    #[test]
+    fn normalize_should_keep_negative_pts_and_dts_ordered() {
+        let mut clock = MediaClock::new();
+        let mut packet = EncodedMediaPacket {
+            track: MediaTrackKind::Video,
+            codec: EncodedMediaCodec::Video(VideoCodec::H264),
+            data: Bytes::from_static(b"frame"),
+            pts: Some(-40),
+            dts: Some(-80),
+            duration: 40,
+            time_base: MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
+            is_keyframe: false,
+            codec_configuration: None,
+        };
+        clock.normalize(&mut packet);
+
+        assert_eq!(packet.pts, Some(0));
+        assert_eq!(packet.dts, Some(-3_600));
+        assert!(packet.dts < packet.pts);
+    }
+
+    #[test]
+    fn seek_should_increment_generation_without_resetting_loop_offset() {
+        let mut clock = MediaClock::new();
+        let mut packet = packet(0);
+        clock.normalize(&mut packet);
+        clock.begin_seek();
+        assert_eq!(clock.seek_generation(), 1);
     }
 }

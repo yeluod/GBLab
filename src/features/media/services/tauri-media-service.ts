@@ -278,10 +278,11 @@ export class TauriMediaService implements MediaService {
   }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     await this.open(config);
+    await invokeCommand<BackendRuntimeStatus>('attach_media_preview');
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('play_media'));
   }
   async stopPreview(): Promise<MediaRuntimeStatus> {
-    return toRuntime(await invokeCommand<BackendRuntimeStatus>('stop_media'));
+    return toRuntime(await invokeCommand<BackendRuntimeStatus>('detach_media_preview'));
   }
   async pausePreview(): Promise<MediaRuntimeStatus> {
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('pause_media'));
