@@ -92,13 +92,6 @@
               <NFormItem label="平台 ID" path="platformId">
                 <NInput v-model:value="formModel.platformId" maxlength="20" />
               </NFormItem>
-              <NFormItem label="认证密码" path="password">
-                <NInput
-                  v-model:value="formModel.password"
-                  :maxlength="128"
-                  placeholder="请输入 SIP Digest 认证密码"
-                />
-              </NFormItem>
               <NFormItem label="本地监听地址" path="localBindAddress">
                 <NInput v-model:value="formModel.localBindAddress" placeholder="0.0.0.0" />
               </NFormItem>
@@ -125,9 +118,17 @@
           <NTabPane name="device">
             <template #tab><AppIcon icon="settings" :size="15" /> 设备配置</template>
             <p class="settings-section-description">
-              配置全部模拟设备共享的 XML 信令字符集、注册周期和心跳行为。
+              配置全部模拟设备共享的认证密码、XML 信令字符集、注册周期和心跳行为。
             </p>
             <div class="form-grid">
+              <NFormItem label="认证密码（可选）" path="password">
+                <NInput
+                  v-model:value="formModel.password"
+                  :maxlength="128"
+                  placeholder="留空表示平台无需 Digest 认证"
+                />
+                <template #feedback>仅在平台启用 SIP Digest 认证时填写。</template>
+              </NFormItem>
               <NFormItem label="信令字符集" path="signalCharset">
                 <NSelect v-model:value="formModel.signalCharset" :options="signalCharsetOptions" />
                 <template #feedback>

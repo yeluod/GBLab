@@ -330,7 +330,7 @@ pub struct SipServiceConfiguration {
     pub platform_id: String,
     /// SIP 认证域。
     pub domain: String,
-    /// 全部设备共用的 SIP Digest 认证密码。
+    /// 全部模拟设备共用的 SIP Digest 认证密码；为空表示平台不要求 Digest 认证。
     pub password: String,
     /// SIP socket 本地绑定地址。
     pub local_bind_address: String,
@@ -633,10 +633,10 @@ fn validate_domain(domain: &str) -> Result<(), ConfigurationError> {
 }
 
 fn validate_password(password: &str) -> Result<(), ConfigurationError> {
-    if password.is_empty() || password.len() > MAX_PASSWORD_LENGTH {
+    if password.len() > MAX_PASSWORD_LENGTH {
         return Err(ConfigurationError::invalid_field(
             "password",
-            "密码不能为空且长度不能超过 128 个字符",
+            "密码长度不能超过 128 个字符",
         ));
     }
     if password.chars().any(char::is_control) {
@@ -777,25 +777,18 @@ mod tests {
     }
 
     #[test]
-    fn save_sip_service_should_reject_empty_password_without_changing_file()
+    fn save_sip_service_should_accept_and_persist_empty_password()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let configuration_path = directory.path().join("gblab.config.json");
         let mut store = ConfigurationStore::open(&configuration_path)?;
-        let original_contents = fs::read_to_string(&configuration_path)?;
-        let mut invalid = valid_sip_service();
-        invalid.password.clear();
+        let mut configuration = valid_sip_service();
+        configuration.password.clear();
 
-        let error = store.save_sip_service(invalid).err();
+        store.save_sip_service(configuration)?;
+        let reloaded = ConfigurationStore::open(&configuration_path)?;
 
-        assert!(matches!(
-            error,
-            Some(ConfigurationError::InvalidField {
-                field: "password",
-                ..
-            })
-        ));
-        assert_eq!(fs::read_to_string(&configuration_path)?, original_contents);
+        assert!(reloaded.sip_service().password.is_empty());
         Ok(())
     }
 

@@ -110,8 +110,8 @@ function validateSipServiceConfig(config: SipServiceConfig): OperationResult {
   if (!DEVICE_ID_PATTERN.test(config.platformId.trim())) {
     return { ok: false, message: '平台 ID 必须为 20 位数字。' };
   }
-  if (config.password.length === 0 || config.password.length > 128) {
-    return { ok: false, message: '密码不能为空且长度不能超过 128 个字符。' };
+  if (config.password.length > 128) {
+    return { ok: false, message: '密码长度不能超过 128 个字符。' };
   }
   if (/\p{Cc}/u.test(config.password)) {
     return { ok: false, message: '密码不能包含控制字符。' };
