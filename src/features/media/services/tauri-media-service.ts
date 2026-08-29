@@ -4,7 +4,6 @@ import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 import { CaptureDeviceStatus, MediaSourceType } from '../types/media-config';
 import {
   MediaSourceStatus,
-  RecordingStatus,
   type MediaProbeResult,
   type MediaRuntimeStatus,
 } from '../types/media-runtime';
@@ -191,7 +190,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
         : value.sourceStatus === 'unconfigured'
           ? MediaSourceStatus.Unconfigured
           : value.sourceStatus === 'stopped'
-            ? MediaSourceStatus.Ready
+            ? MediaSourceStatus.Stopped
             : MediaSourceStatus.Ready;
   return {
     sourceStatus,
@@ -205,8 +204,8 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     audio: value.audio ? frontendAudio(value.audio) : null,
     // Live/Playback managers are not implemented yet; never expose source
     // type as a fabricated business-session count.
-    activeLiveSessions: value.activeLiveConsumers,
-    activePlaybackSessions: value.activeRecorderConsumers,
+    activeLiveConsumers: value.activeLiveConsumers,
+    activeRecorderConsumers: value.activeRecorderConsumers,
     durationSeconds: value.durationSeconds,
     positionSeconds: value.positionSeconds,
     playbackRate: value.playbackRate,
@@ -215,12 +214,6 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     muted: value.muted,
     volume: value.volume,
     audioMonitoring: value.audioMonitoring,
-    recording: {
-      status: RecordingStatus.Disabled,
-      currentFile: null,
-      recordedDurationSeconds: 0,
-      usedSpaceBytes: 0,
-    },
     errorMessage: value.lastError,
     pipelineErrorMessage: value.lastPipelineError,
   };

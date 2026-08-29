@@ -30,6 +30,5 @@ pub use media::{
     CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists, GlobalMediaHandle,
     GlobalMediaRuntime, MediaError, MediaResult, MediaRuntimeStatus, MediaVideoFrame,
     Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode, VideoEncoderCapabilities,
-    list_capture_devices, probe_camera, probe_mp4, video_capture_capabilities,
-    video_encoder_capabilities,
+    list_capture_devices, probe_mp4, video_capture_capabilities, video_encoder_capabilities,
 };

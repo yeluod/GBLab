@@ -44,18 +44,6 @@ pub fn probe_mp4(path: &std::path::Path) -> MediaResult<Mp4ProbeResult> {
     Mp4MediaSource::new(path.to_owned()).probe()
 }
 
-/// Probes negotiated camera input properties without changing the global source.
-pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeResult> {
-    use types::MediaSource;
-    CameraMediaSource::new(
-        settings.clone(),
-        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
-            gblab_ffmpeg_device::InterruptReason::None as u8,
-        )),
-    )
-    .probe()
-}
-
 /// Enumerates native camera and microphone inputs.
 pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
     camera::list_capture_devices()

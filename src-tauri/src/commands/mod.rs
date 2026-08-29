@@ -95,15 +95,6 @@ pub fn open_camera(
         .map_err(|error| CommandErrorDto::media(&error))
 }
 
-#[tauri::command]
-pub fn probe_camera(
-    configuration: gblab_core::CameraCaptureSettings,
-) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
-    gblab_core::probe_camera(&configuration)
-        .map(Into::into)
-        .map_err(|error| CommandErrorDto::media(&error))
-}
-
 /// 返回当前平台由 `FFmpeg` 原生设备层枚举出的摄像头和麦克风。
 #[tauri::command]
 pub fn list_capture_devices() -> Result<crate::dto::CaptureDeviceListsDto, CommandErrorDto> {

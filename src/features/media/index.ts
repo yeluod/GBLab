@@ -49,11 +49,10 @@ export type {
   VideoEncoderCapabilities,
   VideoEncoderCapability,
 } from './types/media-config';
-export { MediaSourceStatus, RecordingStatus } from './types/media-runtime';
+export { MediaSourceStatus } from './types/media-runtime';
 export type {
   AudioStreamInfo,
   MediaProbeResult,
   MediaRuntimeStatus,
-  RecordingRuntimeInfo,
   VideoStreamInfo,
 } from './types/media-runtime';

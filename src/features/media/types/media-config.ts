@@ -17,7 +17,7 @@ export enum AudioCodec {
   Aac = 'aac',
 }
 
-/** 编码后端；第一阶段只开放自动选择。 */
+/** 编码后端；界面只展示当前 FFmpeg 实际提供的实现。 */
 export enum EncoderBackend {
   Auto = 'auto',
   VideoToolbox = 'videotoolbox',

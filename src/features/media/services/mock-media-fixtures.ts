@@ -9,7 +9,6 @@ import {
 import {
   createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
-  RecordingStatus,
   type MediaProbeResult,
   type MediaRuntimeStatus,
 } from '../types/media-runtime';
@@ -161,8 +160,8 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     sourceLabel: 'MP4 · h265-aac-demo.mp4',
     video: structuredClone(defaultProbeResult.video),
     audio: structuredClone(defaultProbeResult.audio),
-    activeLiveSessions: 0,
-    activePlaybackSessions: 0,
+    activeLiveConsumers: 0,
+    activeRecorderConsumers: 0,
     durationSeconds: defaultProbeResult.video.durationSeconds,
     positionSeconds: 0,
     playbackRate: 1,
@@ -171,12 +170,6 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     muted: false,
     volume: 1,
     audioMonitoring: false,
-    recording: {
-      status: RecordingStatus.Disabled,
-      currentFile: null,
-      recordedDurationSeconds: 0,
-      usedSpaceBytes: 0,
-    },
     errorMessage: null,
     pipelineErrorMessage: null,
   };

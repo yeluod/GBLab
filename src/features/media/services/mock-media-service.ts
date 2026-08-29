@@ -3,7 +3,6 @@ import { createDefaultMediaConfig } from '../types/media-defaults';
 import {
   createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
-  RecordingStatus,
   type MediaRuntimeStatus,
 } from '../types/media-runtime';
 import { MediaServiceError, type MediaService, type MediaVideoFrame } from './media-service';
@@ -51,7 +50,7 @@ function fileName(filePath: string): string {
   return filePath.split(/[\\/]/).at(-1) ?? filePath;
 }
 
-/** 第一阶段媒体后端；只模拟契约和状态，不访问真实文件或采集设备。 */
+/** 浏览器和测试环境使用的媒体后端；只模拟契约和状态。 */
 export class MockMediaService implements MediaService {
   private readonly failures: Set<MockMediaOperation>;
   private savedConfig: GlobalMediaConfig;
@@ -134,7 +133,7 @@ export class MockMediaService implements MediaService {
     this.failIfRequested('stopPreview');
     this.runtimeStatus = {
       ...this.runtimeStatus,
-      sourceStatus: MediaSourceStatus.Ready,
+      sourceStatus: MediaSourceStatus.Stopped,
       errorMessage: null,
     };
     return clone(this.runtimeStatus);
@@ -208,20 +207,6 @@ export class MockMediaService implements MediaService {
     config: GlobalMediaConfig,
     sourceStatus: MediaSourceStatus,
   ): MediaRuntimeStatus {
-    const recording = config.recording.isEnabled
-      ? {
-          status: RecordingStatus.Ready,
-          currentFile: 'GBLab-preview-001.mp4',
-          recordedDurationSeconds: 128,
-          usedSpaceBytes: 67_108_864,
-        }
-      : {
-          status: RecordingStatus.Disabled,
-          currentFile: null,
-          recordedDurationSeconds: 0,
-          usedSpaceBytes: 0,
-        };
-
     if (config.source.type === MediaSourceType.Mp4) {
       const probeResult = MOCK_PROBE_RESULTS[config.source.mp4.filePath];
       if (probeResult === undefined) {
@@ -232,8 +217,8 @@ export class MockMediaService implements MediaService {
         sourceLabel: `MP4 · ${fileName(config.source.mp4.filePath)}`,
         video: clone(probeResult.video),
         audio: clone(probeResult.audio),
-        activeLiveSessions: 0,
-        activePlaybackSessions: 0,
+        activeLiveConsumers: 0,
+        activeRecorderConsumers: 0,
         durationSeconds: probeResult.video.durationSeconds,
         positionSeconds: 0,
         playbackRate: 1,
@@ -242,7 +227,6 @@ export class MockMediaService implements MediaService {
         muted: false,
         volume: 1,
         audioMonitoring: false,
-        recording,
         errorMessage: null,
         pipelineErrorMessage: null,
       };
@@ -269,8 +253,8 @@ export class MockMediaService implements MediaService {
             bitrateKbps: audio.bitrateKbps,
           }
         : null,
-      activeLiveSessions: 0,
-      activePlaybackSessions: 0,
+      activeLiveConsumers: 0,
+      activeRecorderConsumers: 0,
       durationSeconds: null,
       positionSeconds: 0,
       playbackRate: 1,
@@ -279,7 +263,6 @@ export class MockMediaService implements MediaService {
       muted: false,
       volume: 1,
       audioMonitoring: false,
-      recording,
       errorMessage: null,
       pipelineErrorMessage: null,
     };

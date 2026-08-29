@@ -4,7 +4,6 @@ import {
   AudioCodec,
   MediaSourceStatus,
   MediaSourceType,
-  RecordingStatus,
   VideoCodec,
   createDefaultMediaConfig,
 } from '@/features/media';
@@ -81,19 +80,7 @@ describe('MockMediaService', () => {
     expect(status.audio).toBeNull();
   });
 
-  it('启用录像后返回 Mock 录像运行信息但不创建文件', async () => {
-    const service = new MockMediaService();
-    const config = createDefaultMediaConfig();
-    config.recording.isEnabled = true;
-
-    const status = await service.applyConfig(config);
-
-    expect(status.recording.status).toBe(RecordingStatus.Ready);
-    expect(status.recording.currentFile).toBe('GBLab-preview-001.mp4');
-    expect(status.recording.usedSpaceBytes).toBeGreaterThan(0);
-  });
-
-  it('预览遵循 Ready 到 Previewing 再回到 Ready 的状态机', async () => {
+  it('预览遵循 Ready 到 Previewing 再回到 Stopped 的状态机', async () => {
     const service = new MockMediaService();
     const config = createDefaultMediaConfig();
 
@@ -101,7 +88,7 @@ describe('MockMediaService', () => {
     const ready = await service.stopPreview();
 
     expect(previewing.sourceStatus).toBe(MediaSourceStatus.Previewing);
-    expect(ready.sourceStatus).toBe(MediaSourceStatus.Ready);
+    expect(ready.sourceStatus).toBe(MediaSourceStatus.Stopped);
   });
 
   it('支持暂停、跳转、单帧和倍速控制', async () => {

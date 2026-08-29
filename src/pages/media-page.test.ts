@@ -73,7 +73,7 @@ describe('音视频源页面', () => {
     expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Previewing);
     await wrapper.get('[data-testid="stop-preview"]').trigger('click');
     await flushPromises();
-    expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
+    expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Stopped);
   });
 
   it('摄像头模式使用摄像头预览文案而不是 MP4 文案', async () => {

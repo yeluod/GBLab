@@ -63,7 +63,6 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::probe_mp4,
             commands::open_mp4,
             commands::open_camera,
-            commands::probe_camera,
             commands::list_capture_devices,
             commands::get_video_capture_capabilities,
             commands::get_video_encoder_capabilities,

@@ -6,7 +6,7 @@ import {
   type GlobalMediaConfig,
 } from './media-config';
 
-/** 第一阶段可直接加载的全局媒体默认配置。 */
+/** 可直接加载的全局媒体默认配置。 */
 export function createDefaultMediaConfig(): GlobalMediaConfig {
   return {
     source: {

@@ -6,15 +6,9 @@ export enum MediaSourceStatus {
   Ready = 'ready',
   Previewing = 'previewing',
   Paused = 'paused',
+  Stopped = 'stopped',
   Error = 'error',
   Unavailable = 'unavailable',
-}
-
-export enum RecordingStatus {
-  Disabled = 'disabled',
-  Ready = 'ready',
-  Recording = 'recording',
-  Error = 'error',
 }
 
 export interface VideoStreamInfo {
@@ -39,20 +33,13 @@ export interface MediaProbeResult {
   audio: AudioStreamInfo | null;
 }
 
-export interface RecordingRuntimeInfo {
-  status: RecordingStatus;
-  currentFile: string | null;
-  recordedDurationSeconds: number;
-  usedSpaceBytes: number;
-}
-
 export interface MediaRuntimeStatus {
   sourceStatus: MediaSourceStatus;
   sourceLabel: string;
   video: VideoStreamInfo | null;
   audio: AudioStreamInfo | null;
-  activeLiveSessions: number;
-  activePlaybackSessions: number;
+  activeLiveConsumers: number;
+  activeRecorderConsumers: number;
   durationSeconds: number | null;
   positionSeconds: number;
   playbackRate: number;
@@ -61,7 +48,6 @@ export interface MediaRuntimeStatus {
   muted: boolean;
   volume: number;
   audioMonitoring: boolean;
-  recording: RecordingRuntimeInfo;
   errorMessage: string | null;
   pipelineErrorMessage: string | null;
 }

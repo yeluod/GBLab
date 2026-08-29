@@ -14,7 +14,6 @@ import {
 import {
   createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
-  RecordingStatus,
   type MediaProbeResult,
   type MediaRuntimeStatus,
 } from '../types/media-runtime';
@@ -49,8 +48,8 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     sourceLabel: '媒体服务异常',
     video: null,
     audio: null,
-    activeLiveSessions: 0,
-    activePlaybackSessions: 0,
+    activeLiveConsumers: 0,
+    activeRecorderConsumers: 0,
     durationSeconds: null,
     positionSeconds: 0,
     playbackRate: 1,
@@ -59,12 +58,6 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     muted: false,
     volume: 1,
     audioMonitoring: false,
-    recording: {
-      status: RecordingStatus.Error,
-      currentFile: null,
-      recordedDurationSeconds: 0,
-      usedSpaceBytes: 0,
-    },
     errorMessage: message,
     pipelineErrorMessage: null,
   };
@@ -138,8 +131,8 @@ export const useMediaStore = defineStore('media', () => {
     sourceLabel: '尚未加载',
     video: null,
     audio: null,
-    activeLiveSessions: 0,
-    activePlaybackSessions: 0,
+    activeLiveConsumers: 0,
+    activeRecorderConsumers: 0,
     durationSeconds: null,
     positionSeconds: 0,
     playbackRate: 1,
@@ -148,12 +141,6 @@ export const useMediaStore = defineStore('media', () => {
     muted: false,
     volume: 1,
     audioMonitoring: false,
-    recording: {
-      status: RecordingStatus.Disabled,
-      currentFile: null,
-      recordedDurationSeconds: 0,
-      usedSpaceBytes: 0,
-    },
     errorMessage: null,
     pipelineErrorMessage: null,
   });

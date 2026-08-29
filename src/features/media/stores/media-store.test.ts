@@ -6,7 +6,6 @@ import {
   MediaSourceStatus,
   MediaSourceType,
   MockMediaService,
-  RecordingStatus,
   VideoCodec,
   configureMediaService,
   createDefaultMediaConfig,
@@ -136,7 +135,6 @@ describe('全局媒体 Store', () => {
     expect(invalid.ok).toBe(false);
     expect(store.fieldErrors['recording.directory']).toBeUndefined();
     expect(valid).toEqual({ ok: true });
-    expect(store.runtimeStatus.recording.status).toBe(RecordingStatus.Disabled);
   });
 
   it('Apply 只更新 Mock Runtime，不改写保存配置', async () => {
@@ -187,7 +185,7 @@ describe('全局媒体 Store', () => {
 
     expect(started).toEqual({ ok: true });
     expect(stopped).toEqual({ ok: true });
-    expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
+    expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Stopped);
   });
 
   it('服务异常会投影为 Error 状态和可见错误信息', async () => {
@@ -217,7 +215,7 @@ describe('全局媒体 Store', () => {
     expect(service.requestedDeviceIds).toEqual(['camera-integrated']);
   });
 
-  it('采集能力失败只标记配置区，不污染运行与录像状态', async () => {
+  it('采集能力失败只标记配置区，不污染媒体运行状态', async () => {
     const config = createDefaultMediaConfig();
     config.source.type = MediaSourceType.Camera;
     configureMediaService(
@@ -232,7 +230,6 @@ describe('全局媒体 Store', () => {
     expect(store.capabilityError).toContain('getVideoCapabilities 失败');
     expect(store.serviceError).toBeNull();
     expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
-    expect(store.runtimeStatus.recording.status).toBe(RecordingStatus.Disabled);
   });
 
   it('保留 Tauri 序列化错误中的真实后端消息', async () => {

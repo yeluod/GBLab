@@ -6,7 +6,6 @@
     AudioCodec,
     MediaSourceStatus,
     MediaSourceType,
-    RecordingStatus,
     VideoCodec,
     type MediaProbeResult,
     type MediaRuntimeStatus,
@@ -39,14 +38,9 @@
     [MediaSourceStatus.Ready]: '就绪',
     [MediaSourceStatus.Previewing]: '预览中',
     [MediaSourceStatus.Paused]: '已暂停',
+    [MediaSourceStatus.Stopped]: '已停止',
     [MediaSourceStatus.Error]: '错误',
     [MediaSourceStatus.Unavailable]: '不可用',
-  };
-  const recordingStatusText: Record<RecordingStatus, string> = {
-    [RecordingStatus.Disabled]: '未启用',
-    [RecordingStatus.Ready]: '就绪',
-    [RecordingStatus.Recording]: '录制中',
-    [RecordingStatus.Error]: '错误',
   };
   const statusTagType = computed(() => {
     if (props.runtimeStatus.sourceStatus === MediaSourceStatus.Error) return 'error';
@@ -122,11 +116,6 @@
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
-  }
-
-  function byteLabel(bytes: number): string {
-    if (bytes === 0) return '0 MB';
-    return `${(bytes / 1_048_576).toFixed(1)} MB`;
   }
 </script>
 
@@ -262,7 +251,7 @@
       </div>
 
       <div v-if="runtimeStatus.audio !== null" class="audio-controls">
-        <span title="当前只保存控制状态，实际音频输出管线尚未接入">静音状态</span>
+        <span title="控制本地音频监听输出">静音状态</span>
         <NSwitch
           :value="runtimeStatus.muted"
           @update:value="emit('audioControlChange', $event, runtimeStatus.volume)"
@@ -331,9 +320,9 @@
           <dt>Source</dt>
           <dd>{{ sourceStatusText[runtimeStatus.sourceStatus] }}</dd>
           <dt>Live</dt>
-          <dd>{{ runtimeStatus.activeLiveSessions }}</dd>
-          <dt>Playback</dt>
-          <dd>{{ runtimeStatus.activePlaybackSessions }}</dd>
+          <dd>{{ runtimeStatus.activeLiveConsumers }}</dd>
+          <dt>Recorder consumers</dt>
+          <dd>{{ runtimeStatus.activeRecorderConsumers }}</dd>
           <dt>Decoded Frames</dt>
           <dd>{{ runtimeStatus.decodedFrames }}</dd>
           <dt>Capture / Preview</dt>
@@ -366,14 +355,6 @@
             <dt>Pipeline Error</dt>
             <dd class="runtime-error">{{ runtimeStatus.pipelineErrorMessage }}</dd>
           </template>
-          <dt>Recording</dt>
-          <dd>{{ recordingStatusText[runtimeStatus.recording.status] }}</dd>
-          <dt>Current File</dt>
-          <dd>{{ runtimeStatus.recording.currentFile ?? '—' }}</dd>
-          <dt>Recorded</dt>
-          <dd>{{ durationLabel(runtimeStatus.recording.recordedDurationSeconds) }}</dd>
-          <dt>Used Space</dt>
-          <dd>{{ byteLabel(runtimeStatus.recording.usedSpaceBytes) }}</dd>
         </dl>
       </section>
     </div>
