@@ -1,7 +1,7 @@
 import { invokeCommand } from '@/infrastructure/tauri';
 import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 
-import { CaptureDeviceStatus, MediaSourceType, VideoCodec } from '../types/media-config';
+import { CaptureDeviceStatus, MediaSourceType } from '../types/media-config';
 import {
   MediaSourceStatus,
   RecordingStatus,
@@ -12,8 +12,9 @@ import type {
   CaptureDeviceCapabilities,
   CaptureDeviceInfo,
   GlobalMediaConfig,
+  VideoEncoderCapabilities,
 } from '../types/media-config';
-import type { MediaService } from './media-service';
+import type { MediaService, MediaVideoFrame } from './media-service';
 
 interface BackendStreamInfo {
   codec: string;
@@ -191,8 +192,10 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
           : '未配置',
     video: value.video ? frontendVideo(value.video) : null,
     audio: value.audio ? frontendAudio(value.audio) : null,
-    activeLiveSessions: 0,
-    activePlaybackSessions: value.sourceStatus === 'playing' ? 1 : 0,
+    activeLiveSessions:
+      value.sourceKind === MediaSourceType.Camera && value.sourceStatus === 'playing' ? 1 : 0,
+    activePlaybackSessions:
+      value.sourceKind === MediaSourceType.Mp4 && value.sourceStatus === 'playing' ? 1 : 0,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -254,34 +257,12 @@ export class TauriMediaService implements MediaService {
     return devices.audio.map(toCaptureDevice);
   }
   async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
-    const probe = await invokeCommand<BackendProbeResult>('probe_camera', {
-      configuration: {
-        videoDeviceId: deviceId,
-        audioEnabled: false,
-        audioDeviceId: '',
-        width: 0,
-        height: 0,
-        framesPerSecond: 0,
-      },
-    });
-    const width = probe.video.width ?? 0;
-    const height = probe.video.height ?? 0;
-    const framesPerSecond = probe.video.framesPerSecond ?? 0;
-    return {
+    return invokeCommand<CaptureDeviceCapabilities>('get_video_capture_capabilities', {
       deviceId,
-      modes:
-        width > 0 && height > 0
-          ? [
-              {
-                width,
-                height,
-                supportedFramesPerSecond:
-                  framesPerSecond > 0 ? [Math.round(framesPerSecond)] : [],
-              },
-            ]
-          : [],
-      supportedCodecs: [VideoCodec.H264, VideoCodec.H265],
-    };
+    });
+  }
+  getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities> {
+    return invokeCommand<VideoEncoderCapabilities>('get_video_encoder_capabilities');
   }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     await this.open(config);
@@ -292,6 +273,10 @@ export class TauriMediaService implements MediaService {
   }
   async getRuntimeStatus(): Promise<MediaRuntimeStatus> {
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status'));
+  }
+
+  async readFrame(): Promise<MediaVideoFrame | null> {
+    return invokeCommand<MediaVideoFrame | null>('read_media_frame');
   }
 
   private async open(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
@@ -318,11 +303,11 @@ export class TauriMediaService implements MediaService {
   }
 
   private async listCaptureDevices(): Promise<BackendCaptureDeviceLists> {
-    this.captureDevicesRequest ??= invokeCommand<BackendCaptureDeviceLists>('list_capture_devices').finally(
-      () => {
-        this.captureDevicesRequest = null;
-      },
-    );
+    this.captureDevicesRequest ??= invokeCommand<BackendCaptureDeviceLists>(
+      'list_capture_devices',
+    ).finally(() => {
+      this.captureDevicesRequest = null;
+    });
     return this.captureDevicesRequest;
   }
 }

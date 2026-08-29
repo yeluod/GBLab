@@ -1,10 +1,11 @@
 <script setup lang="ts">
-  import { computed } from 'vue';
+  import { computed, ref, watch } from 'vue';
   import { NButton, NDivider, NEmpty, NSpin, NTag } from 'naive-ui';
 
   import {
     AudioCodec,
     MediaSourceStatus,
+    MediaSourceType,
     RecordingStatus,
     VideoCodec,
     type MediaProbeResult,
@@ -16,6 +17,8 @@
     probeResult: MediaProbeResult | null;
     isPreviewPending: boolean;
     canStartPreview: boolean;
+    sourceType: MediaSourceType;
+    previewFrame?: { width: number; height: number; rgba: number[] } | null;
   }>();
   const emit = defineEmits<{
     startPreview: [];
@@ -46,6 +49,33 @@
   const displayedAudio = computed(() =>
     props.probeResult === null ? props.runtimeStatus.audio : props.probeResult.audio,
   );
+  const previewTitle = computed(() =>
+    props.sourceType === MediaSourceType.Camera ? '摄像头预览' : 'MP4 预览',
+  );
+  const previewEmptyDescription = computed(() =>
+    props.sourceType === MediaSourceType.Camera
+      ? '选择摄像头和采集参数后可开始预览'
+      : '选择并检测 MP4 后可开始预览',
+  );
+  const previewCanvas = ref<HTMLCanvasElement | null>(null);
+  function drawFrame(frame: { width: number; height: number; rgba: number[] } | null | undefined) {
+    if (frame === null || frame === undefined || previewCanvas.value === null) return;
+    const canvas = previewCanvas.value;
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    const context = canvas.getContext('2d');
+    if (context === null) return;
+    context.putImageData(
+      new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height),
+      0,
+      0,
+    );
+  }
+  watch(
+    () => props.previewFrame,
+    (frame) => drawFrame(frame),
+  );
+  watch(previewCanvas, () => drawFrame(props.previewFrame), { flush: 'post' });
 
   function codecLabel(codec: VideoCodec | AudioCodec): string {
     const labels: Record<VideoCodec | AudioCodec, string> = {
@@ -91,11 +121,11 @@
           v-if="isPreviewPending || runtimeStatus.sourceStatus === MediaSourceStatus.Loading"
         />
         <template v-else-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing">
-          <div class="preview-test-pattern" aria-hidden="true"></div>
-          <strong>MP4 Preview Surface</strong>
+          <canvas ref="previewCanvas" class="preview-canvas" aria-label="视频预览画面"></canvas>
+          <strong>{{ previewTitle }}</strong>
           <span>{{ runtimeStatus.sourceLabel }}</span>
         </template>
-        <NEmpty v-else description="选择并检测 MP4 后可查看预览状态" />
+        <NEmpty v-else :description="previewEmptyDescription" />
       </div>
 
       <div class="preview-actions">
@@ -118,7 +148,7 @@
         >
           停止预览
         </NButton>
-        <span>当前展示媒体状态；真实视频画面将在媒体输出链路接入后提供。</span>
+        <span>{{ sourceType === MediaSourceType.Camera ? '等待摄像头采集' : '等待文件播放' }}</span>
       </div>
     </section>
 

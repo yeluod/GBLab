@@ -50,10 +50,11 @@ describe('MockMediaService', () => {
   it('从服务返回摄像头、麦克风和设备能力', async () => {
     const service = new MockMediaService();
 
-    const [videoDevices, audioDevices, capabilities] = await Promise.all([
+    const [videoDevices, audioDevices, capabilities, encoderCapabilities] = await Promise.all([
       service.listVideoDevices(),
       service.listAudioDevices(),
       service.getVideoCapabilities('camera-integrated'),
+      service.getVideoEncoderCapabilities(),
     ]);
 
     expect(videoDevices.map((device) => device.id)).toContain('camera-usb');
@@ -61,7 +62,7 @@ describe('MockMediaService', () => {
     expect(capabilities.modes).toEqual(
       expect.arrayContaining([expect.objectContaining({ width: 1920, height: 1080 })]),
     );
-    expect(capabilities.supportedCodecs).toEqual([VideoCodec.H264, VideoCodec.H265]);
+    expect(encoderCapabilities.supportedCodecs).toEqual([VideoCodec.H264, VideoCodec.H265]);
   });
 
   it('Camera only 应用后运行状态不包含音频', async () => {

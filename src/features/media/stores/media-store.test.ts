@@ -12,6 +12,22 @@ import {
   createDefaultMediaConfig,
   useMediaStore,
 } from '@/features/media';
+import type { CaptureDeviceCapabilities } from '@/features/media';
+
+class RecordingCapabilitiesService extends MockMediaService {
+  readonly requestedDeviceIds: string[] = [];
+
+  override async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
+    this.requestedDeviceIds.push(deviceId);
+    return super.getVideoCapabilities(deviceId);
+  }
+}
+
+class SerializedCapabilityErrorService extends MockMediaService {
+  override async getVideoCapabilities(): Promise<CaptureDeviceCapabilities> {
+    throw { code: 'media_error', message: '摄像头格式读取失败。' };
+  }
+}
 
 describe('全局媒体 Store', () => {
   beforeEach(() => {
@@ -41,7 +57,7 @@ describe('全局媒体 Store', () => {
     expect(store.videoCapabilities?.modes).toHaveLength(3);
   });
 
-  it('切换摄像头时按能力联动分辨率、FPS 和编码', async () => {
+  it('切换摄像头时按采集能力联动分辨率和 FPS，但不改写全局编码选择', async () => {
     const store = useMediaStore();
     await store.initialize();
     await store.setSourceType(MediaSourceType.Camera);
@@ -49,8 +65,8 @@ describe('全局媒体 Store', () => {
     await store.setVideoDevice('camera-usb');
 
     expect(store.draftConfig.source.camera.video.width).toBe(640);
-    expect(store.draftConfig.source.camera.video.framesPerSecond).toBe(15);
-    expect(store.draftConfig.source.camera.video.codec).toBe(VideoCodec.H264);
+    expect(store.draftConfig.source.camera.video.framesPerSecond).toBe(30);
+    expect(store.draftConfig.source.camera.video.codec).toBe(VideoCodec.H265);
   });
 
   it('选择支持的分辨率后联动到对应 FPS 集合', async () => {
@@ -61,7 +77,7 @@ describe('全局媒体 Store', () => {
 
     store.setVideoResolution(1920, 1080);
 
-    expect(store.draftConfig.source.camera.video.framesPerSecond).toBe(25);
+    expect(store.draftConfig.source.camera.video.framesPerSecond).toBe(30);
   });
 
   it('关闭音频时保留字段但不参与校验', async () => {
@@ -184,5 +200,75 @@ describe('全局媒体 Store', () => {
     expect(result.ok).toBe(false);
     expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Error);
     expect(store.serviceError).toContain('getRuntimeStatus 失败');
+  });
+
+  it('旧设备 ID 被替换后使用新的设备 ID 查询能力', async () => {
+    const config = createDefaultMediaConfig();
+    config.source.type = MediaSourceType.Camera;
+    config.source.camera.video.deviceId = 'browser-era-device-id';
+    const service = new RecordingCapabilitiesService({ initialConfig: config });
+    configureMediaService(service);
+    setActivePinia(createPinia());
+    const store = useMediaStore();
+
+    await store.initialize();
+
+    expect(store.draftConfig.source.camera.video.deviceId).toBe('camera-integrated');
+    expect(service.requestedDeviceIds).toEqual(['camera-integrated']);
+  });
+
+  it('采集能力失败只标记配置区，不污染运行与录像状态', async () => {
+    const config = createDefaultMediaConfig();
+    config.source.type = MediaSourceType.Camera;
+    configureMediaService(
+      new MockMediaService({ initialConfig: config, failures: ['getVideoCapabilities'] }),
+    );
+    setActivePinia(createPinia());
+    const store = useMediaStore();
+
+    const result = await store.initialize();
+
+    expect(result).toEqual({ ok: true });
+    expect(store.capabilityError).toContain('getVideoCapabilities 失败');
+    expect(store.serviceError).toBeNull();
+    expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
+    expect(store.runtimeStatus.recording.status).toBe(RecordingStatus.Disabled);
+  });
+
+  it('保留 Tauri 序列化错误中的真实后端消息', async () => {
+    configureMediaService(new SerializedCapabilityErrorService());
+    setActivePinia(createPinia());
+    const store = useMediaStore();
+    await store.initialize();
+
+    await store.setSourceType(MediaSourceType.Camera);
+
+    expect(store.capabilityError).toBe('摄像头格式读取失败。');
+    expect(store.fieldErrors['source.camera.video.deviceId']).toBe('摄像头格式读取失败。');
+  });
+
+  it('采集模式失败时编码器能力仍保持可用', async () => {
+    configureMediaService(new MockMediaService({ failures: ['getVideoCapabilities'] }));
+    setActivePinia(createPinia());
+    const store = useMediaStore();
+    await store.initialize();
+
+    await store.setSourceType(MediaSourceType.Camera);
+
+    expect(store.videoCapabilities).toBeNull();
+    expect(store.supportedVideoCodecs).toEqual([VideoCodec.H264, VideoCodec.H265]);
+    expect(store.canStartPreview).toBe(false);
+  });
+
+  it('刷新设备时向上传递采集能力失败而不报告虚假成功', async () => {
+    configureMediaService(new MockMediaService({ failures: ['getVideoCapabilities'] }));
+    setActivePinia(createPinia());
+    const store = useMediaStore();
+    await store.initialize();
+    store.draftConfig.source.type = MediaSourceType.Camera;
+
+    const result = await store.refreshCaptureDevices();
+
+    expect(result.ok).toBe(false);
   });
 });

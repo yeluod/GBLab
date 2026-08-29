@@ -74,9 +74,13 @@
           :video-devices="store.videoDevices"
           :audio-devices="store.audioDevices"
           :capabilities="store.videoCapabilities"
+          :supported-video-codecs="store.supportedVideoCodecs"
           :field-errors="store.fieldErrors"
+          :capability-error="store.capabilityError"
+          :encoder-capability-error="store.encoderCapabilityError"
           :is-probing="store.isProbing"
           :is-refreshing-devices="store.isRefreshingDevices"
+          :is-loading-video-capabilities="store.isLoadingVideoCapabilities"
           @source-type-change="store.setSourceType"
           @select-mp4="runOperation(store.selectMp4)"
           @probe-mp4="runOperation(store.probeCurrentMp4, '媒体信息检测完成。')"
@@ -90,6 +94,8 @@
           :probe-result="store.probeResult"
           :is-preview-pending="store.isPreviewPending"
           :can-start-preview="store.canStartPreview"
+          :source-type="store.draftConfig.source.type"
+          :preview-frame="store.previewFrame"
           @start-preview="runOperation(store.startPreview, '预览已启动。')"
           @stop-preview="runOperation(store.stopPreview, '预览已停止。')"
         />
@@ -110,7 +116,7 @@
             type="info"
             :loading="store.isApplying"
             data-testid="apply-media"
-            @click="runOperation(store.applyDraft, '当前配置已应用到 Mock Runtime。')"
+            @click="runOperation(store.applyDraft, '当前配置已应用。')"
           >
             应用
           </NButton>

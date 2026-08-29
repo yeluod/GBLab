@@ -60,7 +60,6 @@ export const MOCK_VIDEO_CAPABILITIES: Record<string, CaptureDeviceCapabilities> 
       { width: 1280, height: 720, supportedFramesPerSecond: [25, 30, 60] },
       { width: 1920, height: 1080, supportedFramesPerSecond: [25, 30] },
     ],
-    supportedCodecs: [VideoCodec.H264, VideoCodec.H265],
   },
   'camera-usb': {
     deviceId: 'camera-usb',
@@ -68,8 +67,11 @@ export const MOCK_VIDEO_CAPABILITIES: Record<string, CaptureDeviceCapabilities> 
       { width: 640, height: 480, supportedFramesPerSecond: [15, 30] },
       { width: 1280, height: 720, supportedFramesPerSecond: [25, 30] },
     ],
-    supportedCodecs: [VideoCodec.H264],
   },
+};
+
+export const MOCK_VIDEO_ENCODER_CAPABILITIES = {
+  supportedCodecs: [VideoCodec.H264, VideoCodec.H265],
 };
 
 const commonAudio = {

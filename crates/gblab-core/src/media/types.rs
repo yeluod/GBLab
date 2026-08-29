@@ -131,6 +131,36 @@ pub struct CaptureDeviceLists {
     pub audio: Vec<CaptureDeviceInfo>,
 }
 
+/// 摄像头支持的一组分辨率与帧率。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoCaptureMode {
+    /// 采集宽度。
+    pub width: u32,
+    /// 采集高度。
+    pub height: u32,
+    /// 该分辨率支持的实用整数帧率。
+    pub supported_frames_per_second: Vec<u32>,
+}
+
+/// 单个摄像头的原生采集能力。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoCaptureCapabilities {
+    /// 摄像头设备标识。
+    pub device_id: String,
+    /// 原生支持的采集模式。
+    pub modes: Vec<VideoCaptureMode>,
+}
+
+/// 当前随应用链接的 `FFmpeg` 视频编码能力。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoEncoderCapabilities {
+    /// 当前真正存在的编码器所对应的视频编码。
+    pub supported_codecs: Vec<VideoCodec>,
+}
+
 /// 播放状态。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -214,6 +244,20 @@ pub struct MediaPacket {
     pub position_seconds: f64,
 }
 
+/// 一帧可供界面预览的 RGBA 视频帧。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaVideoFrame {
+    /// 帧宽度。
+    pub width: u32,
+    /// 帧高度。
+    pub height: u32,
+    /// 按行紧密排列的 RGBA 字节。
+    pub rgba: Vec<u8>,
+    /// 帧在源时间线中的位置。
+    pub position_seconds: f64,
+}
+
 /// 可被播放引擎驱动的媒体管线。
 pub trait MediaPipeline {
     /// 开始播放。
@@ -228,6 +272,8 @@ pub trait MediaPipeline {
     fn status(&self) -> MediaRuntimeStatus;
     /// 读取下一个 packet 元数据。
     fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>>;
+    /// 读取下一帧解码后的 RGBA 图像。
+    fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>>;
 }
 
 /// 媒体源探测和打开能力。
@@ -294,6 +340,13 @@ impl MediaSourceSession {
         match self {
             Self::Mp4(session) => session.next_packet(),
             Self::Camera(session) => session.next_packet(),
+        }
+    }
+
+    pub(crate) fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        match self {
+            Self::Mp4(session) => session.next_frame(),
+            Self::Camera(session) => session.next_frame(),
         }
     }
 }

@@ -103,5 +103,9 @@ export interface VideoCaptureMode {
 export interface CaptureDeviceCapabilities {
   deviceId: string;
   modes: VideoCaptureMode[];
+}
+
+/** 与摄像头采集模式独立的 FFmpeg 视频编码器能力。 */
+export interface VideoEncoderCapabilities {
   supportedCodecs: VideoCodec[];
 }

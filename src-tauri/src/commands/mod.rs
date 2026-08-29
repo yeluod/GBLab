@@ -13,7 +13,8 @@ use crate::{
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
         DeviceSnapshotDto, DeviceUpdateDraftDto, MediaPacketDto, MediaRuntimeStatusDto,
-        Mp4ProbeResultDto, SimulatedChannelDto, SipServiceConfigurationDto,
+        MediaVideoFrameDto, Mp4ProbeResultDto, SimulatedChannelDto, SipServiceConfigurationDto,
+        VideoCaptureCapabilitiesDto, VideoEncoderCapabilitiesDto,
     },
 };
 
@@ -115,6 +116,22 @@ pub fn list_capture_devices() -> Result<crate::dto::CaptureDeviceListsDto, Comma
         .map_err(|error| CommandErrorDto::media(&error))
 }
 
+/// 返回指定摄像头的原生分辨率和帧率，不打开采集会话。
+#[tauri::command]
+pub fn get_video_capture_capabilities(
+    device_id: String,
+) -> Result<VideoCaptureCapabilitiesDto, CommandErrorDto> {
+    gblab_core::MediaEngine::video_capture_capabilities(&device_id)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+/// 返回当前 `FFmpeg` Native Libraries 实际提供的视频编码器。
+#[tauri::command]
+pub fn get_video_encoder_capabilities() -> VideoEncoderCapabilitiesDto {
+    gblab_core::MediaEngine::video_encoder_capabilities().into()
+}
+
 #[tauri::command]
 pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
     let mut media = state
@@ -185,6 +202,21 @@ pub fn read_media_packet(
     media
         .next_packet()
         .map(|packet| packet.map(Into::into))
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+/// 读取下一帧 RGBA 预览图像。前端应以定时器低频轮询，避免 IPC 事件风暴。
+#[tauri::command]
+pub fn read_media_frame(
+    state: State<'_, AppState>,
+) -> Result<Option<MediaVideoFrameDto>, CommandErrorDto> {
+    let mut media = state
+        .media
+        .lock()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    media
+        .next_frame()
+        .map(|frame| frame.map(Into::into))
         .map_err(|error| CommandErrorDto::media(&error))
 }
 

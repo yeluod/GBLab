@@ -2,8 +2,16 @@ import type {
   CaptureDeviceCapabilities,
   CaptureDeviceInfo,
   GlobalMediaConfig,
+  VideoEncoderCapabilities,
 } from '../types/media-config';
 import type { MediaProbeResult, MediaRuntimeStatus } from '../types/media-runtime';
+
+export interface MediaVideoFrame {
+  width: number;
+  height: number;
+  rgba: number[];
+  positionSeconds: number;
+}
 
 /** UI 与媒体后端之间的稳定应用层契约。 */
 export interface MediaService {
@@ -16,9 +24,11 @@ export interface MediaService {
   listVideoDevices(): Promise<CaptureDeviceInfo[]>;
   listAudioDevices(): Promise<CaptureDeviceInfo[]>;
   getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities>;
+  getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities>;
   startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus>;
   stopPreview(): Promise<MediaRuntimeStatus>;
   getRuntimeStatus(): Promise<MediaRuntimeStatus>;
+  readFrame(): Promise<MediaVideoFrame | null>;
 }
 
 export class MediaServiceError extends Error {

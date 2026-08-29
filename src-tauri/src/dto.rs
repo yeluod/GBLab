@@ -1,7 +1,8 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
-    MediaPacket, MediaRuntimeStatus, Mp4ProbeResult, SignalCharset, SimulatedChannel,
-    SimulatedDevice, SipServiceConfiguration, SipTransport,
+    MediaPacket, MediaRuntimeStatus, MediaVideoFrame, Mp4ProbeResult, SignalCharset,
+    SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+    VideoCaptureCapabilities, VideoEncoderCapabilities,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -440,6 +441,36 @@ impl From<gblab_core::CaptureDeviceLists> for CaptureDeviceListsDto {
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoCaptureCapabilitiesDto {
+    device_id: String,
+    modes: Vec<gblab_core::VideoCaptureMode>,
+}
+
+impl From<VideoCaptureCapabilities> for VideoCaptureCapabilitiesDto {
+    fn from(value: VideoCaptureCapabilities) -> Self {
+        Self {
+            device_id: value.device_id,
+            modes: value.modes,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoEncoderCapabilitiesDto {
+    supported_codecs: Vec<gblab_core::media::VideoCodec>,
+}
+
+impl From<VideoEncoderCapabilities> for VideoEncoderCapabilitiesDto {
+    fn from(value: VideoEncoderCapabilities) -> Self {
+        Self {
+            supported_codecs: value.supported_codecs,
+        }
+    }
+}
+
 impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
     fn from(value: MediaRuntimeStatus) -> Self {
         Self {
@@ -485,6 +516,26 @@ pub struct MediaPacketDto {
     size: usize,
     is_keyframe: bool,
     position_seconds: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaVideoFrameDto {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+    position_seconds: f64,
+}
+
+impl From<MediaVideoFrame> for MediaVideoFrameDto {
+    fn from(value: MediaVideoFrame) -> Self {
+        Self {
+            width: value.width,
+            height: value.height,
+            rgba: value.rgba,
+            position_seconds: value.position_seconds,
+        }
+    }
 }
 
 impl From<MediaPacket> for MediaPacketDto {

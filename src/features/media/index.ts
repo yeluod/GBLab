@@ -1,5 +1,9 @@
 export { configureMediaService } from './services/media-service-provider';
-export { MediaServiceError, type MediaService } from './services/media-service';
+export {
+  MediaServiceError,
+  type MediaService,
+  type MediaVideoFrame,
+} from './services/media-service';
 export {
   MockMediaService,
   type MockMediaOperation,
@@ -11,6 +15,7 @@ export {
   MOCK_MP4_PATHS,
   MOCK_PROBE_RESULTS,
   MOCK_VIDEO_CAPABILITIES,
+  MOCK_VIDEO_ENCODER_CAPABILITIES,
   MOCK_VIDEO_DEVICES,
 } from './services/mock-media-fixtures';
 export {
@@ -39,6 +44,7 @@ export type {
   RecordingConfig,
   VideoCaptureConfig,
   VideoCaptureMode,
+  VideoEncoderCapabilities,
 } from './types/media-config';
 export { MediaSourceStatus, RecordingStatus } from './types/media-runtime';
 export type {

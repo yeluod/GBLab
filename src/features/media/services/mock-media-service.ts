@@ -5,12 +5,13 @@ import {
   RecordingStatus,
   type MediaRuntimeStatus,
 } from '../types/media-runtime';
-import { MediaServiceError, type MediaService } from './media-service';
+import { MediaServiceError, type MediaService, type MediaVideoFrame } from './media-service';
 import {
   MOCK_AUDIO_DEVICES,
   MOCK_MP4_PATHS,
   MOCK_PROBE_RESULTS,
   MOCK_VIDEO_CAPABILITIES,
+  MOCK_VIDEO_ENCODER_CAPABILITIES,
   MOCK_VIDEO_DEVICES,
   createInitialRuntimeStatus,
 } from './mock-media-fixtures';
@@ -19,6 +20,7 @@ import type {
   CaptureDeviceCapabilities,
   CaptureDeviceInfo,
   GlobalMediaConfig,
+  VideoEncoderCapabilities,
 } from '../types/media-config';
 import type { MediaProbeResult } from '../types/media-runtime';
 
@@ -30,6 +32,7 @@ export type MockMediaOperation =
   | 'listVideoDevices'
   | 'listAudioDevices'
   | 'getVideoCapabilities'
+  | 'getVideoEncoderCapabilities'
   | 'startPreview'
   | 'stopPreview'
   | 'getRuntimeStatus';
@@ -115,6 +118,11 @@ export class MockMediaService implements MediaService {
     return clone(capabilities);
   }
 
+  async getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities> {
+    this.failIfRequested('getVideoEncoderCapabilities');
+    return clone(MOCK_VIDEO_ENCODER_CAPABILITIES);
+  }
+
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     this.failIfRequested('startPreview');
     this.runtimeStatus = this.createRuntimeStatus(config, MediaSourceStatus.Previewing);
@@ -134,6 +142,20 @@ export class MockMediaService implements MediaService {
   async getRuntimeStatus(): Promise<MediaRuntimeStatus> {
     this.failIfRequested('getRuntimeStatus');
     return clone(this.runtimeStatus);
+  }
+
+  async readFrame(): Promise<MediaVideoFrame | null> {
+    if (this.runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing) return null;
+    const width = 320;
+    const height = 180;
+    const rgba = new Array<number>(width * height * 4).fill(0);
+    for (let i = 0; i < rgba.length; i += 4) {
+      rgba[i] = 20;
+      rgba[i + 1] = 120;
+      rgba[i + 2] = 170;
+      rgba[i + 3] = 255;
+    }
+    return { width, height, rgba, positionSeconds: 0 };
   }
 
   private failIfRequested(operation: MockMediaOperation): void {

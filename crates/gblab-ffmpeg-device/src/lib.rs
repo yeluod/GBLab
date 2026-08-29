@@ -2,9 +2,9 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::{ffi::CStr, ptr, slice};
+use std::{collections::BTreeMap, ffi::CStr, ptr, slice};
 
-use rsmpeg::{avformat::AVInputFormatRef, ffi};
+use rsmpeg::{avcodec::AVCodec, avformat::AVInputFormatRef, ffi};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use rsmpeg::avformat::AVInputFormat;
@@ -31,6 +31,12 @@ pub enum DeviceEnumerationError {
     #[cfg(target_os = "macos")]
     #[error("AVFoundation media type {0} is unavailable")]
     AvFoundationMediaTypeUnavailable(&'static str),
+    /// A device identifier has the wrong native representation.
+    #[error("invalid capture-device identifier: {0}")]
+    InvalidDeviceIdentifier(String),
+    /// The requested capture device is no longer present.
+    #[error("capture device {0} was not found")]
+    DeviceNotFound(String),
     /// The target platform has no implemented native capture backend.
     #[error("capture-device enumeration is unsupported on this platform")]
     UnsupportedPlatform,
@@ -47,6 +53,59 @@ pub struct NativeCaptureDevice {
     pub has_video: bool,
     /// Whether the device exposes audio input.
     pub has_audio: bool,
+}
+
+/// A native video capture mode exposed without opening the device.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeVideoCaptureMode {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Practical integer frame rates supported by this mode.
+    pub frame_rates: Vec<u32>,
+}
+
+/// Video encoders provided by the linked FFmpeg libraries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeVideoEncoder {
+    /// H.264/AVC encoder.
+    H264,
+    /// H.265/HEVC encoder.
+    H265,
+}
+
+/// Enumerate video capture modes without starting a capture session.
+///
+/// # Errors
+///
+/// Returns an explicit error for an invalid device identifier or a platform whose native mode
+/// enumeration boundary has not been implemented.
+pub fn video_capture_modes(
+    device_id: &str,
+) -> Result<Vec<NativeVideoCaptureMode>, DeviceEnumerationError> {
+    #[cfg(target_os = "macos")]
+    {
+        avfoundation_video_capture_modes(device_id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = device_id;
+        Err(DeviceEnumerationError::UnsupportedPlatform)
+    }
+}
+
+/// Return video encoders that are actually present in the linked FFmpeg build.
+#[must_use]
+pub fn supported_video_encoders() -> Vec<NativeVideoEncoder> {
+    let mut encoders = Vec::with_capacity(2);
+    if AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).is_some() {
+        encoders.push(NativeVideoEncoder::H264);
+    }
+    if AVCodec::find_encoder(ffi::AV_CODEC_ID_HEVC).is_some() {
+        encoders.push(NativeVideoEncoder::H265);
+    }
+    encoders
 }
 
 /// Enumerate the current platform's camera and microphone devices.
@@ -135,6 +194,91 @@ fn list_avfoundation_devices(
             }
         })
         .collect()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn avfoundation_video_capture_modes(
+    device_id: &str,
+) -> Result<Vec<NativeVideoCaptureMode>, DeviceEnumerationError> {
+    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeVideo};
+    use objc2_core_media::CMVideoFormatDescriptionGetDimensions;
+
+    let index = device_id
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| DeviceEnumerationError::InvalidDeviceIdentifier(device_id.to_owned()))?;
+    // SAFETY: This is an immutable AVFoundation framework symbol available on supported macOS.
+    let video_media_type = unsafe { AVMediaTypeVideo }.ok_or(
+        DeviceEnumerationError::AvFoundationMediaTypeUnavailable("video"),
+    )?;
+    // Keep the same legacy enumeration order that FFmpeg's avfoundation input uses.
+    // SAFETY: `video_media_type` is AVFoundation's video media-type constant.
+    let devices = unsafe { AVCaptureDevice::devicesWithMediaType(video_media_type) };
+    let device = devices
+        .iter()
+        .nth(index)
+        .ok_or_else(|| DeviceEnumerationError::DeviceNotFound(device_id.to_owned()))?;
+    // SAFETY: AVFoundation returned a live device and its immutable supported-format collection.
+    let formats = unsafe { device.formats() };
+    let mut modes = BTreeMap::<(u32, u32), Vec<(f64, f64)>>::new();
+    for format in formats.iter() {
+        // SAFETY: Both values are immutable properties of a retained AVCaptureDeviceFormat.
+        let description = unsafe { format.formatDescription() };
+        // SAFETY: The retained format description is a video description returned by a video
+        // capture device format and remains alive for the duration of this call.
+        let dimensions = unsafe { CMVideoFormatDescriptionGetDimensions(&description) };
+        let (Ok(width), Ok(height)) = (
+            u32::try_from(dimensions.width),
+            u32::try_from(dimensions.height),
+        ) else {
+            continue;
+        };
+        if width == 0 || height == 0 {
+            continue;
+        }
+        // SAFETY: The array and ranges are retained immutable AVFoundation values.
+        let ranges = unsafe { format.videoSupportedFrameRateRanges() };
+        let frame_rate_ranges = modes.entry((width, height)).or_default();
+        frame_rate_ranges.extend(ranges.iter().filter_map(|range| {
+            // SAFETY: Frame-rate bounds are immutable scalar properties.
+            let min = unsafe { range.minFrameRate() };
+            // SAFETY: Frame-rate bounds are immutable scalar properties.
+            let max = unsafe { range.maxFrameRate() };
+            (min.is_finite() && max.is_finite() && min > 0.0 && max >= min).then_some((min, max))
+        }));
+    }
+
+    Ok(merge_capture_modes(modes))
+}
+
+fn merge_capture_modes(
+    modes: BTreeMap<(u32, u32), Vec<(f64, f64)>>,
+) -> Vec<NativeVideoCaptureMode> {
+    modes
+        .into_iter()
+        .map(|((width, height), ranges)| NativeVideoCaptureMode {
+            width,
+            height,
+            frame_rates: practical_frame_rates(&ranges),
+        })
+        .filter(|mode| !mode.frame_rates.is_empty())
+        .collect()
+}
+
+fn practical_frame_rates(ranges: &[(f64, f64)]) -> Vec<u32> {
+    let mut frame_rates = std::collections::BTreeSet::new();
+    for &(min, max) in ranges {
+        // FFmpeg's avfoundation input validates the range endpoints as discrete accepted values;
+        // interpolating common rates inside the interval can produce modes the driver rejects.
+        for endpoint in [min, max] {
+            let rounded = endpoint.round();
+            if rounded > 0.0 && rounded <= f64::from(u32::MAX) {
+                frame_rates.insert(rounded as u32);
+            }
+        }
+    }
+    frame_rates.into_iter().collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -240,10 +384,44 @@ unsafe fn copy_c_string(value: *const std::os::raw::c_char) -> Option<String> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::list_capture_devices;
+    use super::{DeviceEnumerationError, list_capture_devices, video_capture_modes};
 
     #[test]
     fn macos_enumeration_should_succeed_when_no_devices_are_connected() {
         assert!(list_capture_devices().is_ok());
+    }
+
+    #[test]
+    fn macos_mode_enumeration_should_reject_non_numeric_identifier() {
+        assert!(matches!(
+            video_capture_modes("not-an-index"),
+            Err(DeviceEnumerationError::InvalidDeviceIdentifier(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod pure_tests {
+    use std::collections::BTreeMap;
+
+    use super::{NativeVideoCaptureMode, merge_capture_modes, practical_frame_rates};
+
+    #[test]
+    fn frame_rate_ranges_should_only_include_driver_reported_endpoints() {
+        assert_eq!(practical_frame_rates(&[(15.0, 29.97)]), [15, 30]);
+    }
+
+    #[test]
+    fn duplicate_dimensions_should_merge_frame_rate_ranges() {
+        let modes = BTreeMap::from([((1920, 1080), vec![(25.0, 30.0), (50.0, 60.0)])]);
+
+        assert_eq!(
+            merge_capture_modes(modes),
+            [NativeVideoCaptureMode {
+                width: 1920,
+                height: 1080,
+                frame_rates: vec![25, 30, 50, 60],
+            }]
+        );
     }
 }

@@ -12,6 +12,7 @@ vi.mock('naive-ui', async (importOriginal) => {
 
 import {
   MediaSourceStatus,
+  MediaSourceType,
   MockMediaService,
   configureMediaService,
   useMediaStore,
@@ -73,5 +74,17 @@ describe('音视频源页面', () => {
     await wrapper.get('[data-testid="stop-preview"]').trigger('click');
     await flushPromises();
     expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
+  });
+
+  it('摄像头模式使用摄像头预览文案而不是 MP4 文案', async () => {
+    const wrapper = mount(MediaPage, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    const store = useMediaStore();
+
+    await store.setSourceType(MediaSourceType.Camera);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('选择摄像头和采集参数后可开始预览');
+    expect(wrapper.text()).not.toContain('选择并检测 MP4 后可开始预览');
   });
 });

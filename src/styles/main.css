@@ -282,6 +282,10 @@ select {
   opacity: 0.62;
 }
 
+.media-capability-alert {
+  margin-top: 8px;
+}
+
 .recording-grid {
   grid-template-columns: minmax(0, 1.6fr) minmax(150px, 0.4fr);
 }
@@ -324,15 +328,12 @@ select {
   white-space: nowrap;
 }
 
-.preview-test-pattern {
-  width: 72px;
-  height: 72px;
-  border: 1px solid rgb(94 234 212 / 35%);
-  border-radius: 50%;
-  background:
-    linear-gradient(90deg, transparent 48%, rgb(94 234 212 / 25%) 48% 52%, transparent 52%),
-    linear-gradient(transparent 48%, rgb(94 234 212 / 25%) 48% 52%, transparent 52%);
-  box-shadow: 0 0 60px rgb(45 212 191 / 18%);
+.preview-canvas {
+  display: block;
+  width: 100%;
+  max-height: 210px;
+  object-fit: contain;
+  background: #050a12;
 }
 
 .preview-actions {

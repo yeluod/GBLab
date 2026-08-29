@@ -4,7 +4,7 @@ use rsmpeg::{avcodec::AVCodecParametersRef, avformat::AVFormatContextInput, ffi}
 
 use super::{
     AudioCodec, AudioStreamInfo, MediaError, MediaPacket, MediaResult, MediaSource,
-    MediaSourceSession, Mp4ProbeResult, VideoCodec, VideoStreamInfo,
+    MediaSourceSession, Mp4ProbeResult, VideoCodec, VideoStreamInfo, decoder::VideoDecoder,
 };
 
 /// MP4 文件媒体源。
@@ -69,11 +69,21 @@ impl MediaSource for Mp4MediaSource {
     fn open(&self, looping: bool) -> MediaResult<MediaSourceSession> {
         let context = self.open_context()?;
         let probe = self.probe_context(&context)?;
+        let decoder = {
+            let video_stream = context
+                .streams()
+                .iter()
+                .find(|stream| stream.codecpar().codec_type().is_video())
+                .ok_or(MediaError::MissingVideoStream)?;
+            let video_parameters = video_stream.codecpar();
+            VideoDecoder::new(&video_parameters, video_stream)?
+        };
         Ok(MediaSourceSession::Mp4(Mp4Session {
             context,
             probe,
             looping,
             playing: false,
+            decoder,
         }))
     }
 }
@@ -84,6 +94,7 @@ pub struct Mp4Session {
     probe: Mp4ProbeResult,
     looping: bool,
     playing: bool,
+    decoder: VideoDecoder,
 }
 
 impl Mp4Session {
@@ -148,6 +159,38 @@ impl Mp4Session {
             is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
             position_seconds,
         }))
+    }
+
+    pub(crate) fn next_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
+        if !self.playing {
+            return Ok(None);
+        }
+        loop {
+            let packet = match self.context.read_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) if self.looping => {
+                    self.reset()?;
+                    continue;
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => return Err(MediaError::Playback(error.to_string())),
+            };
+            if packet.stream_index < 0 {
+                continue;
+            }
+            let stream_index = usize::try_from(packet.stream_index).unwrap_or(usize::MAX);
+            let video_index = self
+                .context
+                .streams()
+                .iter()
+                .position(|stream| stream.codecpar().codec_type().is_video());
+            if Some(stream_index) != video_index {
+                continue;
+            }
+            if let Some(frame) = self.decoder.decode_packet(&packet)? {
+                return Ok(Some(frame));
+            }
+        }
     }
 }
 

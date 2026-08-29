@@ -2,6 +2,7 @@
   import { computed } from 'vue';
   import {
     NButton,
+    NAlert,
     NDivider,
     NForm,
     NFormItem,
@@ -32,9 +33,13 @@
     videoDevices: CaptureDeviceInfo[];
     audioDevices: CaptureDeviceInfo[];
     capabilities: CaptureDeviceCapabilities | null;
+    supportedVideoCodecs: VideoCodec[];
     fieldErrors: MediaFieldErrors;
+    capabilityError: string | null;
+    encoderCapabilityError: string | null;
     isProbing: boolean;
     isRefreshingDevices: boolean;
+    isLoadingVideoCapabilities: boolean;
   }>();
   const emit = defineEmits<{
     sourceTypeChange: [sourceType: MediaSourceType];
@@ -110,8 +115,15 @@
   const supportedVideoCodecOptions = computed<SelectOption[]>(() =>
     videoCodecOptions.map((option) => ({
       ...option,
-      disabled: !(props.capabilities?.supportedCodecs ?? []).includes(option.value as VideoCodec),
+      disabled: !props.supportedVideoCodecs.includes(option.value as VideoCodec),
     })),
+  );
+  const selectedFramesPerSecond = computed(() =>
+    selectedMode.value?.supportedFramesPerSecond.includes(
+      config.value.source.camera.video.framesPerSecond,
+    )
+      ? config.value.source.camera.video.framesPerSecond
+      : null,
   );
   const selectedResolution = computed({
     get: () => {
@@ -220,18 +232,33 @@
             />
           </NFormItem>
           <NFormItem label="分辨率" v-bind="validationProps('source.camera.video.resolution')">
-            <NSelect v-model:value="selectedResolution" :options="resolutionOptions" />
+            <NSelect
+              :value="capabilities === null ? null : selectedResolution"
+              :options="resolutionOptions"
+              :loading="isLoadingVideoCapabilities"
+              :disabled="isLoadingVideoCapabilities || resolutionOptions.length === 0"
+              placeholder="请选择分辨率"
+              @update:value="selectedResolution = $event"
+            >
+              <template #empty>暂无可用分辨率</template>
+            </NSelect>
           </NFormItem>
           <NFormItem label="帧率" v-bind="validationProps('source.camera.video.framesPerSecond')">
             <NSelect
-              v-model:value="config.source.camera.video.framesPerSecond"
+              :value="selectedFramesPerSecond"
               :options="framesPerSecondOptions"
+              :loading="isLoadingVideoCapabilities"
+              :disabled="isLoadingVideoCapabilities || framesPerSecondOptions.length === 0"
+              placeholder="请选择帧率"
+              @update:value="config.source.camera.video.framesPerSecond = $event"
             />
           </NFormItem>
           <NFormItem label="视频编码">
             <NSelect
               v-model:value="config.source.camera.video.codec"
               :options="supportedVideoCodecOptions"
+              :disabled="supportedVideoCodecs.length === 0"
+              placeholder="未检测到可用编码器"
             />
           </NFormItem>
           <NFormItem
@@ -252,6 +279,16 @@
             />
           </NFormItem>
         </div>
+        <NAlert v-if="capabilityError !== null" type="warning" class="media-capability-alert">
+          采集能力读取失败：{{ capabilityError }}
+        </NAlert>
+        <NAlert
+          v-if="encoderCapabilityError !== null"
+          type="warning"
+          class="media-capability-alert"
+        >
+          编码器能力读取失败：{{ encoderCapabilityError }}
+        </NAlert>
 
         <NDivider title-placement="left">音频采集</NDivider>
         <NFormItem label="启用音频" :show-feedback="false">

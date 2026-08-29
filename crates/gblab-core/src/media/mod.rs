@@ -1,4 +1,4 @@
-//! 媒体源抽象与 MP4 解封装能力。
+//! 媒体源抽象、视频解码与 MP4 解封装能力。
 //!
 //! 本模块负责本地媒体容器、摄像头输入和播放时钟，不负责编码、MPEG-PS、RTP
 //! 或 SIP 会话。后续媒体传输可以复用 [`MediaPacket`] 和 [`MediaPipeline`] 边界。
@@ -6,6 +6,7 @@
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
 mod camera;
+mod decoder;
 mod error;
 mod mp4;
 mod types;
@@ -16,7 +17,9 @@ pub use mp4::{Mp4MediaSource, Mp4Session};
 pub use types::{
     AudioCodec, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
     MediaPacket, MediaPipeline, MediaResult, MediaRuntimeStatus, MediaSource, MediaSourceKind,
-    MediaSourceSession, MediaSourceStatus, Mp4ProbeResult, VideoCodec, VideoStreamInfo,
+    MediaSourceSession, MediaSourceStatus, MediaVideoFrame, Mp4ProbeResult,
+    VideoCaptureCapabilities, VideoCaptureMode, VideoCodec, VideoEncoderCapabilities,
+    VideoStreamInfo,
 };
 
 /// 媒体引擎，负责当前全局媒体源的生命周期。
@@ -93,6 +96,17 @@ impl MediaEngine {
         camera::list_capture_devices()
     }
 
+    /// 不打开摄像头，读取指定设备的原生采集模式。
+    pub fn video_capture_capabilities(device_id: &str) -> MediaResult<VideoCaptureCapabilities> {
+        camera::video_capture_capabilities(device_id)
+    }
+
+    /// 返回当前 `FFmpeg` Native Libraries 实际提供的视频编码器能力。
+    #[must_use]
+    pub fn video_encoder_capabilities() -> VideoEncoderCapabilities {
+        camera::video_encoder_capabilities()
+    }
+
     /// 当前源开始播放。
     pub fn play(&mut self) -> MediaResult<MediaRuntimeStatus> {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
@@ -142,6 +156,16 @@ impl MediaEngine {
         }
         Ok(packet)
     }
+
+    /// 读取下一帧解码后的 RGBA 图像，用于桌面端预览。
+    pub fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+        let frame = session.next_frame()?;
+        if let Some(frame) = &frame {
+            self.status.position_seconds = frame.position_seconds;
+        }
+        Ok(frame)
+    }
 }
 
 impl MediaPipeline for MediaEngine {
@@ -167,6 +191,10 @@ impl MediaPipeline for MediaEngine {
 
     fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
         Self::next_packet(self)
+    }
+
+    fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        Self::next_frame(self)
     }
 }
 
