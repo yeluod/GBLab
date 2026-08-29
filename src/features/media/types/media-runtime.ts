@@ -5,6 +5,7 @@ export enum MediaSourceStatus {
   Loading = 'loading',
   Ready = 'ready',
   Previewing = 'previewing',
+  Paused = 'paused',
   Error = 'error',
   Unavailable = 'unavailable',
 }
@@ -52,6 +53,12 @@ export interface MediaRuntimeStatus {
   audio: AudioStreamInfo | null;
   activeLiveSessions: number;
   activePlaybackSessions: number;
+  durationSeconds: number | null;
+  positionSeconds: number;
+  playbackRate: number;
+  decodedFrames: number;
+  muted: boolean;
+  volume: number;
   recording: RecordingRuntimeInfo;
   errorMessage: string | null;
 }

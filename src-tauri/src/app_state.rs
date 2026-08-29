@@ -3,21 +3,30 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use gblab_core::{CoreService, MediaEngine, runtime::RegistrationHandle};
+use gblab_core::{
+    CoreService, MediaEngine,
+    runtime::{RegistrationHandle, simulator::SimulatorRuntimeHandle},
+};
 
 pub struct AppState {
     pub core: Arc<RwLock<CoreService>>,
     pub registration: RegistrationHandle,
+    pub simulator: SimulatorRuntimeHandle,
     pub media: Arc<Mutex<MediaEngine>>,
     operation_gate: AtomicBool,
     shutdown_started: AtomicBool,
 }
 
 impl AppState {
-    pub fn new(core: CoreService, registration: RegistrationHandle) -> Self {
+    pub fn new(
+        core: CoreService,
+        registration: RegistrationHandle,
+        simulator: SimulatorRuntimeHandle,
+    ) -> Self {
         Self {
             core: Arc::new(RwLock::new(core)),
             registration,
+            simulator,
             media: Arc::new(Mutex::new(MediaEngine::new())),
             operation_gate: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),

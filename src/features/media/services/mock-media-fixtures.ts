@@ -144,6 +144,12 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     audio: structuredClone(defaultProbeResult.audio),
     activeLiveSessions: 0,
     activePlaybackSessions: 0,
+    durationSeconds: defaultProbeResult.video.durationSeconds,
+    positionSeconds: 0,
+    playbackRate: 1,
+    decodedFrames: 0,
+    muted: false,
+    volume: 1,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,

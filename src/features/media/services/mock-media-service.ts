@@ -139,6 +139,40 @@ export class MockMediaService implements MediaService {
     return clone(this.runtimeStatus);
   }
 
+  async pausePreview(): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.sourceStatus = MediaSourceStatus.Paused;
+    return clone(this.runtimeStatus);
+  }
+
+  async resumePreview(): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.sourceStatus = MediaSourceStatus.Previewing;
+    return clone(this.runtimeStatus);
+  }
+
+  async seek(positionSeconds: number): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.positionSeconds = positionSeconds;
+    return clone(this.runtimeStatus);
+  }
+
+  async setPlaybackRate(rate: number): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.playbackRate = rate;
+    return clone(this.runtimeStatus);
+  }
+
+  async setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus> {
+    this.runtimeStatus.muted = muted;
+    this.runtimeStatus.volume = volume;
+    return clone(this.runtimeStatus);
+  }
+
+  async stepFrame(): Promise<MediaVideoFrame | null> {
+    const previous = this.runtimeStatus.sourceStatus;
+    this.runtimeStatus.sourceStatus = MediaSourceStatus.Previewing;
+    const frame = await this.readFrame();
+    this.runtimeStatus.sourceStatus = previous;
+    return frame;
+  }
+
   async getRuntimeStatus(): Promise<MediaRuntimeStatus> {
     this.failIfRequested('getRuntimeStatus');
     return clone(this.runtimeStatus);
@@ -194,6 +228,12 @@ export class MockMediaService implements MediaService {
         audio: clone(probeResult.audio),
         activeLiveSessions: 0,
         activePlaybackSessions: 0,
+        durationSeconds: probeResult.video.durationSeconds,
+        positionSeconds: 0,
+        playbackRate: 1,
+        decodedFrames: 0,
+        muted: false,
+        volume: 1,
         recording,
         errorMessage: null,
       };
@@ -222,6 +262,12 @@ export class MockMediaService implements MediaService {
         : null,
       activeLiveSessions: 0,
       activePlaybackSessions: 0,
+      durationSeconds: null,
+      positionSeconds: 0,
+      playbackRate: 1,
+      decodedFrames: 0,
+      muted: false,
+      volume: 1,
       recording,
       errorMessage: null,
     };

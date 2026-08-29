@@ -394,6 +394,13 @@ impl CommandErrorDto {
             message: error.to_string(),
         }
     }
+
+    pub fn simulator(error: &gblab_core::runtime::simulator::SimulatorRuntimeError) -> Self {
+        Self {
+            code: "simulator_error",
+            message: error.to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -405,6 +412,10 @@ pub struct MediaRuntimeStatusDto {
     audio: Option<gblab_core::media::AudioStreamInfo>,
     duration_seconds: Option<f64>,
     position_seconds: f64,
+    playback_rate: f64,
+    decoded_frames: u64,
+    muted: bool,
+    volume: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -480,6 +491,10 @@ impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
             audio: value.audio,
             duration_seconds: value.duration_seconds,
             position_seconds: value.position_seconds,
+            playback_rate: value.playback_rate,
+            decoded_frames: value.decoded_frames,
+            muted: value.muted,
+            volume: value.volume,
         }
     }
 }

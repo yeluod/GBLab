@@ -53,6 +53,10 @@ interface BackendRuntimeStatus {
   audio: BackendStreamInfo | null;
   durationSeconds: number | null;
   positionSeconds: number;
+  playbackRate: number;
+  decodedFrames: number;
+  muted: boolean;
+  volume: number;
 }
 
 type BackendMediaConfig = {
@@ -176,7 +180,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     value.sourceStatus === 'playing'
       ? MediaSourceStatus.Previewing
       : value.sourceStatus === 'paused'
-        ? MediaSourceStatus.Ready
+        ? MediaSourceStatus.Paused
         : value.sourceStatus === 'unconfigured'
           ? MediaSourceStatus.Unconfigured
           : value.sourceStatus === 'stopped'
@@ -196,6 +200,12 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
       value.sourceKind === MediaSourceType.Camera && value.sourceStatus === 'playing' ? 1 : 0,
     activePlaybackSessions:
       value.sourceKind === MediaSourceType.Mp4 && value.sourceStatus === 'playing' ? 1 : 0,
+    durationSeconds: value.durationSeconds,
+    positionSeconds: value.positionSeconds,
+    playbackRate: value.playbackRate,
+    decodedFrames: value.decodedFrames,
+    muted: value.muted,
+    volume: value.volume,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -270,6 +280,28 @@ export class TauriMediaService implements MediaService {
   }
   async stopPreview(): Promise<MediaRuntimeStatus> {
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('stop_media'));
+  }
+  async pausePreview(): Promise<MediaRuntimeStatus> {
+    return toRuntime(await invokeCommand<BackendRuntimeStatus>('pause_media'));
+  }
+  async resumePreview(): Promise<MediaRuntimeStatus> {
+    return toRuntime(await invokeCommand<BackendRuntimeStatus>('play_media'));
+  }
+  async seek(positionSeconds: number): Promise<MediaRuntimeStatus> {
+    return toRuntime(await invokeCommand<BackendRuntimeStatus>('seek_media', { positionSeconds }));
+  }
+  async setPlaybackRate(rate: number): Promise<MediaRuntimeStatus> {
+    return toRuntime(
+      await invokeCommand<BackendRuntimeStatus>('set_media_playback_rate', { rate }),
+    );
+  }
+  async setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus> {
+    return toRuntime(
+      await invokeCommand<BackendRuntimeStatus>('set_media_audio_control', { muted, volume }),
+    );
+  }
+  stepFrame(): Promise<MediaVideoFrame | null> {
+    return invokeCommand<MediaVideoFrame | null>('step_media_frame');
   }
   async getRuntimeStatus(): Promise<MediaRuntimeStatus> {
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status'));

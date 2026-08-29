@@ -21,6 +21,11 @@ pub(super) struct VideoDecoder {
 }
 
 impl VideoDecoder {
+    pub(super) fn flush(&mut self) {
+        self.context.flush_buffers();
+        self.pending_frames.clear();
+    }
+
     pub(super) fn new(
         parameters: &rsmpeg::avcodec::AVCodecParametersRef<'_>,
         stream: &AVStreamRef<'_>,

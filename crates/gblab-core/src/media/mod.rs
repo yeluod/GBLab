@@ -141,6 +141,55 @@ impl MediaEngine {
         Ok(self.status.clone())
     }
 
+    /// 跳转 MP4 播放位置。实时摄像头不支持该操作。
+    pub fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus> {
+        if let Some(duration) = self.status.duration_seconds
+            && position_seconds > duration
+        {
+            return Err(MediaError::Playback("跳转位置超过媒体总时长".to_owned()));
+        }
+        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+        session.seek(position_seconds)?;
+        self.status.position_seconds = position_seconds;
+        Ok(self.status.clone())
+    }
+
+    /// 设置本地预览倍速，支持 0.25x 到 4x。
+    pub fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus> {
+        if !rate.is_finite() || !(0.25..=4.0).contains(&rate) {
+            return Err(MediaError::Playback(
+                "播放倍速必须介于 0.25 和 4.0".to_owned(),
+            ));
+        }
+        self.status.playback_rate = rate;
+        Ok(self.status.clone())
+    }
+
+    /// 设置音频控制状态。当前仅保存控制状态，供后续音频输出管线直接消费。
+    pub fn set_audio_control(
+        &mut self,
+        muted: bool,
+        volume: f64,
+    ) -> MediaResult<MediaRuntimeStatus> {
+        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
+            return Err(MediaError::Playback("音量必须介于 0.0 和 1.0".to_owned()));
+        }
+        self.status.muted = muted;
+        self.status.volume = volume;
+        Ok(self.status.clone())
+    }
+
+    /// 在暂停状态下读取下一帧。
+    pub fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+        let frame = session.step_frame()?;
+        if let Some(frame) = &frame {
+            self.status.position_seconds = frame.position_seconds;
+            self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
+        }
+        Ok(frame)
+    }
+
     /// 获取当前播放状态。
     #[must_use]
     pub fn status(&self) -> MediaRuntimeStatus {
@@ -163,6 +212,7 @@ impl MediaEngine {
         let frame = session.next_frame()?;
         if let Some(frame) = &frame {
             self.status.position_seconds = frame.position_seconds;
+            self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
         }
         Ok(frame)
     }
@@ -183,6 +233,18 @@ impl MediaPipeline for MediaEngine {
 
     fn reset(&mut self) -> MediaResult<MediaRuntimeStatus> {
         Self::reset(self)
+    }
+
+    fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus> {
+        Self::seek(self, position_seconds)
+    }
+
+    fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus> {
+        Self::set_playback_rate(self, rate)
+    }
+
+    fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        Self::step_frame(self)
     }
 
     fn status(&self) -> MediaRuntimeStatus {

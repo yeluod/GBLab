@@ -1,6 +1,6 @@
 <script setup lang="ts">
   import { computed, ref, watch } from 'vue';
-  import { NButton, NDivider, NEmpty, NSpin, NTag } from 'naive-ui';
+  import { NButton, NDivider, NEmpty, NSelect, NSlider, NSpin, NSwitch, NTag } from 'naive-ui';
 
   import {
     AudioCodec,
@@ -24,6 +24,12 @@
   const emit = defineEmits<{
     startPreview: [];
     stopPreview: [];
+    pausePreview: [];
+    resumePreview: [];
+    stepFrame: [];
+    seek: [positionSeconds: number];
+    playbackRateChange: [rate: number];
+    audioControlChange: [muted: boolean, volume: number];
   }>();
 
   const sourceStatusText: Record<MediaSourceStatus, string> = {
@@ -31,6 +37,7 @@
     [MediaSourceStatus.Loading]: '加载中',
     [MediaSourceStatus.Ready]: '就绪',
     [MediaSourceStatus.Previewing]: '预览中',
+    [MediaSourceStatus.Paused]: '已暂停',
     [MediaSourceStatus.Error]: '错误',
     [MediaSourceStatus.Unavailable]: '不可用',
   };
@@ -59,6 +66,17 @@
       : '选择并检测 MP4 后可开始预览',
   );
   const previewCanvas = ref<HTMLCanvasElement | null>(null);
+  const seekPosition = ref(0);
+  const rateOptions = [0.25, 0.5, 1, 1.5, 2, 4].map((value) => ({
+    label: `${value}x`,
+    value,
+  }));
+  watch(
+    () => props.runtimeStatus.positionSeconds,
+    (value) => {
+      seekPosition.value = value;
+    },
+  );
   function drawFrame(frame: { width: number; height: number; rgba: number[] } | null | undefined) {
     if (frame === null || frame === undefined || previewCanvas.value === null) return;
     const canvas = previewCanvas.value;
@@ -121,7 +139,12 @@
         <NSpin
           v-if="isPreviewPending || runtimeStatus.sourceStatus === MediaSourceStatus.Loading"
         />
-        <template v-else-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing">
+        <template
+          v-else-if="
+            runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+            runtimeStatus.sourceStatus === MediaSourceStatus.Paused
+          "
+        >
           <canvas ref="previewCanvas" class="preview-canvas" aria-label="视频预览画面"></canvas>
           <strong>{{ previewTitle }}</strong>
           <span>{{ runtimeStatus.sourceLabel }}</span>
@@ -131,7 +154,10 @@
 
       <div class="preview-actions">
         <NButton
-          v-if="runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing"
+          v-if="
+            runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing &&
+            runtimeStatus.sourceStatus !== MediaSourceStatus.Paused
+          "
           type="primary"
           :disabled="!canStartPreview"
           :loading="isPreviewPending"
@@ -142,7 +168,25 @@
           开始预览
         </NButton>
         <NButton
-          v-else
+          v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing"
+          :loading="isPreviewPending"
+          @click="emit('pausePreview')"
+        >
+          暂停
+        </NButton>
+        <NButton
+          v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Paused"
+          type="primary"
+          :loading="isPreviewPending"
+          @click="emit('resumePreview')"
+        >
+          继续
+        </NButton>
+        <NButton
+          v-if="
+            runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+            runtimeStatus.sourceStatus === MediaSourceStatus.Paused
+          "
           type="warning"
           :loading="isPreviewPending"
           data-testid="stop-preview"
@@ -151,7 +195,56 @@
           <template #icon><AppIcon icon="stop" /></template>
           停止预览
         </NButton>
-        <span>{{ sourceType === MediaSourceType.Camera ? '等待摄像头采集' : '等待文件播放' }}</span>
+      </div>
+
+      <div
+        v-if="
+          sourceType === MediaSourceType.Mp4 &&
+          (runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+            runtimeStatus.sourceStatus === MediaSourceStatus.Paused)
+        "
+        class="playback-controls"
+      >
+        <NSlider
+          v-model:value="seekPosition"
+          :min="0"
+          :max="runtimeStatus.durationSeconds ?? 0"
+          :step="0.1"
+        />
+        <span
+          >{{ durationLabel(seekPosition) }} /
+          {{ durationLabel(runtimeStatus.durationSeconds) }}</span
+        >
+        <NButton size="small" @click="emit('seek', seekPosition)">跳转</NButton>
+        <NButton
+          size="small"
+          :disabled="runtimeStatus.sourceStatus !== MediaSourceStatus.Paused"
+          @click="emit('stepFrame')"
+        >
+          单帧
+        </NButton>
+        <NSelect
+          :value="runtimeStatus.playbackRate"
+          :options="rateOptions"
+          size="small"
+          @update:value="emit('playbackRateChange', $event)"
+        />
+      </div>
+
+      <div v-if="runtimeStatus.audio !== null" class="audio-controls">
+        <span title="当前只保存控制状态，实际音频输出管线尚未接入">静音状态</span>
+        <NSwitch
+          :value="runtimeStatus.muted"
+          @update:value="emit('audioControlChange', $event, runtimeStatus.volume)"
+        />
+        <span>音量</span>
+        <NSlider
+          :value="runtimeStatus.volume"
+          :min="0"
+          :max="1"
+          :step="0.05"
+          @update:value="emit('audioControlChange', runtimeStatus.muted, $event)"
+        />
       </div>
     </section>
 
@@ -214,6 +307,8 @@
         <dd>{{ runtimeStatus.activeLiveSessions }}</dd>
         <dt>Playback</dt>
         <dd>{{ runtimeStatus.activePlaybackSessions }}</dd>
+        <dt>Decoded Frames</dt>
+        <dd>{{ runtimeStatus.decodedFrames }}</dd>
         <dt>Recording</dt>
         <dd>{{ recordingStatusText[runtimeStatus.recording.status] }}</dd>
         <dt>Current File</dt>
@@ -226,3 +321,27 @@
     </section>
   </aside>
 </template>
+
+<style scoped>
+  .playback-controls {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) auto auto auto 78px;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .audio-controls {
+    display: grid;
+    grid-template-columns: auto auto auto minmax(100px, 1fr);
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  @media (max-width: 920px) {
+    .playback-controls {
+      grid-template-columns: minmax(120px, 1fr) auto;
+    }
+  }
+</style>

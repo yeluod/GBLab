@@ -118,9 +118,24 @@ impl Mp4Session {
     }
 
     pub(crate) fn reset(&mut self) -> MediaResult<()> {
+        self.seek(0.0)
+    }
+
+    pub(crate) fn seek(&mut self, position_seconds: f64) -> MediaResult<()> {
+        if !position_seconds.is_finite() || position_seconds < 0.0 {
+            return Err(MediaError::Playback(
+                "跳转位置必须是非负有限数值".to_owned(),
+            ));
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "已校验时间值且 FFmpeg seek API 使用 i64 微秒"
+        )]
+        let timestamp = (position_seconds * 1_000_000.0).round() as i64;
         self.context
-            .seek(-1, 0, 0)
+            .seek(-1, timestamp, ffi::AVSEEK_FLAG_BACKWARD.cast_signed())
             .map_err(|error| MediaError::Playback(error.to_string()))?;
+        self.decoder.flush();
         Ok(())
     }
 
@@ -165,6 +180,14 @@ impl Mp4Session {
         if !self.playing {
             return Ok(None);
         }
+        self.decode_next_frame()
+    }
+
+    pub(crate) fn step_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
+        self.decode_next_frame()
+    }
+
+    fn decode_next_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
         loop {
             let packet = match self.context.read_packet() {
                 Ok(Some(packet)) => packet,

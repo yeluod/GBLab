@@ -27,6 +27,12 @@ export interface MediaService {
   getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities>;
   startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus>;
   stopPreview(): Promise<MediaRuntimeStatus>;
+  pausePreview(): Promise<MediaRuntimeStatus>;
+  resumePreview(): Promise<MediaRuntimeStatus>;
+  seek(positionSeconds: number): Promise<MediaRuntimeStatus>;
+  setPlaybackRate(rate: number): Promise<MediaRuntimeStatus>;
+  setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus>;
+  stepFrame(): Promise<MediaVideoFrame | null>;
   getRuntimeStatus(): Promise<MediaRuntimeStatus>;
   readFrame(): Promise<MediaVideoFrame | null>;
 }

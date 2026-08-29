@@ -99,6 +99,14 @@
           :preview-frame="store.previewFrame"
           @start-preview="runOperation(store.startPreview, '预览已启动。')"
           @stop-preview="runOperation(store.stopPreview, '预览已停止。')"
+          @pause-preview="runOperation(store.pausePreview, '预览已暂停。')"
+          @resume-preview="runOperation(store.resumePreview, '预览已继续。')"
+          @step-frame="runOperation(store.stepPreviewFrame)"
+          @seek="runOperation(() => store.seekPreview($event), '播放位置已更新。')"
+          @playback-rate-change="runOperation(() => store.setPlaybackRate($event))"
+          @audio-control-change="
+            (muted, volume) => runOperation(() => store.setAudioControl(muted, volume))
+          "
         />
       </div>
 

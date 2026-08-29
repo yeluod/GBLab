@@ -193,6 +193,14 @@ pub struct MediaRuntimeStatus {
     pub duration_seconds: Option<f64>,
     /// 当前播放位置，单位秒。
     pub position_seconds: f64,
+    /// 当前预览读取倍速。倍速只影响本地播放时钟，不改变源文件。
+    pub playback_rate: f64,
+    /// 已向界面输出的解码帧数。
+    pub decoded_frames: u64,
+    /// 音频是否静音。音频输出管线接入后继续复用此状态。
+    pub muted: bool,
+    /// 音量，范围 0.0 到 1.0。
+    pub volume: f64,
 }
 
 impl MediaRuntimeStatus {
@@ -204,6 +212,10 @@ impl MediaRuntimeStatus {
             audio: None,
             duration_seconds: None,
             position_seconds: 0.0,
+            playback_rate: 1.0,
+            decoded_frames: 0,
+            muted: false,
+            volume: 1.0,
         }
     }
 
@@ -220,6 +232,10 @@ impl MediaRuntimeStatus {
             audio,
             duration_seconds,
             position_seconds: 0.0,
+            playback_rate: 1.0,
+            decoded_frames: 0,
+            muted: false,
+            volume: 1.0,
         }
     }
 }
@@ -268,6 +284,12 @@ pub trait MediaPipeline {
     fn stop(&mut self) -> MediaResult<MediaRuntimeStatus>;
     /// 重置到起点。
     fn reset(&mut self) -> MediaResult<MediaRuntimeStatus>;
+    /// 跳转到 MP4 时间线中的指定位置。
+    fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus>;
+    /// 设置本地预览倍速。
+    fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus>;
+    /// 在暂停状态读取一帧。
+    fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>>;
     /// 获取运行状态。
     fn status(&self) -> MediaRuntimeStatus;
     /// 读取下一个 packet 元数据。
@@ -333,6 +355,24 @@ impl MediaSourceSession {
         match self {
             Self::Mp4(session) => session.reset(),
             Self::Camera(session) => session.reset(),
+        }
+    }
+
+    pub(crate) fn seek(&mut self, position_seconds: f64) -> MediaResult<()> {
+        match self {
+            Self::Mp4(session) => session.seek(position_seconds),
+            Self::Camera(_) => Err(MediaError::UnsupportedSource(
+                "实时摄像头不支持时间线跳转".to_owned(),
+            )),
+        }
+    }
+
+    pub(crate) fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+        match self {
+            Self::Mp4(session) => session.step_frame(),
+            Self::Camera(_) => Err(MediaError::UnsupportedSource(
+                "实时摄像头不支持单帧步进".to_owned(),
+            )),
         }
     }
 

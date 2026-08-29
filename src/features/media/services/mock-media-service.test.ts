@@ -101,6 +101,18 @@ describe('MockMediaService', () => {
     expect(ready.sourceStatus).toBe(MediaSourceStatus.Ready);
   });
 
+  it('支持暂停、跳转、单帧和倍速控制', async () => {
+    const service = new MockMediaService();
+    const config = createDefaultMediaConfig();
+
+    await service.startPreview(config);
+    expect((await service.pausePreview()).sourceStatus).toBe(MediaSourceStatus.Paused);
+    expect((await service.seek(12.5)).positionSeconds).toBe(12.5);
+    expect((await service.setPlaybackRate(2)).playbackRate).toBe(2);
+    expect(await service.stepFrame()).not.toBeNull();
+    expect((await service.resumePreview()).sourceStatus).toBe(MediaSourceStatus.Previewing);
+  });
+
   it('可注入服务错误以覆盖后端失败路径', async () => {
     const service = new MockMediaService({ failures: ['listVideoDevices'] });
 

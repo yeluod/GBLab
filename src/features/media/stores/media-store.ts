@@ -51,6 +51,12 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     audio: null,
     activeLiveSessions: 0,
     activePlaybackSessions: 0,
+    durationSeconds: null,
+    positionSeconds: 0,
+    playbackRate: 1,
+    decodedFrames: 0,
+    muted: false,
+    volume: 1,
     recording: {
       status: RecordingStatus.Error,
       currentFile: null,
@@ -120,6 +126,12 @@ export const useMediaStore = defineStore('media', () => {
     audio: null,
     activeLiveSessions: 0,
     activePlaybackSessions: 0,
+    durationSeconds: null,
+    positionSeconds: 0,
+    playbackRate: 1,
+    decodedFrames: 0,
+    muted: false,
+    volume: 1,
     recording: {
       status: RecordingStatus.Disabled,
       currentFile: null,
@@ -517,29 +529,109 @@ export const useMediaStore = defineStore('media', () => {
     }
   }
 
-  function stopFrameLoop(): void {
+  async function pausePreview(): Promise<MediaOperationResult> {
+    isPreviewPending.value = true;
+    try {
+      runtimeStatus.value = await service.pausePreview();
+      stopFrameLoop(false);
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error, true);
+    } finally {
+      isPreviewPending.value = false;
+    }
+  }
+
+  async function resumePreview(): Promise<MediaOperationResult> {
+    isPreviewPending.value = true;
+    try {
+      runtimeStatus.value = await service.resumePreview();
+      startFrameLoop();
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error, true);
+    } finally {
+      isPreviewPending.value = false;
+    }
+  }
+
+  async function seekPreview(positionSeconds: number): Promise<MediaOperationResult> {
+    try {
+      runtimeStatus.value = await service.seek(positionSeconds);
+      if (runtimeStatus.value.sourceStatus === MediaSourceStatus.Paused) {
+        const frame = await service.stepFrame();
+        if (frame !== null) previewFrame.value = frame;
+      }
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error, true);
+    }
+  }
+
+  async function setPlaybackRate(rate: number): Promise<MediaOperationResult> {
+    try {
+      runtimeStatus.value = await service.setPlaybackRate(rate);
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error);
+    }
+  }
+
+  async function setAudioControl(muted: boolean, volume: number): Promise<MediaOperationResult> {
+    try {
+      runtimeStatus.value = await service.setAudioControl(muted, volume);
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error);
+    }
+  }
+
+  async function stepPreviewFrame(): Promise<MediaOperationResult> {
+    try {
+      const frame = await service.stepFrame();
+      if (frame !== null) {
+        previewFrame.value = frame;
+        runtimeStatus.value.positionSeconds = frame.positionSeconds;
+        runtimeStatus.value.decodedFrames += 1;
+      }
+      return { ok: true };
+    } catch (error) {
+      return handleServiceFailure(error, true);
+    }
+  }
+
+  function stopFrameLoop(clearFrame = true): void {
     frameLoopActive = false;
     if (frameTimer !== null) clearTimeout(frameTimer);
     frameTimer = null;
-    previewFrame.value = null;
+    if (clearFrame) previewFrame.value = null;
   }
 
   function startFrameLoop(): void {
-    stopFrameLoop();
+    stopFrameLoop(false);
     frameLoopActive = true;
     const read = async (): Promise<void> => {
       if (!frameLoopActive) return;
       try {
         const frame = await service.readFrame();
         if (!frameLoopActive) return;
-        if (frame !== null) previewFrame.value = frame;
+        if (frame !== null) {
+          previewFrame.value = frame;
+          runtimeStatus.value.positionSeconds = frame.positionSeconds;
+          runtimeStatus.value.decodedFrames += 1;
+        }
       } catch (error) {
         handleServiceFailure(error, true);
         stopFrameLoop();
         return;
       }
-      // 使用稳定的 25 FPS 预览节奏；下一次读取始终在本次 IPC 完成后发起，避免重入。
-      frameTimer = setTimeout(() => void read(), 40);
+      // 按源帧率和倍速驱动预览；下一次读取始终在本次 IPC 完成后发起，避免重入。
+      const sourceFramesPerSecond = runtimeStatus.value.video?.framesPerSecond || 25;
+      const delay = Math.max(
+        8,
+        Math.round(1000 / sourceFramesPerSecond / runtimeStatus.value.playbackRate),
+      );
+      frameTimer = setTimeout(() => void read(), delay);
     };
     void read();
   }
@@ -657,5 +749,11 @@ export const useMediaStore = defineStore('media', () => {
     resetDraft,
     startPreview,
     stopPreview,
+    pausePreview,
+    resumePreview,
+    seekPreview,
+    setPlaybackRate,
+    setAudioControl,
+    stepPreviewFrame,
   };
 });
