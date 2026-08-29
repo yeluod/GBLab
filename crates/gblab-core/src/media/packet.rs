@@ -1,0 +1,188 @@
+//! Encoded and raw media data exchanged between media pipeline stages.
+
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+
+/// Rational media time base used by integer timestamps.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTimeBase {
+    /// Number of seconds represented by one timestamp unit.
+    pub numerator: i32,
+    /// Timestamp units per numerator seconds.
+    pub denominator: i32,
+}
+
+impl MediaTimeBase {
+    /// The common 90 kHz clock used by the normalized encoded stream.
+    pub const MPEG_CLOCK: Self = Self {
+        numerator: 1,
+        denominator: 90_000,
+    };
+
+    /// Creates a validated time base.
+    #[must_use]
+    pub const fn new(numerator: i32, denominator: i32) -> Option<Self> {
+        if numerator > 0 && denominator > 0 {
+            Some(Self {
+                numerator,
+                denominator,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Converts an integer timestamp to seconds for presentation only.
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "UI presentation uses floating point seconds"
+    )]
+    pub fn seconds(self, timestamp: i64) -> f64 {
+        timestamp as f64 * f64::from(self.numerator) / f64::from(self.denominator)
+    }
+
+    /// Rescales an integer timestamp without routing through floating point.
+    #[must_use]
+    pub fn rescale(self, timestamp: i64, target: Self) -> i64 {
+        let numerator = i128::from(timestamp)
+            .saturating_mul(i128::from(self.numerator))
+            .saturating_mul(i128::from(target.denominator));
+        let denominator = i128::from(self.denominator).saturating_mul(i128::from(target.numerator));
+        let value = if denominator == 0 {
+            0
+        } else {
+            numerator / denominator
+        };
+        i64::try_from(value).unwrap_or_else(|_| {
+            if value.is_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
+    }
+}
+
+/// Logical encoded track identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaTrackKind {
+    /// Encoded video track.
+    Video,
+    /// Encoded audio track.
+    Audio,
+}
+
+/// Final encoded video codec.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoCodec {
+    /// H.264/AVC.
+    H264,
+    /// H.265/HEVC.
+    H265,
+}
+
+/// Final encoded audio codec.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioCodec {
+    /// AAC.
+    Aac,
+    /// G.711 A-law.
+    G711a,
+    /// G.711 mu-law.
+    G711u,
+    /// A detected codec which is not currently available to output consumers.
+    Other,
+}
+
+/// Codec carried by an encoded media packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EncodedMediaCodec {
+    /// Encoded video.
+    Video(VideoCodec),
+    /// Encoded audio.
+    Audio(AudioCodec),
+}
+
+/// Packet ready for recorder, live-session and preview consumers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedMediaPacket {
+    /// Logical track kind, independent from container stream indices.
+    pub track: MediaTrackKind,
+    /// Codec carried by this packet.
+    pub codec: EncodedMediaCodec,
+    /// Actual encoded packet bytes.
+    pub data: Bytes,
+    /// Presentation timestamp in `time_base` units.
+    pub pts: Option<i64>,
+    /// Decode timestamp in `time_base` units.
+    pub dts: Option<i64>,
+    /// Packet duration in `time_base` units.
+    pub duration: i64,
+    /// Integer timestamp time base.
+    pub time_base: MediaTimeBase,
+    /// Whether this video packet is a random-access point.
+    pub is_keyframe: bool,
+    /// Optional codec initialization data required by a downstream muxer.
+    pub codec_configuration: Option<Bytes>,
+}
+
+impl EncodedMediaPacket {
+    /// Presentation position in seconds, intended only for UI/status projection.
+    #[must_use]
+    pub fn position_seconds(&self) -> f64 {
+        self.pts
+            .or(self.dts)
+            .map_or(0.0, |timestamp| self.time_base.seconds(timestamp))
+    }
+}
+
+/// Raw decoded video frame used between capture/decode and encode/preview stages.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawVideoFrame {
+    /// Frame width.
+    pub width: u32,
+    /// Frame height.
+    pub height: u32,
+    /// Backend pixel-format name.
+    pub pixel_format: String,
+    /// Tightly packed frame bytes where applicable.
+    pub data: Bytes,
+    /// Presentation timestamp.
+    pub pts: Option<i64>,
+    /// Timestamp time base.
+    pub time_base: MediaTimeBase,
+}
+
+/// Raw decoded audio frame used before resampling and encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawAudioFrame {
+    /// Interleaved or planar bytes as described by `sample_format`.
+    pub data: Bytes,
+    /// `FFmpeg` sample-format name.
+    pub sample_format: String,
+    /// Sample rate.
+    pub sample_rate: u32,
+    /// Channel count.
+    pub channels: u32,
+    /// Presentation timestamp.
+    pub pts: Option<i64>,
+    /// Timestamp time base.
+    pub time_base: MediaTimeBase,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MediaTimeBase, VideoCodec};
+
+    #[test]
+    fn timestamp_rescale_should_preserve_integer_media_time() {
+        let source = MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK);
+
+        assert_eq!(source.rescale(1_500, MediaTimeBase::MPEG_CLOCK), 135_000);
+        assert_eq!(VideoCodec::H264, VideoCodec::H264);
+    }
+}

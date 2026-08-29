@@ -31,6 +31,8 @@ export {
   EncoderBackend,
   MediaSourceType,
   VideoCodec,
+  isFrameRateSupported,
+  selectableFrameRates,
 } from './types/media-config';
 export type {
   AudioCaptureConfig,
@@ -45,6 +47,7 @@ export type {
   VideoCaptureConfig,
   VideoCaptureMode,
   VideoEncoderCapabilities,
+  VideoEncoderCapability,
 } from './types/media-config';
 export { MediaSourceStatus, RecordingStatus } from './types/media-runtime';
 export type {

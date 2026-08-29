@@ -19,7 +19,7 @@
     isPreviewPending: boolean;
     canStartPreview: boolean;
     sourceType: MediaSourceType;
-    previewFrame?: { width: number; height: number; rgba: number[] } | null;
+    previewFrame?: { width: number; height: number; rgba: Uint8Array } | null;
   }>();
   const emit = defineEmits<{
     startPreview: [];
@@ -85,18 +85,18 @@
     isSeekEditing.value = false;
     emit('seek', seekPosition.value);
   }
-  function drawFrame(frame: { width: number; height: number; rgba: number[] } | null | undefined) {
+  function drawFrame(
+    frame: { width: number; height: number; rgba: Uint8Array } | null | undefined,
+  ) {
     if (frame === null || frame === undefined || previewCanvas.value === null) return;
     const canvas = previewCanvas.value;
     canvas.width = frame.width;
     canvas.height = frame.height;
     const context = canvas.getContext('2d');
     if (context === null) return;
-    context.putImageData(
-      new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height),
-      0,
-      0,
-    );
+    const pixels = new Uint8ClampedArray(frame.rgba.byteLength);
+    pixels.set(frame.rgba);
+    context.putImageData(new ImageData(pixels, frame.width, frame.height), 0, 0);
   }
   watch(
     () => props.previewFrame,

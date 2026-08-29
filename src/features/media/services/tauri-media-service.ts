@@ -14,7 +14,7 @@ import type {
   GlobalMediaConfig,
   VideoEncoderCapabilities,
 } from '../types/media-config';
-import type { MediaService, MediaVideoFrame } from './media-service';
+import { MediaServiceError, type MediaService, type MediaVideoFrame } from './media-service';
 
 interface BackendStreamInfo {
   codec: string;
@@ -57,6 +57,7 @@ interface BackendRuntimeStatus {
   decodedFrames: number;
   muted: boolean;
   volume: number;
+  lastError: string | null;
 }
 
 type BackendMediaConfig = {
@@ -176,8 +177,9 @@ function toProbe(value: BackendProbeResult): MediaProbeResult {
 }
 
 function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
-  const sourceStatus =
-    value.sourceStatus === 'playing'
+  const sourceStatus = value.lastError
+    ? MediaSourceStatus.Error
+    : value.sourceStatus === 'playing'
       ? MediaSourceStatus.Previewing
       : value.sourceStatus === 'paused'
         ? MediaSourceStatus.Paused
@@ -212,7 +214,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
       recordedDurationSeconds: 0,
       usedSpaceBytes: 0,
     },
-    errorMessage: null,
+    errorMessage: value.lastError,
   };
 }
 
@@ -300,15 +302,15 @@ export class TauriMediaService implements MediaService {
       await invokeCommand<BackendRuntimeStatus>('set_media_audio_control', { muted, volume }),
     );
   }
-  stepFrame(): Promise<MediaVideoFrame | null> {
-    return invokeCommand<MediaVideoFrame | null>('step_media_frame');
+  async stepFrame(): Promise<MediaVideoFrame | null> {
+    return decodePreviewFrame(await invokeCommand<Uint8Array>('step_media_frame'));
   }
   async getRuntimeStatus(): Promise<MediaRuntimeStatus> {
     return toRuntime(await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status'));
   }
 
   async readFrame(): Promise<MediaVideoFrame | null> {
-    return invokeCommand<MediaVideoFrame | null>('read_media_frame');
+    return decodePreviewFrame(await invokeCommand<Uint8Array>('read_media_frame'));
   }
 
   private async open(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
@@ -317,8 +319,15 @@ export class TauriMediaService implements MediaService {
         await invokeCommand<BackendRuntimeStatus>('open_camera', {
           configuration: {
             videoDeviceId: config.source.camera.video.deviceId,
+            videoCodec: config.source.camera.video.codec,
+            videoBitrate: config.source.camera.video.bitrateKbps * 1000,
+            encoderBackend: config.source.camera.video.encoderBackend,
             audioEnabled: config.source.camera.audio.isEnabled,
             audioDeviceId: config.source.camera.audio.deviceId,
+            audioCodec: config.source.camera.audio.codec,
+            audioSampleRate: config.source.camera.audio.sampleRate,
+            audioChannels: config.source.camera.audio.channels,
+            audioBitrate: config.source.camera.audio.bitrateKbps * 1000,
             width: config.source.camera.video.width,
             height: config.source.camera.video.height,
             framesPerSecond: config.source.camera.video.framesPerSecond,
@@ -348,5 +357,35 @@ function toCaptureDevice(device: BackendCaptureDevice): CaptureDeviceInfo {
     id: device.id,
     name: device.name,
     status: device.status as CaptureDeviceStatus,
+  };
+}
+
+function decodePreviewFrame(payload: Uint8Array): MediaVideoFrame | null {
+  const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  const headerSize = 21;
+  if (bytes.byteLength === 0) return null;
+  if (
+    bytes.byteLength < headerSize ||
+    bytes[0] !== 0x47 ||
+    bytes[1] !== 0x42 ||
+    bytes[2] !== 0x50 ||
+    bytes[3] !== 0x46 ||
+    bytes[4] !== 1
+  ) {
+    throw new MediaServiceError('预览帧二进制格式无效。');
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint32(5, true);
+  const height = view.getUint32(9, true);
+  const positionSeconds = view.getFloat64(13, true);
+  const expectedLength = headerSize + width * height * 4;
+  if (bytes.byteLength !== expectedLength) {
+    throw new MediaServiceError('预览帧像素数据长度无效。');
+  }
+  return {
+    width,
+    height,
+    positionSeconds,
+    rgba: bytes.slice(headerSize),
   };
 }

@@ -182,7 +182,7 @@ export class MockMediaService implements MediaService {
     if (this.runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing) return null;
     const width = 320;
     const height = 180;
-    const rgba = new Array<number>(width * height * 4).fill(0);
+    const rgba = new Uint8Array(width * height * 4);
     for (let i = 0; i < rgba.length; i += 4) {
       rgba[i] = 20;
       rgba[i + 1] = 120;

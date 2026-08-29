@@ -8,7 +8,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -280,7 +280,7 @@ pub struct DeviceCollectionConfiguration {
 }
 
 /// SIP 信令传输协议。
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SipTransport {
     /// 用户数据报协议。
@@ -319,7 +319,7 @@ impl SignalCharset {
 /// 全部模拟设备共享的 SIP 服务配置。
 ///
 /// 密码作为模拟器配置明文读取、传输并写入 JSON。
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SipServiceConfiguration {
     /// SIP 平台地址，格式为 `sip:host:port`。
@@ -489,8 +489,7 @@ impl ConfigurationStore {
             media: self.configuration.media.clone(),
         };
 
-        write_configuration(&self.path, &next_configuration)?;
-        self.configuration = next_configuration;
+        self.commit(next_configuration)?;
         Ok(sip_service)
     }
 
@@ -509,8 +508,7 @@ impl ConfigurationStore {
             device_collection: device_collection.clone(),
             media: self.configuration.media.clone(),
         };
-        write_configuration(&self.path, &next_configuration)?;
-        self.configuration = next_configuration;
+        self.commit(next_configuration)?;
         Ok(device_collection)
     }
 
@@ -530,9 +528,25 @@ impl ConfigurationStore {
             device_collection: self.configuration.device_collection.clone(),
             media: media.clone(),
         };
-        write_configuration(&self.path, &next_configuration)?;
-        self.configuration = next_configuration;
+        self.commit(next_configuration)?;
         Ok(media)
+    }
+
+    fn commit(&mut self, next: AppConfiguration) -> Result<(), ConfigurationError> {
+        let path = self.path.clone();
+        self.commit_with(next, |configuration| {
+            write_configuration(&path, configuration)
+        })
+    }
+
+    fn commit_with(
+        &mut self,
+        next: AppConfiguration,
+        persist: impl FnOnce(&AppConfiguration) -> Result<(), ConfigurationError>,
+    ) -> Result<(), ConfigurationError> {
+        persist(&next)?;
+        self.configuration = next;
+        Ok(())
     }
 }
 
@@ -683,17 +697,23 @@ fn write_configuration(
     let mut contents = serde_json::to_vec_pretty(configuration)?;
     contents.push(b'\n');
 
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "配置文件缺少父目录"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    options.mode(0o600);
-
-    let mut file = options.open(path)?;
-    file.write_all(&contents)?;
-    file.sync_all()?;
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(&contents)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    let persisted = temporary.persist(path).map_err(|error| error.error)?;
+    persisted.sync_all()?;
 
     #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        OpenOptions::new().read(true).open(parent)?.sync_all()?;
+    }
 
     Ok(())
 }
@@ -730,8 +750,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration, SignalCharset,
-        SipServiceConfiguration, SipTransport,
+        AppConfiguration, ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration,
+        SignalCharset, SipServiceConfiguration, SipTransport,
     };
 
     fn valid_sip_service() -> SipServiceConfiguration {
@@ -857,6 +877,50 @@ mod tests {
         store.save_sip_service(valid_sip_service())?;
 
         assert!(store.device_collection().has_completed_batch_add);
+        Ok(())
+    }
+
+    #[test]
+    fn successful_save_should_atomically_replace_with_complete_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+
+        store.save_sip_service(valid_sip_service())?;
+
+        let contents = fs::read(&configuration_path)?;
+        let persisted: AppConfiguration = serde_json::from_slice(&contents)?;
+        assert_eq!(persisted.sip_service, valid_sip_service());
+        assert!(contents.ends_with(b"\n"));
+        let remaining_files = fs::read_dir(directory.path())?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(remaining_files.len(), 1);
+        assert_eq!(remaining_files[0].path(), configuration_path);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_persist_should_preserve_memory_and_existing_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+        let original_memory = store.sip_service();
+        let original_file = fs::read(&configuration_path)?;
+        let next = AppConfiguration {
+            sip_service: valid_sip_service(),
+            ..AppConfiguration::default()
+        };
+
+        let result = store.commit_with(next, |_| {
+            Err(ConfigurationError::Io(std::io::Error::other(
+                "injected persistence failure",
+            )))
+        });
+
+        assert!(matches!(result, Err(ConfigurationError::Io(_))));
+        assert_eq!(store.sip_service(), original_memory);
+        assert_eq!(fs::read(&configuration_path)?, original_file);
         Ok(())
     }
 }

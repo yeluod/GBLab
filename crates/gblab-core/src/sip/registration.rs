@@ -20,8 +20,6 @@ use crate::{
     sip::transaction::{TransactionKey, TransactionManager},
 };
 
-use super::dialog::DialogManager;
-
 #[cfg(test)]
 use super::dispatcher::{
     InboundRequestDisposition, SipResponseClass, accept_sip_success, dispatch_inbound_request,
@@ -88,11 +86,10 @@ pub struct SipRegistrationClient {
     pub(super) local_port: u16,
     pub(super) registrar: SipUri,
     pub(super) domain: String,
-    pub(super) subscription_tags: Mutex<HashMap<String, String>>,
+    pub(super) uas_tags: Mutex<HashMap<String, String>>,
     pub(super) transactions: TransactionManager,
     pub(super) event_tx: mpsc::Sender<SipTransportEvent>,
-    pub(super) dialogs: Mutex<DialogManager>,
-    pub(super) invite_transactions: Mutex<HashMap<TransactionKey, Instant>>,
+    pub(super) invite_transactions: Mutex<HashMap<TransactionKey, InviteServerTransaction>>,
     pub(super) server_transactions: Mutex<HashMap<TransactionKey, CachedServerResponse>>,
     pub(super) query_cseq: AtomicU32,
     pub(super) signal_charset: SignalCharset,
@@ -102,6 +99,18 @@ pub struct SipRegistrationClient {
 
 pub(super) struct CachedServerResponse {
     pub(super) response: Vec<u8>,
+    pub(super) expires_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum InviteServerTransactionState {
+    Proceeding,
+    Completed,
+    Terminated,
+}
+
+pub(super) struct InviteServerTransaction {
+    pub(super) state: InviteServerTransactionState,
     pub(super) expires_at: Instant,
 }
 
@@ -163,10 +172,9 @@ impl SipRegistrationClient {
             local_port: local_address.port(),
             registrar,
             domain: configuration.domain.clone(),
-            subscription_tags: Mutex::new(HashMap::new()),
+            uas_tags: Mutex::new(HashMap::new()),
             transactions: TransactionManager::default(),
             event_tx,
-            dialogs: Mutex::new(DialogManager::default()),
             invite_transactions: Mutex::new(HashMap::new()),
             server_transactions: Mutex::new(HashMap::new()),
             query_cseq: AtomicU32::new(0),

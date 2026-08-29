@@ -1,10 +1,149 @@
-//! Narrowly scoped native input-device enumeration boundary.
+//! Audited native `FFmpeg` and capture-device FFI boundary.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::{collections::BTreeMap, ffi::CStr, ptr, slice};
+use std::{
+    collections::BTreeMap,
+    ffi::{CStr, c_void},
+    ptr::{self, NonNull},
+    slice,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use rsmpeg::{avcodec::AVCodec, avformat::AVInputFormatRef, ffi};
+use rsmpeg::{
+    avcodec::AVCodec,
+    avformat::{AVFormatContextInput, AVInputFormatRef},
+    avutil::AVDictionary,
+    error::RsmpegError,
+    ffi,
+};
+
+#[cfg(target_os = "windows")]
+mod windows_capture;
+
+/// RAII guard connecting a Rust cancellation flag to an `AVFormatContext` interrupt callback.
+pub struct InputInterruptGuard {
+    context: NonNull<ffi::AVFormatContext>,
+    opaque: NonNull<Arc<AtomicBool>>,
+}
+
+impl Drop for InputInterruptGuard {
+    fn drop(&mut self) {
+        // SAFETY: The guard is declared before the owning input context and therefore drops while
+        // the context is still alive. The opaque allocation belongs exclusively to this guard.
+        unsafe {
+            let context = self.context.as_mut();
+            context.interrupt_callback.callback = None;
+            context.interrupt_callback.opaque = ptr::null_mut();
+            drop(Box::from_raw(self.opaque.as_ptr()));
+        }
+    }
+}
+
+/// Opens an FFmpeg input with the interrupt callback active during both open and stream probing.
+///
+/// # Errors
+///
+/// Returns the original FFmpeg open or stream-info error. All partially created FFmpeg and
+/// dictionary allocations are released before returning an error.
+pub fn open_input_with_interrupt(
+    url: &CStr,
+    format: &AVInputFormatRef<'_>,
+    options: Option<AVDictionary>,
+    flag: Arc<AtomicBool>,
+) -> Result<(AVFormatContextInput, InputInterruptGuard), RsmpegError> {
+    let mut context = unsafe { ffi::avformat_alloc_context() };
+    let Some(context_pointer) = NonNull::new(context) else {
+        return Err(RsmpegError::Unknown);
+    };
+    let opaque = attach_raw_interrupt(context_pointer, flag);
+    let mut options_pointer =
+        options.map_or(ptr::null_mut(), |dictionary| dictionary.into_raw().as_ptr());
+
+    // SAFETY: Context, URL, input format, option dictionary and callback opaque allocation remain
+    // valid for the complete avformat_open_input call. FFmpeg takes ownership of consumed options.
+    let open_result = unsafe {
+        ffi::avformat_open_input(
+            &mut context,
+            url.as_ptr(),
+            format.as_ptr(),
+            &mut options_pointer,
+        )
+    };
+    drop_dictionary_pointer(options_pointer);
+    if open_result < 0 {
+        if !context.is_null() {
+            // SAFETY: A non-null context after failed open remains owned by this function. The
+            // interrupt opaque stays alive until FFmpeg has finished closing the context.
+            unsafe { ffi::avformat_close_input(&mut context) };
+        }
+        drop_opaque(opaque);
+        return Err(RsmpegError::OpenInputError(open_result));
+    }
+
+    let Some(context_pointer) = NonNull::new(context) else {
+        drop_opaque(opaque);
+        return Err(RsmpegError::Unknown);
+    };
+    // SAFETY: Successful avformat_open_input returns an owned initialized context.
+    let mut input = unsafe { AVFormatContextInput::from_raw(context_pointer) };
+    // SAFETY: The input context and interrupt callback remain valid during stream probing.
+    let stream_info_result =
+        unsafe { ffi::avformat_find_stream_info(input.as_mut_ptr(), ptr::null_mut()) };
+    if stream_info_result < 0 {
+        drop(input);
+        drop_opaque(opaque);
+        return Err(RsmpegError::FindStreamInfoError(stream_info_result));
+    }
+
+    Ok((
+        input,
+        InputInterruptGuard {
+            context: context_pointer,
+            opaque,
+        },
+    ))
+}
+
+fn attach_raw_interrupt(
+    context_ptr: NonNull<ffi::AVFormatContext>,
+    flag: Arc<AtomicBool>,
+) -> NonNull<Arc<AtomicBool>> {
+    let opaque = NonNull::from(Box::leak(Box::new(flag)));
+    // SAFETY: Both pointers remain valid until `InputInterruptGuard` clears the callback and frees
+    // the opaque Arc. FFmpeg only reads the callback structure while operating on this context.
+    unsafe {
+        let native = context_ptr.as_ptr();
+        (*native).interrupt_callback.callback = Some(media_interrupt_callback);
+        (*native).interrupt_callback.opaque = opaque.as_ptr().cast::<c_void>();
+    }
+    opaque
+}
+
+fn drop_opaque(opaque: NonNull<Arc<AtomicBool>>) {
+    // SAFETY: The pointer was allocated by attach_raw_interrupt and is released exactly once.
+    unsafe { drop(Box::from_raw(opaque.as_ptr())) };
+}
+
+fn drop_dictionary_pointer(pointer: *mut ffi::AVDictionary) {
+    if let Some(pointer) = NonNull::new(pointer) {
+        // SAFETY: FFmpeg returned ownership of the remaining option dictionary entries.
+        unsafe { drop(AVDictionary::from_raw(pointer)) };
+    }
+}
+
+unsafe extern "C" fn media_interrupt_callback(opaque: *mut c_void) -> i32 {
+    if opaque.is_null() {
+        return 0;
+    }
+    // SAFETY: `open_input_with_interrupt` stores an `Arc<AtomicBool>` allocation at this address,
+    // and its guard keeps it alive until after the callback is detached.
+    let flag = unsafe { &*opaque.cast::<Arc<AtomicBool>>() };
+    i32::from(flag.load(Ordering::Acquire))
+}
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use rsmpeg::avformat::AVInputFormat;
@@ -40,6 +179,10 @@ pub enum DeviceEnumerationError {
     /// The target platform has no implemented native capture backend.
     #[error("capture-device enumeration is unsupported on this platform")]
     UnsupportedPlatform,
+    /// Windows DirectShow rejected native capability enumeration.
+    #[cfg(target_os = "windows")]
+    #[error("DirectShow capture capability enumeration failed: {0}")]
+    DirectShow(String),
 }
 
 /// A native FFmpeg capture device.
@@ -56,23 +199,62 @@ pub struct NativeCaptureDevice {
 }
 
 /// A native video capture mode exposed without opening the device.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NativeVideoCaptureMode {
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Practical integer frame rates supported by this mode.
-    pub frame_rates: Vec<u32>,
+    /// Exact frame rates and continuous ranges reported by the backend.
+    pub frame_rates: Vec<NativeFrameRateCapability>,
 }
 
-/// Video encoders provided by the linked FFmpeg libraries.
+/// A native exact frame rate or continuous range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeFrameRateCapability {
+    /// One exact rate.
+    Exact(f64),
+    /// Inclusive continuous range.
+    Range { minimum: f64, maximum: f64 },
+}
+
+/// Encoded video codec family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeVideoEncoder {
-    /// H.264/AVC encoder.
+pub enum NativeVideoCodec {
+    /// H.264/AVC.
     H264,
-    /// H.265/HEVC encoder.
+    /// H.265/HEVC.
     H265,
+}
+
+/// Concrete encoder backend family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeEncoderBackend {
+    /// Apple VideoToolbox.
+    VideoToolbox,
+    /// Windows Media Foundation.
+    MediaFoundation,
+    /// NVIDIA NVENC.
+    Nvenc,
+    /// Intel Quick Sync Video.
+    Qsv,
+    /// AMD AMF.
+    Amf,
+    /// FFmpeg built-in or other LGPL-compatible software encoder.
+    Software,
+}
+
+/// A concrete video encoder present in the linked FFmpeg build.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeVideoEncoderCapability {
+    /// Output codec.
+    pub codec: NativeVideoCodec,
+    /// Backend family.
+    pub backend: NativeEncoderBackend,
+    /// Exact FFmpeg encoder name.
+    pub encoder_name: String,
+    /// Whether this is a hardware implementation.
+    pub hardware: bool,
 }
 
 /// Enumerate video capture modes without starting a capture session.
@@ -88,7 +270,11 @@ pub fn video_capture_modes(
     {
         avfoundation_video_capture_modes(device_id)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_capture::video_capture_modes(device_id)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = device_id;
         Err(DeviceEnumerationError::UnsupportedPlatform)
@@ -97,23 +283,111 @@ pub fn video_capture_modes(
 
 /// Return video encoders that are actually present in the linked FFmpeg build.
 #[must_use]
-pub fn supported_video_encoders() -> Vec<NativeVideoEncoder> {
-    let mut encoders = Vec::with_capacity(2);
-    if AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).is_some() {
-        encoders.push(NativeVideoEncoder::H264);
+pub fn supported_video_encoders() -> Vec<NativeVideoEncoderCapability> {
+    encoder_candidates()
+        .iter()
+        .filter_map(|candidate| {
+            let name = std::ffi::CString::new(candidate.name).ok()?;
+            AVCodec::find_encoder_by_name(name.as_c_str()).map(|_| NativeVideoEncoderCapability {
+                codec: candidate.codec,
+                backend: candidate.backend,
+                encoder_name: candidate.name.to_owned(),
+                hardware: candidate.hardware,
+            })
+        })
+        .collect()
+}
+
+struct EncoderCandidate {
+    name: &'static str,
+    codec: NativeVideoCodec,
+    backend: NativeEncoderBackend,
+    hardware: bool,
+}
+
+fn encoder_candidates() -> &'static [EncoderCandidate] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            EncoderCandidate {
+                name: "h264_videotoolbox",
+                codec: NativeVideoCodec::H264,
+                backend: NativeEncoderBackend::VideoToolbox,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "hevc_videotoolbox",
+                codec: NativeVideoCodec::H265,
+                backend: NativeEncoderBackend::VideoToolbox,
+                hardware: true,
+            },
+        ]
     }
-    if AVCodec::find_encoder(ffi::AV_CODEC_ID_HEVC).is_some() {
-        encoders.push(NativeVideoEncoder::H265);
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            EncoderCandidate {
+                name: "h264_mf",
+                codec: NativeVideoCodec::H264,
+                backend: NativeEncoderBackend::MediaFoundation,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "hevc_mf",
+                codec: NativeVideoCodec::H265,
+                backend: NativeEncoderBackend::MediaFoundation,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "h264_nvenc",
+                codec: NativeVideoCodec::H264,
+                backend: NativeEncoderBackend::Nvenc,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "hevc_nvenc",
+                codec: NativeVideoCodec::H265,
+                backend: NativeEncoderBackend::Nvenc,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "h264_qsv",
+                codec: NativeVideoCodec::H264,
+                backend: NativeEncoderBackend::Qsv,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "hevc_qsv",
+                codec: NativeVideoCodec::H265,
+                backend: NativeEncoderBackend::Qsv,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "h264_amf",
+                codec: NativeVideoCodec::H264,
+                backend: NativeEncoderBackend::Amf,
+                hardware: true,
+            },
+            EncoderCandidate {
+                name: "hevc_amf",
+                codec: NativeVideoCodec::H265,
+                backend: NativeEncoderBackend::Amf,
+                hardware: true,
+            },
+        ]
     }
-    encoders
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        &[]
+    }
 }
 
 /// Enumerate the current platform's camera and microphone devices.
 ///
 /// macOS uses AVFoundation directly because its FFmpeg input driver does not implement
-/// `avdevice_list_input_sources`. Device identifiers remain the per-media-type indices that
-/// FFmpeg's `avfoundation` input accepts. Other supported platforms use FFmpeg's native device
-/// enumeration API.
+/// `avdevice_list_input_sources`. Persisted identifiers are stable AVFoundation unique IDs;
+/// [`resolve_capture_device_input_id`] maps them to FFmpeg's current avfoundation index when a
+/// capture session is opened. Other platforms use FFmpeg's native identifiers directly.
 ///
 /// # Errors
 ///
@@ -182,12 +456,13 @@ fn list_avfoundation_devices(
     let devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
     devices
         .iter()
-        .enumerate()
-        .map(|(index, device)| {
+        .map(|device| {
             // SAFETY: AVFoundation returned a live AVCaptureDevice retained by the array iterator.
             let name = unsafe { device.localizedName() }.to_string();
+            // SAFETY: `uniqueID` is an immutable string property of the retained device.
+            let id = unsafe { device.uniqueID() }.to_string();
             NativeCaptureDevice {
-                id: index.to_string(),
+                id,
                 name,
                 has_video,
                 has_audio: !has_video,
@@ -204,8 +479,8 @@ fn avfoundation_video_capture_modes(
     use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeVideo};
     use objc2_core_media::CMVideoFormatDescriptionGetDimensions;
 
-    let index = device_id
-        .trim()
+    let resolved = resolve_avfoundation_device(device_id, true)?;
+    let index = resolved
         .parse::<usize>()
         .map_err(|_| DeviceEnumerationError::InvalidDeviceIdentifier(device_id.to_owned()))?;
     // SAFETY: This is an immutable AVFoundation framework symbol available on supported macOS.
@@ -260,25 +535,88 @@ fn merge_capture_modes(
         .map(|((width, height), ranges)| NativeVideoCaptureMode {
             width,
             height,
-            frame_rates: practical_frame_rates(&ranges),
+            frame_rates: frame_rate_capabilities(&ranges),
         })
         .filter(|mode| !mode.frame_rates.is_empty())
         .collect()
 }
 
-fn practical_frame_rates(ranges: &[(f64, f64)]) -> Vec<u32> {
-    let mut frame_rates = std::collections::BTreeSet::new();
-    for &(min, max) in ranges {
-        // FFmpeg's avfoundation input validates the range endpoints as discrete accepted values;
-        // interpolating common rates inside the interval can produce modes the driver rejects.
-        for endpoint in [min, max] {
-            let rounded = endpoint.round();
-            if rounded > 0.0 && rounded <= f64::from(u32::MAX) {
-                frame_rates.insert(rounded as u32);
+fn frame_rate_capabilities(ranges: &[(f64, f64)]) -> Vec<NativeFrameRateCapability> {
+    ranges
+        .iter()
+        .filter_map(|&(minimum, maximum)| {
+            if !minimum.is_finite() || !maximum.is_finite() || minimum <= 0.0 || maximum < minimum {
+                return None;
             }
+            if (maximum - minimum).abs() < f64::EPSILON {
+                Some(NativeFrameRateCapability::Exact(minimum))
+            } else {
+                Some(NativeFrameRateCapability::Range { minimum, maximum })
+            }
+        })
+        .collect()
+}
+
+/// Resolves a persisted stable device identifier to the string accepted by FFmpeg's input.
+///
+/// # Errors
+///
+/// Returns an error when the stable identifier no longer maps to a connected device.
+pub fn resolve_capture_device_input_id(
+    device_id: &str,
+    video: bool,
+) -> Result<String, DeviceEnumerationError> {
+    #[cfg(target_os = "macos")]
+    {
+        resolve_avfoundation_device(device_id, video)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = video;
+        if device_id.trim().is_empty() {
+            Err(DeviceEnumerationError::InvalidDeviceIdentifier(
+                device_id.to_owned(),
+            ))
+        } else {
+            Ok(device_id.to_owned())
         }
     }
-    frame_rates.into_iter().collect()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn resolve_avfoundation_device(
+    device_id: &str,
+    video: bool,
+) -> Result<String, DeviceEnumerationError> {
+    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio, AVMediaTypeVideo};
+
+    let media_type = if video {
+        // SAFETY: Immutable AVFoundation framework symbol.
+        unsafe { AVMediaTypeVideo }.ok_or(
+            DeviceEnumerationError::AvFoundationMediaTypeUnavailable("video"),
+        )?
+    } else {
+        // SAFETY: Immutable AVFoundation framework symbol.
+        unsafe { AVMediaTypeAudio }.ok_or(
+            DeviceEnumerationError::AvFoundationMediaTypeUnavailable("audio"),
+        )?
+    };
+    // SAFETY: `media_type` is one of AVFoundation's immutable media-type constants.
+    let devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
+    if let Ok(index) = device_id.trim().parse::<usize>()
+        && devices.iter().nth(index).is_some()
+    {
+        return Ok(index.to_string());
+    }
+    devices
+        .iter()
+        .enumerate()
+        .find_map(|(index, device)| {
+            // SAFETY: `uniqueID` is immutable for the retained device.
+            (unsafe { device.uniqueID() }.to_string() == device_id).then(|| index.to_string())
+        })
+        .ok_or_else(|| DeviceEnumerationError::DeviceNotFound(device_id.to_owned()))
 }
 
 #[cfg(target_os = "windows")]
@@ -305,6 +643,23 @@ fn list_ffmpeg_capture_devices(
 pub fn register_devices() {
     // SAFETY: FFmpeg's registration routine has no arguments and is process-global by design.
     unsafe { ffi::avdevice_register_all() };
+}
+
+/// Copies an FFmpeg packet payload into Rust-owned memory.
+///
+/// This audited boundary keeps pointer validation and slice construction out of `gblab-core`,
+/// which forbids unsafe code. An empty or malformed FFmpeg packet produces an empty vector.
+#[must_use]
+pub fn copy_packet_data(packet: &rsmpeg::avcodec::AVPacket) -> Vec<u8> {
+    let Ok(size) = usize::try_from(packet.size) else {
+        return Vec::new();
+    };
+    if size == 0 || packet.data.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: FFmpeg guarantees that a packet with positive `size` exposes at least `size`
+    // readable bytes at `data` for the lifetime of the packet. The bytes are copied immediately.
+    unsafe { slice::from_raw_parts(packet.data.cast_const(), size) }.to_vec()
 }
 
 /// Enumerate input sources for one FFmpeg device format.
@@ -392,11 +747,24 @@ mod tests {
     }
 
     #[test]
-    fn macos_mode_enumeration_should_reject_non_numeric_identifier() {
+    fn macos_mode_enumeration_should_reject_unknown_stable_identifier() {
         assert!(matches!(
             video_capture_modes("not-an-index"),
-            Err(DeviceEnumerationError::InvalidDeviceIdentifier(_))
+            Err(DeviceEnumerationError::DeviceNotFound(_))
         ));
+    }
+
+    #[test]
+    fn macos_connected_camera_should_expose_native_modes() {
+        let Ok(devices) = list_capture_devices() else {
+            return;
+        };
+        let Some(camera) = devices.video.first() else {
+            return;
+        };
+
+        let modes = video_capture_modes(&camera.id);
+        assert!(modes.is_ok(), "native mode enumeration failed: {modes:?}");
     }
 }
 
@@ -404,11 +772,20 @@ mod tests {
 mod pure_tests {
     use std::collections::BTreeMap;
 
-    use super::{NativeVideoCaptureMode, merge_capture_modes, practical_frame_rates};
+    use super::{
+        NativeFrameRateCapability, NativeVideoCaptureMode, frame_rate_capabilities,
+        merge_capture_modes,
+    };
 
     #[test]
-    fn frame_rate_ranges_should_only_include_driver_reported_endpoints() {
-        assert_eq!(practical_frame_rates(&[(15.0, 29.97)]), [15, 30]);
+    fn frame_rate_ranges_should_preserve_native_fractional_values() {
+        assert_eq!(
+            frame_rate_capabilities(&[(15.0, 29.97)]),
+            [NativeFrameRateCapability::Range {
+                minimum: 15.0,
+                maximum: 29.97,
+            }]
+        );
     }
 
     #[test]
@@ -420,7 +797,16 @@ mod pure_tests {
             [NativeVideoCaptureMode {
                 width: 1920,
                 height: 1080,
-                frame_rates: vec![25, 30, 50, 60],
+                frame_rates: vec![
+                    NativeFrameRateCapability::Range {
+                        minimum: 25.0,
+                        maximum: 30.0,
+                    },
+                    NativeFrameRateCapability::Range {
+                        minimum: 50.0,
+                        maximum: 60.0,
+                    },
+                ],
             }]
         );
     }

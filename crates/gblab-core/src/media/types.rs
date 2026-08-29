@@ -2,11 +2,11 @@
     clippy::derive_partial_eq_without_eq,
     reason = "媒体时间和帧率使用 f64，无法实现 Eq"
 )]
-#![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
 use serde::{Deserialize, Serialize};
 
-use super::MediaError;
+use super::{AudioCodec, MediaError, VideoCodec};
+use crate::configuration::EncoderBackend;
 
 /// 媒体操作结果。
 pub type MediaResult<T> = Result<T, MediaError>;
@@ -17,32 +17,8 @@ pub type MediaResult<T> = Result<T, MediaError>;
 pub enum MediaSourceKind {
     /// MP4 文件源。
     Mp4,
-    /// 摄像头源，当前阶段只保留领域枚举。
+    /// 摄像头与可选麦克风采集源。
     Camera,
-}
-
-/// 视频编码。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum VideoCodec {
-    /// H.264/AVC。
-    H264,
-    /// H.265/HEVC。
-    H265,
-    /// 摄像头输入的原始视频格式，尚未编码。
-    RawVideo,
-}
-
-/// 音频编码。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AudioCodec {
-    /// AAC。
-    Aac,
-    /// 其它音频编码，MP4 探测会明确标记但不纳入当前传输能力。
-    Other,
-    /// 摄像头输入的 PCM 音频，尚未编码。
-    Pcm,
 }
 
 /// 视频流能力。
@@ -94,21 +70,35 @@ pub struct Mp4ProbeResult {
 }
 
 /// 摄像头采集输入配置。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraCaptureSettings {
-    /// 摄像头设备标识；macOS 通常为设备索引，Windows 为 `DirectShow` 名称。
+    /// Stable camera device identifier.
     pub video_device_id: String,
+    /// Target encoded video codec.
+    pub video_codec: VideoCodec,
+    /// Target video bitrate in bit/s.
+    pub video_bitrate: u64,
+    /// Requested encoder backend.
+    pub encoder_backend: EncoderBackend,
     /// 是否同时打开音频输入。
     pub audio_enabled: bool,
     /// 麦克风设备标识。
     pub audio_device_id: String,
+    /// Target encoded audio codec.
+    pub audio_codec: AudioCodec,
+    /// Target audio sample rate.
+    pub audio_sample_rate: u32,
+    /// Target audio channel count.
+    pub audio_channels: u32,
+    /// Target audio bitrate in bit/s.
+    pub audio_bitrate: u64,
     /// 采集宽度。
     pub width: u32,
     /// 采集高度。
     pub height: u32,
     /// 采集帧率。
-    pub frames_per_second: u32,
+    pub frames_per_second: f64,
 }
 
 /// 原生采集设备的可选项。
@@ -132,19 +122,37 @@ pub struct CaptureDeviceLists {
 }
 
 /// 摄像头支持的一组分辨率与帧率。
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoCaptureMode {
     /// 采集宽度。
     pub width: u32,
     /// 采集高度。
     pub height: u32,
-    /// 该分辨率支持的实用整数帧率。
-    pub supported_frames_per_second: Vec<u32>,
+    /// Frame-rate capabilities reported by the native backend.
+    pub frame_rates: Vec<FrameRateCapability>,
+}
+
+/// An exact frame rate or a continuous native range.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum FrameRateCapability {
+    /// One exact supported frame rate.
+    Exact {
+        /// Exact frames per second.
+        value: f64,
+    },
+    /// Inclusive continuous range reported by the device.
+    Range {
+        /// Minimum frames per second.
+        minimum: f64,
+        /// Maximum frames per second.
+        maximum: f64,
+    },
 }
 
 /// 单个摄像头的原生采集能力。
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoCaptureCapabilities {
     /// 摄像头设备标识。
@@ -157,8 +165,22 @@ pub struct VideoCaptureCapabilities {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoEncoderCapabilities {
-    /// 当前真正存在的编码器所对应的视频编码。
-    pub supported_codecs: Vec<VideoCodec>,
+    /// Encoders actually present in the linked `FFmpeg` build.
+    pub encoders: Vec<VideoEncoderCapability>,
+}
+
+/// One concrete encoder implementation available to the media runtime.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoEncoderCapability {
+    /// Output codec.
+    pub codec: VideoCodec,
+    /// User-facing backend family.
+    pub backend: EncoderBackend,
+    /// Exact `FFmpeg` encoder name.
+    pub encoder_name: String,
+    /// Whether the implementation is hardware accelerated.
+    pub hardware: bool,
 }
 
 /// 播放状态。
@@ -201,6 +223,8 @@ pub struct MediaRuntimeStatus {
     pub muted: bool,
     /// 音量，范围 0.0 到 1.0。
     pub volume: f64,
+    /// 最近一次 source worker 错误；正常打开新源后清除。
+    pub last_error: Option<String>,
 }
 
 impl MediaRuntimeStatus {
@@ -216,6 +240,7 @@ impl MediaRuntimeStatus {
             decoded_frames: 0,
             muted: false,
             volume: 1.0,
+            last_error: None,
         }
     }
 
@@ -236,28 +261,9 @@ impl MediaRuntimeStatus {
             decoded_frames: 0,
             muted: false,
             volume: 1.0,
+            last_error: None,
         }
     }
-}
-
-/// 编码 packet 的时间线元数据。
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaPacket {
-    /// 流索引。
-    pub stream_index: usize,
-    /// PTS，单位为源流 time base。
-    pub pts: Option<i64>,
-    /// DTS，单位为源流 time base。
-    pub dts: Option<i64>,
-    /// packet 时长，单位为源流 time base。
-    pub duration: i64,
-    /// packet 大小，单位字节。
-    pub size: usize,
-    /// 是否为关键帧。
-    pub is_keyframe: bool,
-    /// 相对于媒体起点的秒数。
-    pub position_seconds: f64,
 }
 
 /// 一帧可供界面预览的 RGBA 视频帧。
@@ -274,30 +280,6 @@ pub struct MediaVideoFrame {
     pub position_seconds: f64,
 }
 
-/// 可被播放引擎驱动的媒体管线。
-pub trait MediaPipeline {
-    /// 开始播放。
-    fn play(&mut self) -> MediaResult<MediaRuntimeStatus>;
-    /// 暂停播放。
-    fn pause(&mut self) -> MediaResult<MediaRuntimeStatus>;
-    /// 停止并回到起点。
-    fn stop(&mut self) -> MediaResult<MediaRuntimeStatus>;
-    /// 重置到起点。
-    fn reset(&mut self) -> MediaResult<MediaRuntimeStatus>;
-    /// 跳转到 MP4 时间线中的指定位置。
-    fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus>;
-    /// 设置本地预览倍速。
-    fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus>;
-    /// 在暂停状态读取一帧。
-    fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>>;
-    /// 获取运行状态。
-    fn status(&self) -> MediaRuntimeStatus;
-    /// 读取下一个 packet 元数据。
-    fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>>;
-    /// 读取下一帧解码后的 RGBA 图像。
-    fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>>;
-}
-
 /// 媒体源探测和打开能力。
 pub trait MediaSource {
     /// 探测源能力。
@@ -309,9 +291,37 @@ pub trait MediaSource {
 /// 已打开的媒体源会话。
 pub enum MediaSourceSession {
     /// MP4 文件会话。
-    Mp4(super::Mp4Session),
+    Mp4(Box<super::mp4::Mp4Session>),
     /// 摄像头输入会话。
-    Camera(super::CameraSession),
+    Camera(Box<super::camera::CameraSession>),
+}
+
+/// One source read distributed by the single media worker.
+pub struct SourceReadOutput {
+    pub(crate) packet: Option<super::EncodedMediaPacket>,
+    pub(crate) preview_frames: Vec<MediaVideoFrame>,
+    pub(crate) looped: bool,
+    pub(crate) end_of_stream: bool,
+}
+
+impl SourceReadOutput {
+    pub(crate) const fn end_of_stream() -> Self {
+        Self {
+            packet: None,
+            preview_frames: Vec::new(),
+            looped: false,
+            end_of_stream: true,
+        }
+    }
+
+    pub(crate) const fn looped() -> Self {
+        Self {
+            packet: None,
+            preview_frames: Vec::new(),
+            looped: true,
+            end_of_stream: false,
+        }
+    }
 }
 
 impl MediaSourceSession {
@@ -379,17 +389,17 @@ impl MediaSourceSession {
         }
     }
 
-    pub(crate) fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
         match self {
-            Self::Mp4(session) => session.next_packet(),
-            Self::Camera(session) => session.next_packet(),
+            Self::Mp4(session) => session.read_source_output(),
+            Self::Camera(session) => session.read_source_output(),
         }
     }
 
-    pub(crate) fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
+    pub(crate) fn finish_encoded_packets(&mut self) -> MediaResult<Vec<super::EncodedMediaPacket>> {
         match self {
-            Self::Mp4(session) => session.next_frame(),
-            Self::Camera(session) => session.next_frame(),
+            Self::Mp4(_) => Ok(Vec::new()),
+            Self::Camera(session) => session.finish_encoded_packets(),
         }
     }
 }

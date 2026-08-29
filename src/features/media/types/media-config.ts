@@ -97,7 +97,25 @@ export interface CaptureDeviceInfo {
 export interface VideoCaptureMode {
   width: number;
   height: number;
-  supportedFramesPerSecond: number[];
+  frameRates: FrameRateCapability[];
+}
+
+export type FrameRateCapability =
+  { kind: 'exact'; value: number } | { kind: 'range'; minimum: number; maximum: number };
+
+export function isFrameRateSupported(mode: VideoCaptureMode, value: number): boolean {
+  return mode.frameRates.some((capability) =>
+    capability.kind === 'exact'
+      ? Math.abs(capability.value - value) < 0.0001
+      : value >= capability.minimum && value <= capability.maximum,
+  );
+}
+
+export function selectableFrameRates(mode: VideoCaptureMode): number[] {
+  const values = mode.frameRates.flatMap((capability) =>
+    capability.kind === 'exact' ? [capability.value] : [capability.minimum, capability.maximum],
+  );
+  return [...new Set(values)].sort((left, right) => left - right);
 }
 
 export interface CaptureDeviceCapabilities {
@@ -107,5 +125,12 @@ export interface CaptureDeviceCapabilities {
 
 /** 与摄像头采集模式独立的 FFmpeg 视频编码器能力。 */
 export interface VideoEncoderCapabilities {
-  supportedCodecs: VideoCodec[];
+  encoders: VideoEncoderCapability[];
+}
+
+export interface VideoEncoderCapability {
+  codec: VideoCodec;
+  backend: EncoderBackend;
+  encoderName: string;
+  hardware: boolean;
 }

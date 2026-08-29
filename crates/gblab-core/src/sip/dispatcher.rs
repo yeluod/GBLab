@@ -19,7 +19,6 @@ use crate::{SignalCharset, SimulatedDevice, domain::derive_channels_for_device};
 
 use super::{
     charset::{sip_message_for_display, xml_without_declaration},
-    dialog::DialogId,
     registration::SipRegistrationError,
     transaction::TransactionKey,
 };
@@ -154,14 +153,6 @@ pub(super) fn request_call_id(request: &SipRequest) -> Option<String> {
         .map(|value| value.0.clone())
 }
 
-pub(super) fn request_cseq(request: &SipRequest) -> Option<u32> {
-    request
-        .headers
-        .get(&HeaderName::CSeq)
-        .and_then(HeaderValue::as_cseq)
-        .map(|value| value.sequence.0)
-}
-
 pub(super) fn invite_key_from_cancel(request: &SipRequest) -> Option<TransactionKey> {
     let key = transaction_key_from_request(request)?;
     Some(TransactionKey {
@@ -170,23 +161,6 @@ pub(super) fn invite_key_from_cancel(request: &SipRequest) -> Option<Transaction
         method: Method::Invite,
         branch: key.branch,
     })
-}
-
-pub(super) fn request_dialog_id(request: &SipRequest) -> Option<DialogId> {
-    let call_id = request_call_id(request)?;
-    let local_tag = request
-        .headers
-        .get(&HeaderName::To)
-        .and_then(HeaderValue::as_from_to)
-        .and_then(|header| header.tag.as_ref())
-        .map(ToString::to_string)?;
-    let remote_tag = request
-        .headers
-        .get(&HeaderName::From)
-        .and_then(HeaderValue::as_from_to)
-        .and_then(|header| header.tag.as_ref())
-        .map(ToString::to_string)?;
-    Some(DialogId::new(call_id, local_tag, remote_tag))
 }
 
 pub(super) fn extract_header(message: &str, name: &str) -> Option<String> {
@@ -313,8 +287,8 @@ pub(super) fn build_request_response(
             }
         }
         if let Some(to) = request_headers.get(&HeaderName::To).cloned() {
-            let to = match (status / 100 == 2, local_tag, to) {
-                (true, Some(local_tag), HeaderValue::FromTo(to)) => {
+            let to = match (status > 100, local_tag, to) {
+                (true, Some(local_tag), HeaderValue::FromTo(to)) if to.tag.is_none() => {
                     HeaderValue::FromTo(to.with_tag(Tag(local_tag.to_owned())))
                 }
                 (_, _, value) => value,
@@ -378,7 +352,7 @@ pub(super) fn build_request_response(
             .find(|line| line.to_ascii_lowercase().starts_with(&prefix))
         {
             let line = if name == "To"
-                && status / 100 == 2
+                && status > 100
                 && local_tag.is_some()
                 && !line.to_ascii_lowercase().contains(";tag=")
             {
@@ -691,6 +665,43 @@ mod tests {
             );
         }
         assert!(!response.headers.contains(&HeaderName::ContentType));
+        Ok(())
+    }
+
+    #[test]
+    fn invite_final_response_should_add_the_generated_uas_to_tag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = "INVITE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
+                       Via: SIP/2.0/UDP 192.168.10.91:5060;branch=z9hG4bK-invite\r\n\
+                       From: <sip:34020000002000000001@3402000000>;tag=platform-tag\r\n\
+                       To: <sip:34020000002000000100@192.168.10.94:5060>\r\n\
+                       Call-ID: invite-call\r\n\
+                       CSeq: 10 INVITE\r\n\
+                       Content-Length: 0\r\n\r\n";
+
+        let payload = build_request_response(
+            request,
+            488,
+            "Not Acceptable Here",
+            Some("device-uas-tag"),
+            "34020000002000000100",
+            "192.168.10.94".parse::<IpAddr>()?,
+            5060,
+        );
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(payload.as_bytes())?;
+        let SipMessage::Response(response) = parsed else {
+            return Err("应构造 SIP Response".into());
+        };
+        let Some(siprs::siprs_message::HeaderValue::FromTo(to)) =
+            response.headers.get(&HeaderName::To)
+        else {
+            return Err("响应缺少结构化 To 头".into());
+        };
+
+        assert_eq!(
+            to.tag.as_ref().map(|tag| tag.0.as_str()),
+            Some("device-uas-tag")
+        );
         Ok(())
     }
 }

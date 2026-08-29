@@ -1122,6 +1122,7 @@ dependencies = [
 name = "gblab-core"
 version = "0.4.0"
 dependencies = [
+ "bytes",
  "encoding_rs",
  "gblab-ffmpeg-device",
  "rsmpeg",
@@ -1155,6 +1156,7 @@ dependencies = [
  "objc2-foundation",
  "rsmpeg",
  "thiserror 2.0.20",
+ "windows",
 ]
 
 [[package]]

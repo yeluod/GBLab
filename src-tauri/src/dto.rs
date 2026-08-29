@@ -1,8 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
-    MediaPacket, MediaRuntimeStatus, MediaVideoFrame, Mp4ProbeResult, SignalCharset,
-    SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
-    VideoCaptureCapabilities, VideoEncoderCapabilities,
+    MediaRuntimeStatus, Mp4ProbeResult, SignalCharset, SimulatedChannel, SimulatedDevice,
+    SipServiceConfiguration, SipTransport, VideoCaptureCapabilities, VideoEncoderCapabilities,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -409,6 +408,7 @@ pub struct MediaRuntimeStatusDto {
     decoded_frames: u64,
     muted: bool,
     volume: f64,
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -464,13 +464,13 @@ impl From<VideoCaptureCapabilities> for VideoCaptureCapabilitiesDto {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoEncoderCapabilitiesDto {
-    supported_codecs: Vec<gblab_core::media::VideoCodec>,
+    encoders: Vec<gblab_core::media::VideoEncoderCapability>,
 }
 
 impl From<VideoEncoderCapabilities> for VideoEncoderCapabilitiesDto {
     fn from(value: VideoEncoderCapabilities) -> Self {
         Self {
-            supported_codecs: value.supported_codecs,
+            encoders: value.encoders,
         }
     }
 }
@@ -488,6 +488,7 @@ impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
             decoded_frames: value.decoded_frames,
             muted: value.muted,
             volume: value.volume,
+            last_error: value.last_error,
         }
     }
 }
@@ -510,52 +511,6 @@ impl From<Mp4ProbeResult> for Mp4ProbeResultDto {
             audio: value.audio,
             duration_seconds: value.duration_seconds,
             bitrate: value.bitrate,
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaPacketDto {
-    stream_index: usize,
-    pts: Option<i64>,
-    dts: Option<i64>,
-    duration: i64,
-    size: usize,
-    is_keyframe: bool,
-    position_seconds: f64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaVideoFrameDto {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-    position_seconds: f64,
-}
-
-impl From<MediaVideoFrame> for MediaVideoFrameDto {
-    fn from(value: MediaVideoFrame) -> Self {
-        Self {
-            width: value.width,
-            height: value.height,
-            rgba: value.rgba,
-            position_seconds: value.position_seconds,
-        }
-    }
-}
-
-impl From<MediaPacket> for MediaPacketDto {
-    fn from(value: MediaPacket) -> Self {
-        Self {
-            stream_index: value.stream_index,
-            pts: value.pts,
-            dts: value.dts,
-            duration: value.duration,
-            size: value.size,
-            is_keyframe: value.is_keyframe,
-            position_seconds: value.position_seconds,
         }
     }
 }

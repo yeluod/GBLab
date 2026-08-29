@@ -77,7 +77,6 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::step_media_frame,
             commands::get_media_runtime_status,
             commands::read_media_frame,
-            commands::read_media_packet,
             commands::get_sip_service_configuration,
             commands::save_sip_service_configuration,
             commands::get_media_configuration,
@@ -105,6 +104,7 @@ pub fn run() -> Result<(), tauri::Error> {
             if state.registration.is_active() && state.begin_shutdown() {
                 api.prevent_exit();
                 let registration = state.registration.clone();
+                let _ = state.media.shutdown();
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = registration.stop_all().await;

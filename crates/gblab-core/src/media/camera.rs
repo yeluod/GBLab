@@ -1,4 +1,8 @@
-use std::ffi::CString;
+use std::{
+    collections::VecDeque,
+    ffi::CString,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use rsmpeg::{
     avformat::{AVFormatContextInput, AVInputFormat, AVInputFormatRef},
@@ -6,11 +10,15 @@ use rsmpeg::{
 };
 
 use super::{
-    AudioCodec, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    MediaError, MediaPacket, MediaResult, MediaSource, MediaSourceSession, Mp4ProbeResult,
-    VideoCaptureCapabilities, VideoCaptureMode, VideoCodec, VideoEncoderCapabilities,
-    VideoStreamInfo, decoder::VideoDecoder,
+    AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
+    FrameRateCapability, MediaError, MediaResult, Mp4ProbeResult, VideoCaptureCapabilities,
+    VideoCaptureMode, VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
+    audio_encoder::CameraAudioEncoder,
+    decoder::VideoDecoder,
+    types::{MediaSource, MediaSourceSession, SourceReadOutput},
+    video_encoder::CameraVideoEncoder,
 };
+use crate::configuration::EncoderBackend;
 
 /// 使用当前平台的原生 API 枚举 `FFmpeg` 可采集的输入设备。
 pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
@@ -33,7 +41,19 @@ pub fn video_capture_capabilities(device_id: &str) -> MediaResult<VideoCaptureCa
             .map(|mode| VideoCaptureMode {
                 width: mode.width,
                 height: mode.height,
-                supported_frames_per_second: mode.frame_rates,
+                frame_rates: mode
+                    .frame_rates
+                    .into_iter()
+                    .map(|rate| match rate {
+                        gblab_ffmpeg_device::NativeFrameRateCapability::Exact(value) => {
+                            FrameRateCapability::Exact { value }
+                        }
+                        gblab_ffmpeg_device::NativeFrameRateCapability::Range {
+                            minimum,
+                            maximum,
+                        } => FrameRateCapability::Range { minimum, maximum },
+                    })
+                    .collect(),
             })
             .collect(),
     })
@@ -42,14 +62,50 @@ pub fn video_capture_capabilities(device_id: &str) -> MediaResult<VideoCaptureCa
 /// 检查随应用链接的 `FFmpeg` 是否真实提供 H.264/H.265 编码器。
 #[must_use]
 pub fn video_encoder_capabilities() -> VideoEncoderCapabilities {
-    let supported_codecs = gblab_ffmpeg_device::supported_video_encoders()
+    let encoders = gblab_ffmpeg_device::supported_video_encoders()
         .into_iter()
-        .map(|codec| match codec {
-            gblab_ffmpeg_device::NativeVideoEncoder::H264 => VideoCodec::H264,
-            gblab_ffmpeg_device::NativeVideoEncoder::H265 => VideoCodec::H265,
+        .map(|capability| VideoEncoderCapability {
+            codec: match capability.codec {
+                gblab_ffmpeg_device::NativeVideoCodec::H264 => super::VideoCodec::H264,
+                gblab_ffmpeg_device::NativeVideoCodec::H265 => super::VideoCodec::H265,
+            },
+            backend: match capability.backend {
+                gblab_ffmpeg_device::NativeEncoderBackend::VideoToolbox => {
+                    EncoderBackend::Videotoolbox
+                }
+                gblab_ffmpeg_device::NativeEncoderBackend::MediaFoundation => {
+                    EncoderBackend::MediaFoundation
+                }
+                gblab_ffmpeg_device::NativeEncoderBackend::Nvenc => EncoderBackend::Nvenc,
+                gblab_ffmpeg_device::NativeEncoderBackend::Qsv => EncoderBackend::Qsv,
+                gblab_ffmpeg_device::NativeEncoderBackend::Amf => EncoderBackend::Amf,
+                gblab_ffmpeg_device::NativeEncoderBackend::Software => EncoderBackend::Auto,
+            },
+            encoder_name: capability.encoder_name,
+            hardware: capability.hardware,
         })
         .collect();
-    VideoEncoderCapabilities { supported_codecs }
+    VideoEncoderCapabilities { encoders }
+}
+
+pub fn select_video_encoder(
+    settings: &CameraCaptureSettings,
+) -> MediaResult<VideoEncoderCapability> {
+    let capabilities = video_encoder_capabilities();
+    capabilities
+        .encoders
+        .into_iter()
+        .find(|capability| {
+            capability.codec == settings.video_codec
+                && (settings.encoder_backend == EncoderBackend::Auto
+                    || capability.backend == settings.encoder_backend)
+        })
+        .ok_or_else(|| {
+            MediaError::Camera(format!(
+                "没有可用于 {:?}/{:?} 的视频编码器",
+                settings.video_codec, settings.encoder_backend
+            ))
+        })
 }
 
 fn capture_device_info(device: gblab_ffmpeg_device::NativeCaptureDevice) -> CaptureDeviceInfo {
@@ -62,13 +118,17 @@ fn capture_device_info(device: gblab_ffmpeg_device::NativeCaptureDevice) -> Capt
 /// `FFmpeg` 摄像头输入源。
 pub struct CameraMediaSource {
     settings: CameraCaptureSettings,
+    interrupt: Arc<AtomicBool>,
 }
 
 impl CameraMediaSource {
     /// 创建摄像头源描述。
     #[must_use]
-    pub const fn new(settings: CameraCaptureSettings) -> Self {
-        Self { settings }
+    pub const fn new(settings: CameraCaptureSettings, interrupt: Arc<AtomicBool>) -> Self {
+        Self {
+            settings,
+            interrupt,
+        }
     }
 
     fn input_description(&self) -> MediaResult<(CString, AVInputFormatRef<'static>)> {
@@ -82,7 +142,19 @@ impl CameraMediaSource {
 
     fn open_context(&self) -> MediaResult<AVFormatContextInput> {
         let (url, format) = self.input_description()?;
-        let mut options = if self.settings.frames_per_second > 0 {
+        let options = self.capture_options()?;
+        gblab_ffmpeg_device::open_input_with_interrupt(
+            url.as_c_str(),
+            &format,
+            options,
+            Arc::clone(&self.interrupt),
+        )
+        .map(|(context, _guard)| context)
+        .map_err(|error| MediaError::Camera(error.to_string()))
+    }
+
+    fn capture_options(&self) -> MediaResult<Option<AVDictionary>> {
+        let mut options = if self.settings.frames_per_second > 0.0 {
             Some(AVDictionary::new(
                 c"framerate",
                 CString::new(self.settings.frames_per_second.to_string())
@@ -102,12 +174,7 @@ impl CameraMediaSource {
                 |existing_options| existing_options.set(c"video_size", size.as_c_str(), 0),
             ));
         }
-        AVFormatContextInput::builder()
-            .url(url.as_c_str())
-            .format(&format)
-            .options(&mut options)
-            .open()
-            .map_err(|error| MediaError::Camera(error.to_string()))
+        Ok(options)
     }
 
     fn probe_context(&self, context: &AVFormatContextInput) -> MediaResult<Mp4ProbeResult> {
@@ -124,13 +191,13 @@ impl CameraMediaSource {
                 f64::from(rate.num) / f64::from(rate.den)
             }
         });
-        let fps = if self.settings.frames_per_second > 0 {
-            f64::from(self.settings.frames_per_second)
+        let fps = if self.settings.frames_per_second > 0.0 {
+            self.settings.frames_per_second
         } else {
             detected_frames_per_second.unwrap_or(0.0)
         };
         let video = VideoStreamInfo {
-            codec: VideoCodec::RawVideo,
+            codec: self.settings.video_codec,
             width: u32::try_from(video_parameters.width)
                 .map_err(|_| MediaError::Camera("摄像头宽度超出支持范围".to_owned()))?,
             height: u32::try_from(video_parameters.height)
@@ -147,7 +214,7 @@ impl CameraMediaSource {
                 .map(|stream| {
                     let parameters = stream.codecpar();
                     Ok(AudioStreamInfo {
-                        codec: AudioCodec::Pcm,
+                        codec: self.settings.audio_codec,
                         sample_rate: u32::try_from(parameters.sample_rate)
                             .map_err(|_| MediaError::Camera("采样率超出支持范围".to_owned()))?,
                         channels: u32::try_from(parameters.ch_layout.nb_channels)
@@ -176,7 +243,15 @@ impl MediaSource for CameraMediaSource {
     }
 
     fn open(&self, _looping: bool) -> MediaResult<MediaSourceSession> {
-        let context = self.open_context()?;
+        let (url, format) = self.input_description()?;
+        let options = self.capture_options()?;
+        let (context, interrupt_guard) = gblab_ffmpeg_device::open_input_with_interrupt(
+            url.as_c_str(),
+            &format,
+            options,
+            Arc::clone(&self.interrupt),
+        )
+        .map_err(|error| MediaError::Camera(error.to_string()))?;
         let probe = self.probe_context(&context)?;
         let video_stream = context
             .streams()
@@ -186,23 +261,50 @@ impl MediaSource for CameraMediaSource {
         let video_stream_index = usize::try_from(video_stream.index)
             .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的视频流索引".to_owned()))?;
         let decoder = VideoDecoder::new(&video_stream.codecpar(), video_stream)?;
-        Ok(MediaSourceSession::Camera(CameraSession {
+        let encoder = CameraVideoEncoder::new(&self.settings)?;
+        let (audio_stream_index, audio_encoder) = if self.settings.audio_enabled {
+            let audio_stream = context
+                .streams()
+                .iter()
+                .find(|stream| stream.codecpar().codec_type().is_audio())
+                .ok_or_else(|| {
+                    MediaError::Camera("已启用麦克风，但采集输入没有音频流".to_owned())
+                })?;
+            let index = usize::try_from(audio_stream.index)
+                .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的音频流索引".to_owned()))?;
+            let encoder = CameraAudioEncoder::new(&self.settings, &audio_stream.codecpar())?;
+            (Some(index), Some(encoder))
+        } else {
+            (None, None)
+        };
+        Ok(MediaSourceSession::Camera(Box::new(CameraSession {
+            _interrupt_guard: interrupt_guard,
             context,
             probe,
             playing: false,
             decoder,
+            encoder,
+            pending_encoded: VecDeque::new(),
             video_stream_index,
-        }))
+            audio_stream_index,
+            audio_encoder,
+        })))
     }
 }
 
 /// 已打开的摄像头采集会话。
 pub struct CameraSession {
+    // Drop the callback guard before the input context that it references.
+    _interrupt_guard: gblab_ffmpeg_device::InputInterruptGuard,
     context: AVFormatContextInput,
     probe: Mp4ProbeResult,
     playing: bool,
     decoder: VideoDecoder,
+    encoder: CameraVideoEncoder,
+    pending_encoded: VecDeque<super::EncodedMediaPacket>,
     video_stream_index: usize,
+    audio_stream_index: Option<usize>,
+    audio_encoder: Option<CameraAudioEncoder>,
 }
 
 impl CameraSession {
@@ -237,56 +339,83 @@ impl CameraSession {
         Ok(())
     }
 
-    pub(crate) fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
-        if !self.playing {
-            return Ok(None);
+    pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
+        if let Some(packet) = self.pending_encoded.pop_front() {
+            return Ok(SourceReadOutput {
+                packet: Some(packet),
+                preview_frames: Vec::new(),
+                looped: false,
+                end_of_stream: false,
+            });
         }
         let packet = self
             .context
             .read_packet()
             .map_err(|error| MediaError::Camera(error.to_string()))?;
         let Some(packet) = packet else {
-            return Ok(None);
+            return Ok(SourceReadOutput::end_of_stream());
         };
-        let stream_index = usize::try_from(packet.stream_index)
-            .map_err(|_| MediaError::Camera("FFmpeg 返回了无效的 stream index".to_owned()))?;
-        Ok(Some(MediaPacket {
-            stream_index,
-            pts: (packet.pts != rsmpeg::ffi::AV_NOPTS_VALUE).then_some(packet.pts),
-            dts: (packet.dts != rsmpeg::ffi::AV_NOPTS_VALUE).then_some(packet.dts),
-            duration: packet.duration,
-            size: usize::try_from(packet.size).unwrap_or(0),
-            is_keyframe: packet.flags & rsmpeg::ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
-            position_seconds: 0.0,
-        }))
+        let stream_index = usize::try_from(packet.stream_index).ok();
+        if stream_index == self.audio_stream_index {
+            let audio_encoder = self
+                .audio_encoder
+                .as_mut()
+                .ok_or_else(|| MediaError::Camera("音频流缺少编码器运行时".to_owned()))?;
+            audio_encoder.encode_packet(&packet)?;
+            while let Some(packet) = audio_encoder.take_pending() {
+                self.pending_encoded.push_back(packet);
+            }
+            return Ok(SourceReadOutput {
+                packet: self.pending_encoded.pop_front(),
+                preview_frames: Vec::new(),
+                looped: false,
+                end_of_stream: false,
+            });
+        }
+        if stream_index != Some(self.video_stream_index) {
+            return Ok(SourceReadOutput {
+                packet: None,
+                preview_frames: Vec::new(),
+                looped: false,
+                end_of_stream: false,
+            });
+        }
+        let raw_frames = self
+            .decoder
+            .decode_raw_frames(&packet)
+            .map_err(|error| MediaError::Camera(error.to_string()))?;
+        let mut preview_frames = Vec::with_capacity(raw_frames.len());
+        for frame in raw_frames {
+            preview_frames.push(
+                self.decoder
+                    .preview_frame(&frame)
+                    .map_err(|error| MediaError::Camera(error.to_string()))?,
+            );
+            self.encoder.encode(&frame)?;
+            while let Some(packet) = self.encoder.take_pending() {
+                self.pending_encoded.push_back(packet);
+            }
+        }
+        Ok(SourceReadOutput {
+            packet: self.pending_encoded.pop_front(),
+            preview_frames,
+            looped: false,
+            end_of_stream: false,
+        })
     }
 
-    pub(crate) fn next_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
-        if !self.playing {
-            return Ok(None);
-        }
-        loop {
-            if let Some(frame) = self.decoder.take_pending_frame() {
-                return Ok(Some(frame));
-            }
-            let packet = self
-                .context
-                .read_packet()
-                .map_err(|error| MediaError::Camera(error.to_string()))?;
-            let Some(packet) = packet else {
-                return Ok(None);
-            };
-            if usize::try_from(packet.stream_index).ok() != Some(self.video_stream_index) {
-                continue;
-            }
-            if let Some(frame) = self
-                .decoder
-                .decode_packet(&packet)
-                .map_err(|error| MediaError::Camera(error.to_string()))?
-            {
-                return Ok(Some(frame));
+    pub(crate) fn finish_encoded_packets(&mut self) -> MediaResult<Vec<super::EncodedMediaPacket>> {
+        self.encoder.finish()?;
+        if let Some(audio_encoder) = self.audio_encoder.as_mut() {
+            audio_encoder.finish()?;
+            while let Some(packet) = audio_encoder.take_pending() {
+                self.pending_encoded.push_back(packet);
             }
         }
+        while let Some(packet) = self.encoder.take_pending() {
+            self.pending_encoded.push_back(packet);
+        }
+        Ok(self.pending_encoded.drain(..).collect())
     }
 }
 
@@ -316,9 +445,18 @@ fn platform_input_format() -> MediaResult<AVInputFormatRef<'static>> {
 fn platform_device_url(settings: &CameraCaptureSettings) -> MediaResult<CString> {
     #[cfg(target_os = "macos")]
     {
-        let video = settings.video_device_id.trim();
+        let video = gblab_ffmpeg_device::resolve_capture_device_input_id(
+            settings.video_device_id.trim(),
+            true,
+        )
+        .map_err(|error| MediaError::Camera(error.to_string()))?;
         let url = if settings.audio_enabled && !settings.audio_device_id.trim().is_empty() {
-            format!("{}:{}", video, settings.audio_device_id.trim())
+            let audio = gblab_ffmpeg_device::resolve_capture_device_input_id(
+                settings.audio_device_id.trim(),
+                false,
+            )
+            .map_err(|error| MediaError::Camera(error.to_string()))?;
+            format!("{video}:{audio}")
         } else {
             format!("{video}:none")
         };
@@ -342,6 +480,76 @@ fn platform_device_url(settings: &CameraCaptureSettings) -> MediaResult<CString>
     ))
 }
 
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod platform_tests {
+    use std::{thread, time::Duration};
+
+    use super::{list_capture_devices, video_capture_capabilities, video_encoder_capabilities};
+    use crate::media::{
+        AudioCodec, CameraCaptureSettings, FrameRateCapability, GlobalMediaRuntime,
+        MediaSourceStatus,
+    };
+
+    #[test]
+    #[ignore = "requires a connected camera and local camera permission"]
+    fn camera_runtime_should_repeatedly_open_capture_preview_and_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(camera) = list_capture_devices()?.video.into_iter().next() else {
+            return Ok(());
+        };
+        let Some(mode) = video_capture_capabilities(&camera.id)?
+            .modes
+            .into_iter()
+            .next()
+        else {
+            return Ok(());
+        };
+        let Some(frame_rate) = mode.frame_rates.first().map(|capability| match capability {
+            FrameRateCapability::Exact { value } => *value,
+            FrameRateCapability::Range { maximum, .. } => *maximum,
+        }) else {
+            return Ok(());
+        };
+        let Some(encoder) = video_encoder_capabilities().encoders.into_iter().next() else {
+            return Ok(());
+        };
+        let settings = CameraCaptureSettings {
+            video_device_id: camera.id,
+            video_codec: encoder.codec,
+            video_bitrate: 1_000_000,
+            encoder_backend: encoder.backend,
+            audio_enabled: false,
+            audio_device_id: String::new(),
+            audio_codec: AudioCodec::Aac,
+            audio_sample_rate: 48_000,
+            audio_channels: 2,
+            audio_bitrate: 128_000,
+            width: mode.width,
+            height: mode.height,
+            frames_per_second: frame_rate,
+        };
+        let runtime = GlobalMediaRuntime::start();
+        let handle = runtime.handle();
+
+        for _ in 0..2 {
+            handle.open_camera(settings.clone())?;
+            handle.play()?;
+            for _ in 0..100 {
+                if handle.status().decoded_frames > 0 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(handle.status().decoded_frames > 0);
+            let stopped = handle.stop()?;
+            assert_eq!(stopped.source_status, MediaSourceStatus::Stopped);
+        }
+
+        runtime.shutdown()?;
+        Ok(())
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{CameraCaptureSettings, platform_device_url};
@@ -350,11 +558,18 @@ mod tests {
     fn macos_video_only_input_should_explicitly_disable_audio() {
         let settings = CameraCaptureSettings {
             video_device_id: "0".to_owned(),
+            video_codec: super::super::VideoCodec::H264,
+            video_bitrate: 4_096_000,
+            encoder_backend: crate::configuration::EncoderBackend::Auto,
             audio_enabled: false,
             audio_device_id: String::new(),
+            audio_codec: super::super::AudioCodec::Aac,
+            audio_sample_rate: 48_000,
+            audio_channels: 2,
+            audio_bitrate: 128_000,
             width: 1920,
             height: 1080,
-            frames_per_second: 25,
+            frames_per_second: 25.0,
         };
 
         let result = platform_device_url(&settings);

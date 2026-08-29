@@ -22,10 +22,13 @@
     EncoderBackend,
     MediaSourceType,
     VideoCodec,
+    isFrameRateSupported,
+    selectableFrameRates,
     type CaptureDeviceCapabilities,
     type CaptureDeviceInfo,
     type GlobalMediaConfig,
     type MediaFieldErrors,
+    type VideoEncoderCapability,
   } from '@/features/media';
   import AppIcon from '@/shared/components/app-icon.vue';
 
@@ -35,6 +38,7 @@
     audioDevices: CaptureDeviceInfo[];
     capabilities: CaptureDeviceCapabilities | null;
     supportedVideoCodecs: VideoCodec[];
+    videoEncoderCapabilities: VideoEncoderCapability[];
     fieldErrors: MediaFieldErrors;
     capabilityError: string | null;
     encoderCapabilityError: string | null;
@@ -64,9 +68,6 @@
     { label: 'G.711 A-law', value: AudioCodec.G711A },
     { label: 'G.711 μ-law', value: AudioCodec.G711U },
     { label: 'AAC', value: AudioCodec.Aac },
-  ];
-  const encoderOptions: SelectOption[] = [
-    { label: 'Auto（自动选择）', value: EncoderBackend.Auto },
   ];
   const sampleRateOptions: SelectOption[] = [
     { label: '8 kHz', value: 8_000 },
@@ -108,10 +109,12 @@
     return props.capabilities?.modes.find((mode) => mode.width === width && mode.height === height);
   });
   const framesPerSecondOptions = computed<SelectOption[]>(() =>
-    (selectedMode.value?.supportedFramesPerSecond ?? []).map((value) => ({
-      label: `${value} FPS`,
-      value,
-    })),
+    (selectedMode.value === undefined ? [] : selectableFrameRates(selectedMode.value)).map(
+      (value) => ({
+        label: `${value} FPS`,
+        value,
+      }),
+    ),
   );
   const supportedVideoCodecOptions = computed<SelectOption[]>(() =>
     videoCodecOptions.map((option) => ({
@@ -120,12 +123,23 @@
     })),
   );
   const selectedFramesPerSecond = computed(() =>
-    selectedMode.value?.supportedFramesPerSecond.includes(
-      config.value.source.camera.video.framesPerSecond,
-    )
+    selectedMode.value !== undefined &&
+    isFrameRateSupported(selectedMode.value, config.value.source.camera.video.framesPerSecond)
       ? config.value.source.camera.video.framesPerSecond
       : null,
   );
+  const encoderOptions = computed<SelectOption[]>(() => {
+    const codec = config.value.source.camera.video.codec;
+    const concrete = props.videoEncoderCapabilities
+      .filter((item) => item.codec === codec)
+      .map((item) => ({
+        label: `${item.encoderName}${item.hardware ? '（硬件）' : ''}`,
+        value: item.backend,
+      }));
+    return concrete.length === 0
+      ? []
+      : [{ label: 'Auto（自动选择）', value: EncoderBackend.Auto }, ...concrete];
+  });
   const selectedResolution = computed({
     get: () => {
       const video = config.value.source.camera.video;
@@ -282,6 +296,7 @@
             <NSelect
               v-model:value="config.source.camera.video.encoderBackend"
               :options="encoderOptions"
+              :disabled="encoderOptions.length === 0"
             />
           </NFormItem>
         </div>

@@ -9,7 +9,7 @@ import type { MediaProbeResult, MediaRuntimeStatus } from '../types/media-runtim
 export interface MediaVideoFrame {
   width: number;
   height: number;
-  rgba: number[];
+  rgba: Uint8Array;
   positionSeconds: number;
 }
 

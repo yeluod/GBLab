@@ -11,15 +11,14 @@ publish = false
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 encoding_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 siprs = "0.1.2"
 thiserror.workspace = true
+tempfile = "3"
 tokio.workspace = true
 tokio-util.workspace = true
 rsmpeg.workspace = true
 gblab-ffmpeg-device.workspace = true
-
-[dev-dependencies]
-tempfile = "3"

@@ -76,6 +76,7 @@
           :audio-devices="store.audioDevices"
           :capabilities="store.videoCapabilities"
           :supported-video-codecs="store.supportedVideoCodecs"
+          :video-encoder-capabilities="store.videoEncoderCapabilities"
           :field-errors="store.fieldErrors"
           :capability-error="store.capabilityError"
           :encoder-capability-error="store.encoderCapabilityError"

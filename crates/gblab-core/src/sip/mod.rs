@@ -1,7 +1,6 @@
 //! `siprs` 的 GB28181 设备端隔离层。
 
 mod charset;
-mod dialog;
 mod dispatcher;
 pub(crate) mod notify;
 mod registration;

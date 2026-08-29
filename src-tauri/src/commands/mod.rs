@@ -6,15 +6,15 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tauri::State;
+use tauri::{State, ipc::Response};
 
 use crate::{
     app_state::AppState,
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
-        DeviceSnapshotDto, DeviceUpdateDraftDto, MediaPacketDto, MediaRuntimeStatusDto,
-        MediaVideoFrameDto, Mp4ProbeResultDto, SimulatedChannelDto, SipServiceConfigurationDto,
-        VideoCaptureCapabilitiesDto, VideoEncoderCapabilitiesDto,
+        DeviceSnapshotDto, DeviceUpdateDraftDto, MediaRuntimeStatusDto, Mp4ProbeResultDto,
+        SimulatedChannelDto, SipServiceConfigurationDto, VideoCaptureCapabilitiesDto,
+        VideoEncoderCapabilitiesDto,
     },
 };
 
@@ -63,7 +63,7 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, CommandErr
 
 #[tauri::command]
 pub fn probe_mp4(file_path: String) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
-    gblab_core::MediaEngine::probe_mp4(std::path::Path::new(&file_path))
+    gblab_core::probe_mp4(std::path::Path::new(&file_path))
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -74,12 +74,10 @@ pub fn open_mp4(
     looping: bool,
     state: State<'_, AppState>,
 ) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
-        .open_mp4(std::path::Path::new(&file_path), looping)
+        .handle()
+        .open_mp4(std::path::PathBuf::from(file_path), looping)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -89,12 +87,10 @@ pub fn open_camera(
     configuration: gblab_core::CameraCaptureSettings,
     state: State<'_, AppState>,
 ) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
-        .open_camera(&configuration)
+        .handle()
+        .open_camera(configuration)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -103,7 +99,7 @@ pub fn open_camera(
 pub fn probe_camera(
     configuration: gblab_core::CameraCaptureSettings,
 ) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
-    gblab_core::MediaEngine::probe_camera(&configuration)
+    gblab_core::probe_camera(&configuration)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -111,7 +107,7 @@ pub fn probe_camera(
 /// 返回当前平台由 `FFmpeg` 原生设备层枚举出的摄像头和麦克风。
 #[tauri::command]
 pub fn list_capture_devices() -> Result<crate::dto::CaptureDeviceListsDto, CommandErrorDto> {
-    gblab_core::MediaEngine::list_capture_devices()
+    gblab_core::list_capture_devices()
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -121,7 +117,7 @@ pub fn list_capture_devices() -> Result<crate::dto::CaptureDeviceListsDto, Comma
 pub fn get_video_capture_capabilities(
     device_id: String,
 ) -> Result<VideoCaptureCapabilitiesDto, CommandErrorDto> {
-    gblab_core::MediaEngine::video_capture_capabilities(&device_id)
+    gblab_core::video_capture_capabilities(&device_id)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
@@ -129,16 +125,14 @@ pub fn get_video_capture_capabilities(
 /// 返回当前 `FFmpeg` Native Libraries 实际提供的视频编码器。
 #[tauri::command]
 pub fn get_video_encoder_capabilities() -> VideoEncoderCapabilitiesDto {
-    gblab_core::MediaEngine::video_encoder_capabilities().into()
+    gblab_core::video_encoder_capabilities().into()
 }
 
 #[tauri::command]
 pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .play()
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -146,11 +140,9 @@ pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, C
 
 #[tauri::command]
 pub fn pause_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .pause()
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -158,11 +150,9 @@ pub fn pause_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, 
 
 #[tauri::command]
 pub fn stop_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .stop()
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -170,11 +160,9 @@ pub fn stop_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, C
 
 #[tauri::command]
 pub fn reset_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .reset()
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -185,11 +173,9 @@ pub fn seek_media(
     position_seconds: f64,
     state: State<'_, AppState>,
 ) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .seek(position_seconds)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -200,11 +186,9 @@ pub fn set_media_playback_rate(
     rate: f64,
     state: State<'_, AppState>,
 ) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .set_playback_rate(rate)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
@@ -216,68 +200,50 @@ pub fn set_media_audio_control(
     volume: f64,
     state: State<'_, AppState>,
 ) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let mut media = state
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .set_audio_control(muted, volume)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
 }
 
 #[tauri::command]
-pub fn step_media_frame(
-    state: State<'_, AppState>,
-) -> Result<Option<MediaVideoFrameDto>, CommandErrorDto> {
-    let mut media = state
+pub fn step_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
+        .handle()
         .step_frame()
-        .map(|frame| frame.map(Into::into))
+        .map(|frame| Response::new(frame.map_or_else(Vec::new, encode_preview_frame)))
         .map_err(|error| CommandErrorDto::media(&error))
 }
 
 #[tauri::command]
-pub fn get_media_runtime_status(
-    state: State<'_, AppState>,
-) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    let media = state
-        .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    Ok(media.status().into())
+pub fn get_media_runtime_status(state: State<'_, AppState>) -> MediaRuntimeStatusDto {
+    state.media.handle().status().into()
 }
 
+/// Reads one bounded preview frame as raw binary, never as a JSON number array.
 #[tauri::command]
-pub fn read_media_packet(
-    state: State<'_, AppState>,
-) -> Result<Option<MediaPacketDto>, CommandErrorDto> {
-    let mut media = state
+pub fn read_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+    state
         .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
-        .next_packet()
-        .map(|packet| packet.map(Into::into))
+        .handle()
+        .try_preview_frame()
+        .map(|frame| Response::new(frame.map_or_else(Vec::new, encode_preview_frame)))
         .map_err(|error| CommandErrorDto::media(&error))
 }
 
-/// 读取下一帧 RGBA 预览图像。前端应以定时器低频轮询，避免 IPC 事件风暴。
-#[tauri::command]
-pub fn read_media_frame(
-    state: State<'_, AppState>,
-) -> Result<Option<MediaVideoFrameDto>, CommandErrorDto> {
-    let mut media = state
-        .media
-        .lock()
-        .map_err(|_| CommandErrorDto::state_unavailable())?;
-    media
-        .next_frame()
-        .map(|frame| frame.map(Into::into))
-        .map_err(|error| CommandErrorDto::media(&error))
+fn encode_preview_frame(frame: gblab_core::MediaVideoFrame) -> Vec<u8> {
+    const HEADER_SIZE: usize = 21;
+    let mut bytes = Vec::with_capacity(HEADER_SIZE.saturating_add(frame.rgba.len()));
+    bytes.extend_from_slice(b"GBPF");
+    bytes.push(1);
+    bytes.extend_from_slice(&frame.width.to_le_bytes());
+    bytes.extend_from_slice(&frame.height.to_le_bytes());
+    bytes.extend_from_slice(&frame.position_seconds.to_le_bytes());
+    bytes.extend_from_slice(&frame.rgba);
+    bytes
 }
 
 #[tauri::command]

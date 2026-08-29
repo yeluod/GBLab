@@ -62,7 +62,10 @@ describe('MockMediaService', () => {
     expect(capabilities.modes).toEqual(
       expect.arrayContaining([expect.objectContaining({ width: 1920, height: 1080 })]),
     );
-    expect(encoderCapabilities.supportedCodecs).toEqual([VideoCodec.H264, VideoCodec.H265]);
+    expect(encoderCapabilities.encoders.map((item) => item.codec)).toEqual([
+      VideoCodec.H264,
+      VideoCodec.H265,
+    ]);
   });
 
   it('Camera only 应用后运行状态不包含音频', async () => {

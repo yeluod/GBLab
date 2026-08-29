@@ -23,9 +23,6 @@ pub enum MediaError {
     /// 文件中存在当前阶段不支持的视频编码。
     #[error("不支持的视频编码: {0}")]
     UnsupportedVideoCodec(String),
-    /// 文件包含当前阶段不支持的音频编码。
-    #[error("不支持的音频编码: {0}")]
-    UnsupportedAudioCodec(String),
     /// 当前阶段不支持的媒体源。
     #[error("当前媒体源暂不支持: {0}")]
     UnsupportedSource(String),
@@ -38,4 +35,7 @@ pub enum MediaError {
     /// 摄像头设备输入不可用或配置无效。
     #[error("摄像头输入不可用: {0}")]
     Camera(String),
+    /// The dedicated media owner or one of its bounded channels is unavailable.
+    #[error("媒体运行时不可用: {0}")]
+    RuntimeUnavailable(String),
 }

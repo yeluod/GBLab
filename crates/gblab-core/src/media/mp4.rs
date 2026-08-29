@@ -1,10 +1,21 @@
 use std::ffi::CString;
 
-use rsmpeg::{avcodec::AVCodecParametersRef, avformat::AVFormatContextInput, ffi};
+use bytes::Bytes;
+use rsmpeg::{
+    avcodec::{
+        AVBSFContext, AVBSFContextUninit, AVBitStreamFilter, AVCodecParameters,
+        AVCodecParametersRef,
+    },
+    avformat::AVFormatContextInput,
+    error::RsmpegError,
+    ffi,
+};
 
 use super::{
-    AudioCodec, AudioStreamInfo, MediaError, MediaPacket, MediaResult, MediaSource,
-    MediaSourceSession, Mp4ProbeResult, VideoCodec, VideoStreamInfo, decoder::VideoDecoder,
+    AudioCodec, AudioStreamInfo, EncodedMediaCodec, EncodedMediaPacket, MediaError, MediaResult,
+    MediaTimeBase, MediaTrackKind, Mp4ProbeResult, VideoCodec, VideoStreamInfo,
+    decoder::VideoDecoder,
+    types::{MediaSource, MediaSourceSession, SourceReadOutput},
 };
 
 /// MP4 文件媒体源。
@@ -83,14 +94,27 @@ impl MediaSource for Mp4MediaSource {
             .iter()
             .position(|stream| stream.codecpar().codec_type().is_video())
             .ok_or(MediaError::MissingVideoStream)?;
-        Ok(MediaSourceSession::Mp4(Mp4Session {
+        let video_bsf = {
+            let video_stream = context
+                .streams()
+                .get(video_stream_index)
+                .ok_or(MediaError::MissingVideoStream)?;
+            create_annex_b_filter(&video_stream.codecpar(), video_stream.time_base)?
+        };
+        let audio_stream_index = context
+            .streams()
+            .iter()
+            .position(|stream| stream.codecpar().codec_type().is_audio());
+        Ok(MediaSourceSession::Mp4(Box::new(Mp4Session {
             context,
             probe,
             looping,
             playing: false,
             decoder,
             video_stream_index,
-        }))
+            audio_stream_index,
+            video_bsf,
+        })))
     }
 }
 
@@ -102,6 +126,8 @@ pub struct Mp4Session {
     playing: bool,
     decoder: VideoDecoder,
     video_stream_index: usize,
+    audio_stream_index: Option<usize>,
+    video_bsf: AVBSFContext,
 }
 
 impl Mp4Session {
@@ -159,7 +185,93 @@ impl Mp4Session {
             )
             .map_err(|error| MediaError::Playback(error.to_string()))?;
         self.decoder.flush();
+        self.video_bsf.flush();
         Ok(())
+    }
+
+    pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
+        let mut packet = match self.context.read_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) if self.looping => {
+                self.reset()?;
+                return Ok(SourceReadOutput::looped());
+            }
+            Ok(None) => return Ok(SourceReadOutput::end_of_stream()),
+            Err(error) => return Err(MediaError::Playback(error.to_string())),
+        };
+        let stream_index = usize::try_from(packet.stream_index)
+            .map_err(|_| MediaError::Playback("FFmpeg 返回了无效的 stream index".to_owned()))?;
+        let stream = self
+            .context
+            .streams()
+            .get(stream_index)
+            .ok_or_else(|| MediaError::Playback("packet 引用了不存在的媒体流".to_owned()))?;
+        let time_base = MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
+            .ok_or_else(|| MediaError::Playback("媒体流时间基无效".to_owned()))?;
+
+        if stream_index == self.video_stream_index {
+            let mut preview_frames = Vec::new();
+            if let Some(frame) = self.decoder.decode_packet(&packet)? {
+                preview_frames.push(frame);
+            }
+            while let Some(frame) = self.decoder.take_pending_frame() {
+                preview_frames.push(frame);
+            }
+            self.video_bsf
+                .send_packet(Some(&mut packet))
+                .map_err(|error| MediaError::Playback(format!("Annex-B 过滤失败：{error}")))?;
+            match self.video_bsf.receive_packet(&mut packet) {
+                Ok(()) => {}
+                Err(RsmpegError::BitstreamDrainError) => {
+                    return Ok(SourceReadOutput {
+                        packet: None,
+                        preview_frames,
+                        looped: false,
+                        end_of_stream: false,
+                    });
+                }
+                Err(error) => {
+                    return Err(MediaError::Playback(format!(
+                        "读取 Annex-B packet 失败：{error}"
+                    )));
+                }
+            }
+            let packet = encoded_packet(
+                &packet,
+                MediaTrackKind::Video,
+                EncodedMediaCodec::Video(self.probe.video.codec),
+                time_base,
+            );
+            return Ok(SourceReadOutput {
+                packet: Some(packet),
+                preview_frames,
+                looped: false,
+                end_of_stream: false,
+            });
+        }
+
+        if self.audio_stream_index == Some(stream_index)
+            && self.probe.audio.as_ref().map(|audio| audio.codec) == Some(AudioCodec::Aac)
+        {
+            return Ok(SourceReadOutput {
+                packet: Some(encoded_packet(
+                    &packet,
+                    MediaTrackKind::Audio,
+                    EncodedMediaCodec::Audio(AudioCodec::Aac),
+                    time_base,
+                )),
+                preview_frames: Vec::new(),
+                looped: false,
+                end_of_stream: false,
+            });
+        }
+
+        Ok(SourceReadOutput {
+            packet: None,
+            preview_frames: Vec::new(),
+            looped: false,
+            end_of_stream: false,
+        })
     }
 
     pub(crate) fn seek_frame(
@@ -188,50 +300,6 @@ impl Mp4Session {
         Err(MediaError::Playback(
             "跳转后未能在安全帧数范围内定位目标画面".to_owned(),
         ))
-    }
-
-    pub(crate) fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
-        if !self.playing {
-            return Ok(None);
-        }
-        let packet = match self.context.read_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) if self.looping => {
-                self.reset()?;
-                match self.context.read_packet() {
-                    Ok(Some(packet)) => packet,
-                    Ok(None) => return Ok(None),
-                    Err(error) => return Err(MediaError::Playback(error.to_string())),
-                }
-            }
-            Ok(None) => return Ok(None),
-            Err(error) => return Err(MediaError::Playback(error.to_string())),
-        };
-        let stream_index = usize::try_from(packet.stream_index)
-            .map_err(|_| MediaError::Playback("FFmpeg 返回了无效的 stream index".to_owned()))?;
-        let stream = self
-            .context
-            .streams()
-            .get(stream_index)
-            .ok_or_else(|| MediaError::Playback("packet 引用了不存在的媒体流".to_owned()))?;
-        let position_seconds =
-            scaled_timestamp(packet.pts, stream.time_base.num, stream.time_base.den).unwrap_or(0.0);
-        Ok(Some(MediaPacket {
-            stream_index,
-            pts: valid_timestamp(packet.pts),
-            dts: valid_timestamp(packet.dts),
-            duration: packet.duration,
-            size: usize::try_from(packet.size).unwrap_or(0),
-            is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
-            position_seconds,
-        }))
-    }
-
-    pub(crate) fn next_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
-        if !self.playing {
-            return Ok(None);
-        }
-        self.decode_next_frame()
     }
 
     pub(crate) fn step_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
@@ -317,10 +385,7 @@ fn audio_info(parameters: &AVCodecParametersRef<'_>) -> MediaResult<AudioStreamI
     let codec = if parameters.codec_id == ffi::AV_CODEC_ID_AAC {
         AudioCodec::Aac
     } else {
-        return Err(MediaError::UnsupportedAudioCodec(format!(
-            "FFmpeg codec id {}",
-            parameters.codec_id
-        )));
+        AudioCodec::Other
     };
     Ok(AudioStreamInfo {
         codec,
@@ -330,6 +395,51 @@ fn audio_info(parameters: &AVCodecParametersRef<'_>) -> MediaResult<AudioStreamI
             .map_err(|_| MediaError::Playback("音频声道数超出支持范围".to_owned()))?,
         bitrate: positive_u64(parameters.bit_rate),
     })
+}
+
+fn create_annex_b_filter(
+    parameters: &AVCodecParametersRef<'_>,
+    time_base: ffi::AVRational,
+) -> MediaResult<AVBSFContext> {
+    let name = match parameters.codec_id {
+        ffi::AV_CODEC_ID_H264 => c"h264_mp4toannexb",
+        ffi::AV_CODEC_ID_HEVC => c"hevc_mp4toannexb",
+        _ => {
+            return Err(MediaError::UnsupportedVideoCodec(
+                "Annex-B 过滤器仅支持 H.264/H.265".to_owned(),
+            ));
+        }
+    };
+    let filter = AVBitStreamFilter::find_by_name(name).ok_or_else(|| {
+        MediaError::Playback(format!("FFmpeg 缺少 {} 过滤器", name.to_string_lossy()))
+    })?;
+    let mut context = AVBSFContextUninit::new(&filter);
+    let mut owned_parameters = AVCodecParameters::new();
+    owned_parameters.copy(parameters);
+    context.set_par_in(&owned_parameters);
+    context.set_time_base_in(time_base);
+    context
+        .init()
+        .map_err(|error| MediaError::Playback(format!("初始化 Annex-B 过滤器失败：{error}")))
+}
+
+fn encoded_packet(
+    packet: &rsmpeg::avcodec::AVPacket,
+    track: MediaTrackKind,
+    codec: EncodedMediaCodec,
+    time_base: MediaTimeBase,
+) -> EncodedMediaPacket {
+    EncodedMediaPacket {
+        track,
+        codec,
+        data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(packet)),
+        pts: valid_timestamp(packet.pts),
+        dts: valid_timestamp(packet.dts),
+        duration: packet.duration,
+        time_base,
+        is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
+        codec_configuration: None,
+    }
 }
 
 fn positive_u64(value: i64) -> Option<u64> {

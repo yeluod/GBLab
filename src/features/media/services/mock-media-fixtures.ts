@@ -1,6 +1,7 @@
 import {
   AudioCodec,
   CaptureDeviceStatus,
+  EncoderBackend,
   VideoCodec,
   type CaptureDeviceCapabilities,
   type CaptureDeviceInfo,
@@ -56,23 +57,40 @@ export const MOCK_VIDEO_CAPABILITIES: Record<string, CaptureDeviceCapabilities> 
   'camera-integrated': {
     deviceId: 'camera-integrated',
     modes: [
-      { width: 640, height: 480, supportedFramesPerSecond: [15, 25, 30] },
-      { width: 1280, height: 720, supportedFramesPerSecond: [25, 30, 60] },
-      { width: 1920, height: 1080, supportedFramesPerSecond: [25, 30] },
+      { width: 640, height: 480, frameRates: [15, 25, 30].map(exactFrameRate) },
+      { width: 1280, height: 720, frameRates: [25, 30, 60].map(exactFrameRate) },
+      { width: 1920, height: 1080, frameRates: [25, 30].map(exactFrameRate) },
     ],
   },
   'camera-usb': {
     deviceId: 'camera-usb',
     modes: [
-      { width: 640, height: 480, supportedFramesPerSecond: [15, 30] },
-      { width: 1280, height: 720, supportedFramesPerSecond: [25, 30] },
+      { width: 640, height: 480, frameRates: [15, 30].map(exactFrameRate) },
+      { width: 1280, height: 720, frameRates: [25, 30].map(exactFrameRate) },
     ],
   },
 };
 
 export const MOCK_VIDEO_ENCODER_CAPABILITIES = {
-  supportedCodecs: [VideoCodec.H264, VideoCodec.H265],
+  encoders: [
+    {
+      codec: VideoCodec.H264,
+      backend: EncoderBackend.VideoToolbox,
+      encoderName: 'h264_videotoolbox',
+      hardware: true,
+    },
+    {
+      codec: VideoCodec.H265,
+      backend: EncoderBackend.VideoToolbox,
+      encoderName: 'hevc_videotoolbox',
+      hardware: true,
+    },
+  ],
 };
+
+function exactFrameRate(value: number): { kind: 'exact'; value: number } {
+  return { kind: 'exact', value };
+}
 
 const commonAudio = {
   codec: AudioCodec.Aac,

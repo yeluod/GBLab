@@ -90,6 +90,32 @@ impl VideoDecoder {
         Ok(first)
     }
 
+    /// Decodes all raw frames produced by one packet for a downstream encoder.
+    pub(super) fn decode_raw_frames(
+        &mut self,
+        packet: &rsmpeg::avcodec::AVPacket,
+    ) -> MediaResult<Vec<AVFrame>> {
+        self.context
+            .send_packet(Some(packet))
+            .map_err(|error| MediaError::Playback(format!("发送视频 packet 失败：{error}")))?;
+        let mut frames = Vec::new();
+        loop {
+            match self.context.receive_frame() {
+                Ok(frame) => frames.push(frame),
+                Err(rsmpeg::error::RsmpegError::DecoderDrainError) => break,
+                Err(error) => {
+                    return Err(MediaError::Playback(format!("读取视频帧失败：{error}")));
+                }
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Converts one decoded raw frame into the bounded RGBA preview format.
+    pub(super) fn preview_frame(&mut self, frame: &AVFrame) -> MediaResult<MediaVideoFrame> {
+        self.decode_frame(frame)
+    }
+
     fn decode_frame(&mut self, frame: &AVFrame) -> MediaResult<MediaVideoFrame> {
         let width = frame.width;
         let height = frame.height;

@@ -1,320 +1,80 @@
-//! 媒体源抽象、视频解码与 MP4 解封装能力。
+//! Single-owner global media runtime, source adapters and encoded-stream fan-out.
 //!
-//! 本模块负责本地媒体容器、摄像头输入和播放时钟，不负责编码、MPEG-PS、RTP
-//! 或 SIP 会话。后续媒体传输可以复用 [`MediaPacket`] 和 [`MediaPipeline`] 边界。
+//! 本模块负责本地媒体容器、摄像头采集、音视频编码、统一播放时钟和编码流分发，
+//! 不负责 MPEG-PS、RTP 或 SIP 会话。后续媒体传输直接消费 [`EncodedMediaPacket`]。
 
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
+mod audio_encoder;
 mod camera;
+mod clock;
 mod decoder;
 mod error;
+mod hub;
 mod mp4;
+mod packet;
+mod runtime;
 mod types;
+mod video_encoder;
 
-pub use camera::{CameraMediaSource, CameraSession};
+use camera::CameraMediaSource;
+pub use clock::MediaClock;
 pub use error::MediaError;
-pub use mp4::{Mp4MediaSource, Mp4Session};
+pub use hub::{
+    BackpressurePolicy, BroadcastReport, MediaConsumerKind, MediaStreamHub, MediaSubscription,
+};
+use mp4::Mp4MediaSource;
+pub use packet::{
+    AudioCodec, EncodedMediaCodec, EncodedMediaPacket, MediaTimeBase, MediaTrackKind,
+    RawAudioFrame, RawVideoFrame, VideoCodec,
+};
+pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{
-    AudioCodec, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    MediaPacket, MediaPipeline, MediaResult, MediaRuntimeStatus, MediaSource, MediaSourceKind,
-    MediaSourceSession, MediaSourceStatus, MediaVideoFrame, Mp4ProbeResult,
-    VideoCaptureCapabilities, VideoCaptureMode, VideoCodec, VideoEncoderCapabilities,
-    VideoStreamInfo,
+    AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
+    FrameRateCapability, MediaResult, MediaRuntimeStatus, MediaSourceKind, MediaSourceStatus,
+    MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode,
+    VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
 };
 
-/// 媒体引擎，负责当前全局媒体源的生命周期。
-pub struct MediaEngine {
-    session: Option<MediaSourceSession>,
-    pending_preview_frame: Option<MediaVideoFrame>,
-    status: MediaRuntimeStatus,
+/// Probes an MP4 file without opening the global runtime source.
+pub fn probe_mp4(path: &std::path::Path) -> MediaResult<Mp4ProbeResult> {
+    use types::MediaSource;
+    Mp4MediaSource::new(path.to_owned()).probe()
 }
 
-impl Default for MediaEngine {
-    fn default() -> Self {
-        Self {
-            session: None,
-            pending_preview_frame: None,
-            status: MediaRuntimeStatus::unconfigured(),
-        }
-    }
+/// Probes negotiated camera input properties without changing the global source.
+pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeResult> {
+    use types::MediaSource;
+    CameraMediaSource::new(
+        settings.clone(),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .probe()
 }
 
-impl MediaEngine {
-    /// 创建一个未配置的媒体引擎。
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 探测 MP4 文件，但不改变当前播放会话。
-    pub fn probe_mp4(path: &std::path::Path) -> MediaResult<Mp4ProbeResult> {
-        Mp4MediaSource::new(path.to_owned()).probe()
-    }
-
-    /// 打开全局 MP4 源并准备播放。
-    pub fn open_mp4(
-        &mut self,
-        path: &std::path::Path,
-        looping: bool,
-    ) -> MediaResult<MediaRuntimeStatus> {
-        let source = Mp4MediaSource::new(path.to_owned());
-        let session = source.open(looping)?;
-        let probe = session.probe().clone();
-        self.session = Some(session);
-        self.pending_preview_frame = None;
-        self.status = MediaRuntimeStatus::ready(
-            MediaSourceKind::Mp4,
-            probe.video.clone(),
-            probe.audio,
-            probe.duration_seconds,
-        );
-        Ok(self.status.clone())
-    }
-
-    /// 打开全局摄像头源并准备采集。
-    pub fn open_camera(
-        &mut self,
-        settings: &CameraCaptureSettings,
-    ) -> MediaResult<MediaRuntimeStatus> {
-        let source = CameraMediaSource::new(settings.clone());
-        let session = source.open(false)?;
-        let probe = session.probe().clone();
-        self.session = Some(session);
-        self.pending_preview_frame = None;
-        self.status = MediaRuntimeStatus::ready(
-            MediaSourceKind::Camera,
-            probe.video.clone(),
-            probe.audio,
-            None,
-        );
-        Ok(self.status.clone())
-    }
-
-    /// 探测摄像头当前协商出的输入能力。
-    pub fn probe_camera(settings: &CameraCaptureSettings) -> MediaResult<Mp4ProbeResult> {
-        CameraMediaSource::new(settings.clone()).probe()
-    }
-
-    /// 枚举当前平台的摄像头和麦克风输入设备。
-    pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
-        camera::list_capture_devices()
-    }
-
-    /// 不打开摄像头，读取指定设备的原生采集模式。
-    pub fn video_capture_capabilities(device_id: &str) -> MediaResult<VideoCaptureCapabilities> {
-        camera::video_capture_capabilities(device_id)
-    }
-
-    /// 返回当前 `FFmpeg` Native Libraries 实际提供的视频编码器能力。
-    #[must_use]
-    pub fn video_encoder_capabilities() -> VideoEncoderCapabilities {
-        camera::video_encoder_capabilities()
-    }
-
-    /// 当前源开始播放。
-    pub fn play(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        session.play();
-        self.status.source_status = MediaSourceStatus::Playing;
-        Ok(self.status.clone())
-    }
-
-    /// 暂停当前源。
-    pub fn pause(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        session.pause();
-        self.status.source_status = MediaSourceStatus::Paused;
-        Ok(self.status.clone())
-    }
-
-    /// 停止当前源并回到起点。
-    pub fn stop(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let mut session = self.session.take().ok_or(MediaError::NoSourceOpen)?;
-        if let Err(error) = session.stop() {
-            self.session = Some(session);
-            return Err(error);
-        }
-        if matches!(&session, MediaSourceSession::Mp4(_)) {
-            self.session = Some(session);
-        }
-        self.pending_preview_frame = None;
-        self.status.source_status = MediaSourceStatus::Stopped;
-        self.status.position_seconds = 0.0;
-        Ok(self.status.clone())
-    }
-
-    /// 重置当前源到起点并保持就绪状态。
-    pub fn reset(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        session.reset()?;
-        self.pending_preview_frame = None;
-        self.status.source_status = MediaSourceStatus::Ready;
-        self.status.position_seconds = 0.0;
-        Ok(self.status.clone())
-    }
-
-    /// 跳转 MP4 播放位置。实时摄像头不支持该操作。
-    pub fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus> {
-        if let Some(duration) = self.status.duration_seconds
-            && position_seconds > duration
-        {
-            return Err(MediaError::Playback("跳转位置超过媒体总时长".to_owned()));
-        }
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        self.pending_preview_frame = session.seek_frame(position_seconds)?;
-        self.status.position_seconds = self
-            .pending_preview_frame
-            .as_ref()
-            .map_or(position_seconds, |frame| frame.position_seconds);
-        Ok(self.status.clone())
-    }
-
-    /// 设置本地预览倍速，支持 0.25x 到 4x。
-    pub fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus> {
-        if !rate.is_finite() || !(0.25..=4.0).contains(&rate) {
-            return Err(MediaError::Playback(
-                "播放倍速必须介于 0.25 和 4.0".to_owned(),
-            ));
-        }
-        self.status.playback_rate = rate;
-        Ok(self.status.clone())
-    }
-
-    /// 设置音频控制状态。当前仅保存控制状态，供后续音频输出管线直接消费。
-    pub fn set_audio_control(
-        &mut self,
-        muted: bool,
-        volume: f64,
-    ) -> MediaResult<MediaRuntimeStatus> {
-        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-            return Err(MediaError::Playback("音量必须介于 0.0 和 1.0".to_owned()));
-        }
-        self.status.muted = muted;
-        self.status.volume = volume;
-        Ok(self.status.clone())
-    }
-
-    /// 在暂停状态下读取下一帧。
-    pub fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        let frame = if self.pending_preview_frame.is_some() {
-            self.pending_preview_frame.take()
-        } else {
-            let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-            session.step_frame()?
-        };
-        if let Some(frame) = &frame {
-            self.status.position_seconds = frame.position_seconds;
-            self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
-        }
-        Ok(frame)
-    }
-
-    /// 获取当前播放状态。
-    #[must_use]
-    pub fn status(&self) -> MediaRuntimeStatus {
-        self.status.clone()
-    }
-
-    /// 读取一个编码 packet 的时间线元数据。
-    pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        let packet = session.next_packet()?;
-        if let Some(packet) = &packet {
-            self.status.position_seconds = packet.position_seconds;
-        }
-        Ok(packet)
-    }
-
-    /// 读取下一帧解码后的 RGBA 图像，用于桌面端预览。
-    pub fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        let frame = if self.pending_preview_frame.is_some() {
-            self.pending_preview_frame.take()
-        } else {
-            let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-            session.next_frame()?
-        };
-        if let Some(frame) = &frame {
-            self.status.position_seconds = frame.position_seconds;
-            self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
-        }
-        Ok(frame)
-    }
+/// Enumerates native camera and microphone inputs.
+pub fn list_capture_devices() -> MediaResult<CaptureDeviceLists> {
+    camera::list_capture_devices()
 }
 
-impl MediaPipeline for MediaEngine {
-    fn play(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        Self::play(self)
-    }
+/// Returns native capture modes for one stable camera identifier.
+pub fn video_capture_capabilities(device_id: &str) -> MediaResult<VideoCaptureCapabilities> {
+    camera::video_capture_capabilities(device_id)
+}
 
-    fn pause(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        Self::pause(self)
-    }
-
-    fn stop(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        Self::stop(self)
-    }
-
-    fn reset(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        Self::reset(self)
-    }
-
-    fn seek(&mut self, position_seconds: f64) -> MediaResult<MediaRuntimeStatus> {
-        Self::seek(self, position_seconds)
-    }
-
-    fn set_playback_rate(&mut self, rate: f64) -> MediaResult<MediaRuntimeStatus> {
-        Self::set_playback_rate(self, rate)
-    }
-
-    fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        Self::step_frame(self)
-    }
-
-    fn status(&self) -> MediaRuntimeStatus {
-        Self::status(self)
-    }
-
-    fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
-        Self::next_packet(self)
-    }
-
-    fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        Self::next_frame(self)
-    }
+/// Returns concrete encoders present in the linked `FFmpeg` libraries.
+#[must_use]
+pub fn video_encoder_capabilities() -> VideoEncoderCapabilities {
+    camera::video_encoder_capabilities()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaEngine, MediaError, MediaSourceStatus};
-
-    #[test]
-    fn new_engine_should_start_unconfigured() {
-        let engine = MediaEngine::new();
-
-        assert_eq!(
-            engine.status().source_status,
-            MediaSourceStatus::Unconfigured
-        );
-        assert!(engine.status().source_kind.is_none());
-    }
-
-    #[test]
-    fn playback_commands_should_require_an_open_source() {
-        let mut engine = MediaEngine::new();
-
-        assert!(matches!(engine.play(), Err(MediaError::NoSourceOpen)));
-        assert!(matches!(engine.pause(), Err(MediaError::NoSourceOpen)));
-        assert!(matches!(engine.stop(), Err(MediaError::NoSourceOpen)));
-        assert!(matches!(engine.reset(), Err(MediaError::NoSourceOpen)));
-        assert!(matches!(
-            engine.next_packet(),
-            Err(MediaError::NoSourceOpen)
-        ));
-    }
+    use super::{MediaError, probe_mp4};
 
     #[test]
     fn probe_should_report_missing_file_without_calling_ffmpeg() {
-        let result = MediaEngine::probe_mp4(std::path::Path::new("/path/that/does/not/exist.mp4"));
+        let result = probe_mp4(std::path::Path::new("/path/that/does/not/exist.mp4"));
 
         assert!(matches!(result, Err(MediaError::FileNotFound(_))));
     }
