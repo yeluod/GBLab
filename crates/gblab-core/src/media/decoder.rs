@@ -21,6 +21,10 @@ pub(super) struct VideoDecoder {
 }
 
 impl VideoDecoder {
+    pub(super) fn take_pending_frame(&mut self) -> Option<MediaVideoFrame> {
+        self.pending_frames.pop_front()
+    }
+
     pub(super) fn flush(&mut self) {
         self.context.flush_buffers();
         self.pending_frames.clear();
@@ -71,9 +75,6 @@ impl VideoDecoder {
         &mut self,
         packet: &rsmpeg::avcodec::AVPacket,
     ) -> MediaResult<Option<MediaVideoFrame>> {
-        if let Some(frame) = self.pending_frames.pop_front() {
-            return Ok(Some(frame));
-        }
         self.context
             .send_packet(Some(packet))
             .map_err(|e| MediaError::Playback(format!("发送视频 packet 失败：{e}")))?;

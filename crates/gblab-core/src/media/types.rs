@@ -358,9 +358,12 @@ impl MediaSourceSession {
         }
     }
 
-    pub(crate) fn seek(&mut self, position_seconds: f64) -> MediaResult<()> {
+    pub(crate) fn seek_frame(
+        &mut self,
+        position_seconds: f64,
+    ) -> MediaResult<Option<MediaVideoFrame>> {
         match self {
-            Self::Mp4(session) => session.seek(position_seconds),
+            Self::Mp4(session) => session.seek_frame(position_seconds),
             Self::Camera(_) => Err(MediaError::UnsupportedSource(
                 "实时摄像头不支持时间线跳转".to_owned(),
             )),

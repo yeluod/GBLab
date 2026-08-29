@@ -595,7 +595,7 @@ select {
 
 .media-workbench-body {
   display: grid;
-  grid-template-columns: minmax(480px, 1.05fr) minmax(390px, 0.95fr);
+  grid-template-columns: minmax(430px, 0.95fr) minmax(520px, 1.05fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -618,6 +618,7 @@ select {
 
 .media-monitor-panel {
   background: #f8fafc;
+  overflow-y: auto;
 }
 
 .media-section-heading {
@@ -684,11 +685,11 @@ select {
 
 .mock-preview-surface {
   position: relative;
-  display: grid;
-  min-height: 210px;
-  place-items: center;
-  align-content: center;
-  gap: 9px;
+  display: flex;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   border: 1px solid #d9e3ec;
   border-radius: 6px;
@@ -701,8 +702,33 @@ select {
 
 .mock-preview-surface strong,
 .mock-preview-surface span {
-  position: relative;
+  display: block;
+}
+
+.preview-caption {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
   z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 9px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 4px;
+  color: #fff;
+  background: rgb(15 23 42 / 76%);
+  backdrop-filter: blur(4px);
+}
+
+.preview-caption strong {
+  font-size: 0.78rem;
+}
+
+.preview-caption span {
+  color: #cbd5e1;
 }
 
 .mock-preview-surface span {
@@ -717,7 +743,7 @@ select {
 .preview-canvas {
   display: block;
   width: 100%;
-  max-height: 210px;
+  height: 100%;
   object-fit: contain;
   background: #172033;
 }
@@ -741,6 +767,20 @@ select {
   gap: 10px 18px;
   margin: 0;
   font-size: 0.8rem;
+}
+
+.media-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.media-detail-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .media-info-list dt,
@@ -790,7 +830,7 @@ select {
   }
 
   .media-workbench-body {
-    grid-template-columns: minmax(440px, 1fr) minmax(340px, 0.8fr);
+    grid-template-columns: minmax(390px, 0.9fr) minmax(450px, 1.1fr);
   }
 
   .media-config-panel,
@@ -815,5 +855,9 @@ select {
 
   .logs-toolbar {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .media-detail-grid {
+    grid-template-columns: 1fr;
   }
 }

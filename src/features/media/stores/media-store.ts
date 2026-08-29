@@ -517,9 +517,10 @@ export const useMediaStore = defineStore('media', () => {
 
   async function stopPreview(): Promise<MediaOperationResult> {
     isPreviewPending.value = true;
+    // 先阻止后续读帧进入 IPC，再关闭后端会话，避免摄像头被预览循环重新占用。
+    stopFrameLoop();
     try {
       runtimeStatus.value = await service.stopPreview();
-      stopFrameLoop();
       serviceError.value = null;
       return { ok: true };
     } catch (error) {

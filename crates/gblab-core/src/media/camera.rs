@@ -266,6 +266,9 @@ impl CameraSession {
             return Ok(None);
         }
         loop {
+            if let Some(frame) = self.decoder.take_pending_frame() {
+                return Ok(Some(frame));
+            }
             let packet = self
                 .context
                 .read_packet()

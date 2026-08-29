@@ -78,12 +78,18 @@ impl MediaSource for Mp4MediaSource {
             let video_parameters = video_stream.codecpar();
             VideoDecoder::new(&video_parameters, video_stream)?
         };
+        let video_stream_index = context
+            .streams()
+            .iter()
+            .position(|stream| stream.codecpar().codec_type().is_video())
+            .ok_or(MediaError::MissingVideoStream)?;
         Ok(MediaSourceSession::Mp4(Mp4Session {
             context,
             probe,
             looping,
             playing: false,
             decoder,
+            video_stream_index,
         }))
     }
 }
@@ -95,6 +101,7 @@ pub struct Mp4Session {
     looping: bool,
     playing: bool,
     decoder: VideoDecoder,
+    video_stream_index: usize,
 }
 
 impl Mp4Session {
@@ -127,16 +134,60 @@ impl Mp4Session {
                 "跳转位置必须是非负有限数值".to_owned(),
             ));
         }
+        let stream = self
+            .context
+            .streams()
+            .get(self.video_stream_index)
+            .ok_or_else(|| MediaError::Playback("视频流已不可用".to_owned()))?;
+        if stream.time_base.num <= 0 || stream.time_base.den <= 0 {
+            return Err(MediaError::Playback("视频流时间基无效".to_owned()));
+        }
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "已校验时间值且 FFmpeg seek API 使用 i64 微秒"
+            reason = "已校验时间值且 FFmpeg seek API 使用 i64 时间戳"
         )]
-        let timestamp = (position_seconds * 1_000_000.0).round() as i64;
+        let timestamp = (position_seconds * f64::from(stream.time_base.den)
+            / f64::from(stream.time_base.num))
+        .round() as i64;
+        let stream_index = i32::try_from(self.video_stream_index)
+            .map_err(|_| MediaError::Playback("视频流索引超出支持范围".to_owned()))?;
         self.context
-            .seek(-1, timestamp, ffi::AVSEEK_FLAG_BACKWARD.cast_signed())
+            .seek(
+                stream_index,
+                timestamp,
+                ffi::AVSEEK_FLAG_BACKWARD.cast_signed(),
+            )
             .map_err(|error| MediaError::Playback(error.to_string()))?;
         self.decoder.flush();
         Ok(())
+    }
+
+    pub(crate) fn seek_frame(
+        &mut self,
+        position_seconds: f64,
+    ) -> MediaResult<Option<super::MediaVideoFrame>> {
+        self.seek(position_seconds)?;
+        let frame_tolerance = if self.probe.video.frames_per_second.is_normal() {
+            0.5 / self.probe.video.frames_per_second
+        } else {
+            0.02
+        };
+        let mut last_frame = None;
+
+        for _ in 0..10_000 {
+            let Some(frame) = self.decode_next_frame_without_loop()? else {
+                return Ok(last_frame);
+            };
+            let reached_target = frame.position_seconds + frame_tolerance >= position_seconds;
+            last_frame = Some(frame);
+            if reached_target {
+                return Ok(last_frame);
+            }
+        }
+
+        Err(MediaError::Playback(
+            "跳转后未能在安全帧数范围内定位目标画面".to_owned(),
+        ))
     }
 
     pub(crate) fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
@@ -188,10 +239,24 @@ impl Mp4Session {
     }
 
     fn decode_next_frame(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
+        self.decode_next_frame_with_looping(self.looping)
+    }
+
+    fn decode_next_frame_without_loop(&mut self) -> MediaResult<Option<super::MediaVideoFrame>> {
+        self.decode_next_frame_with_looping(false)
+    }
+
+    fn decode_next_frame_with_looping(
+        &mut self,
+        restart_on_eof: bool,
+    ) -> MediaResult<Option<super::MediaVideoFrame>> {
         loop {
+            if let Some(frame) = self.decoder.take_pending_frame() {
+                return Ok(Some(frame));
+            }
             let packet = match self.context.read_packet() {
                 Ok(Some(packet)) => packet,
-                Ok(None) if self.looping => {
+                Ok(None) if restart_on_eof => {
                     self.reset()?;
                     continue;
                 }
@@ -202,12 +267,7 @@ impl Mp4Session {
                 continue;
             }
             let stream_index = usize::try_from(packet.stream_index).unwrap_or(usize::MAX);
-            let video_index = self
-                .context
-                .streams()
-                .iter()
-                .position(|stream| stream.codecpar().codec_type().is_video());
-            if Some(stream_index) != video_index {
+            if stream_index != self.video_stream_index {
                 continue;
             }
             if let Some(frame) = self.decoder.decode_packet(&packet)? {

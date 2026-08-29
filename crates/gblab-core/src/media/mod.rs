@@ -25,6 +25,7 @@ pub use types::{
 /// 媒体引擎，负责当前全局媒体源的生命周期。
 pub struct MediaEngine {
     session: Option<MediaSourceSession>,
+    pending_preview_frame: Option<MediaVideoFrame>,
     status: MediaRuntimeStatus,
 }
 
@@ -32,6 +33,7 @@ impl Default for MediaEngine {
     fn default() -> Self {
         Self {
             session: None,
+            pending_preview_frame: None,
             status: MediaRuntimeStatus::unconfigured(),
         }
     }
@@ -59,6 +61,7 @@ impl MediaEngine {
         let session = source.open(looping)?;
         let probe = session.probe().clone();
         self.session = Some(session);
+        self.pending_preview_frame = None;
         self.status = MediaRuntimeStatus::ready(
             MediaSourceKind::Mp4,
             probe.video.clone(),
@@ -77,6 +80,7 @@ impl MediaEngine {
         let session = source.open(false)?;
         let probe = session.probe().clone();
         self.session = Some(session);
+        self.pending_preview_frame = None;
         self.status = MediaRuntimeStatus::ready(
             MediaSourceKind::Camera,
             probe.video.clone(),
@@ -125,8 +129,15 @@ impl MediaEngine {
 
     /// 停止当前源并回到起点。
     pub fn stop(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        session.stop()?;
+        let mut session = self.session.take().ok_or(MediaError::NoSourceOpen)?;
+        if let Err(error) = session.stop() {
+            self.session = Some(session);
+            return Err(error);
+        }
+        if matches!(&session, MediaSourceSession::Mp4(_)) {
+            self.session = Some(session);
+        }
+        self.pending_preview_frame = None;
         self.status.source_status = MediaSourceStatus::Stopped;
         self.status.position_seconds = 0.0;
         Ok(self.status.clone())
@@ -136,6 +147,7 @@ impl MediaEngine {
     pub fn reset(&mut self) -> MediaResult<MediaRuntimeStatus> {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         session.reset()?;
+        self.pending_preview_frame = None;
         self.status.source_status = MediaSourceStatus::Ready;
         self.status.position_seconds = 0.0;
         Ok(self.status.clone())
@@ -149,8 +161,11 @@ impl MediaEngine {
             return Err(MediaError::Playback("跳转位置超过媒体总时长".to_owned()));
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        session.seek(position_seconds)?;
-        self.status.position_seconds = position_seconds;
+        self.pending_preview_frame = session.seek_frame(position_seconds)?;
+        self.status.position_seconds = self
+            .pending_preview_frame
+            .as_ref()
+            .map_or(position_seconds, |frame| frame.position_seconds);
         Ok(self.status.clone())
     }
 
@@ -181,8 +196,12 @@ impl MediaEngine {
 
     /// 在暂停状态下读取下一帧。
     pub fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        let frame = session.step_frame()?;
+        let frame = if self.pending_preview_frame.is_some() {
+            self.pending_preview_frame.take()
+        } else {
+            let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+            session.step_frame()?
+        };
         if let Some(frame) = &frame {
             self.status.position_seconds = frame.position_seconds;
             self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
@@ -208,8 +227,12 @@ impl MediaEngine {
 
     /// 读取下一帧解码后的 RGBA 图像，用于桌面端预览。
     pub fn next_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
-        let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
-        let frame = session.next_frame()?;
+        let frame = if self.pending_preview_frame.is_some() {
+            self.pending_preview_frame.take()
+        } else {
+            let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+            session.next_frame()?
+        };
         if let Some(frame) = &frame {
             self.status.position_seconds = frame.position_seconds;
             self.status.decoded_frames = self.status.decoded_frames.saturating_add(1);
