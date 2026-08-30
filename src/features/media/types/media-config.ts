@@ -26,12 +26,6 @@ export interface MediaSourceConfig {
   mp4: Mp4SourceConfig;
 }
 
-export interface RecordingConfig {
-  isEnabled: boolean;
-  directory: string;
-  segmentDurationMinutes: 5 | 10 | 30 | 60;
-}
-
 export interface MediaPreferences {
   shouldProbeAfterSelection: boolean;
 }
@@ -39,6 +33,5 @@ export interface MediaPreferences {
 /** 所有模拟设备和通道共享的唯一媒体配置。 */
 export interface GlobalMediaConfig {
   source: MediaSourceConfig;
-  recording: RecordingConfig;
   preferences: MediaPreferences;
 }

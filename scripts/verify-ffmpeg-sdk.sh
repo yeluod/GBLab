@@ -40,6 +40,10 @@ actual_archive_sha="$(jq -er '.archiveSha256' "$manifest")"
 expected_libraries="$(jq -cS '.requiredLibraries | sort' "$lockfile")"
 actual_libraries="$(jq -cS '.requiredLibraries | sort' "$manifest")"
 [[ "$actual_libraries" == "$expected_libraries" ]] || { printf 'FFmpeg SDK required library set mismatch.\n' >&2; exit 1; }
+jq -e '(.requiredLibraries as $required | (.requiredRuntimeImports | length > 0) and all(.requiredRuntimeImports[]; . as $name | $required | index($name) != null))' "$lockfile" >/dev/null || {
+  printf 'FFmpeg requiredRuntimeImports must be a non-empty subset of requiredLibraries.\n' >&2
+  exit 1
+}
 jq -er '.requiredLibraries[]' "$lockfile" | while IFS= read -r name; do
   found=0
   for directory in "$sdk_root/lib" "$sdk_root/frameworks" "$sdk_root/frameworks/lib"; do

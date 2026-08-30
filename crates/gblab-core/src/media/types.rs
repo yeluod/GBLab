@@ -148,7 +148,7 @@ pub struct MediaRuntimeStatus {
     pub active_recorder_consumers: u64,
     /// 最近一次 source worker 错误；正常打开新源后清除。
     pub last_error: Option<String>,
-    /// Latest non-fatal preview/encoder branch failure with an explicit stage prefix.
+    /// Latest non-fatal local audio/preview branch failure with an explicit stage prefix.
     pub last_pipeline_error: Option<String>,
     /// Local speaker sink diagnostics; `None` when no sink is configured.
     pub audio_sink: Option<AudioSinkInfo>,
@@ -208,7 +208,7 @@ impl MediaRuntimeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MediaRuntimeMetrics {
     /// Demuxed video packets.
-    pub video_packets_captured: u64,
+    pub video_packets_read: u64,
     /// Successfully decoded raw video frames.
     pub video_frames_decoded: u64,
     /// Successfully converted RGBA preview frames.
@@ -216,7 +216,7 @@ pub struct MediaRuntimeMetrics {
     /// Video packets emitted by the encoded branch.
     pub video_packets_encoded: u64,
     /// Demuxed audio packets.
-    pub audio_packets_captured: u64,
+    pub audio_packets_read: u64,
     /// Successfully decoded PCM frames.
     pub audio_frames_decoded: u64,
     /// Audio packets emitted by the encoded branch.
@@ -230,11 +230,11 @@ pub struct MediaRuntimeMetrics {
 impl MediaRuntimeMetrics {
     pub(crate) const fn new() -> Self {
         Self {
-            video_packets_captured: 0,
+            video_packets_read: 0,
             video_frames_decoded: 0,
             video_preview_frames: 0,
             video_packets_encoded: 0,
-            audio_packets_captured: 0,
+            audio_packets_read: 0,
             audio_frames_decoded: 0,
             audio_packets_encoded: 0,
             audio_rms: 0.0,
@@ -243,9 +243,9 @@ impl MediaRuntimeMetrics {
     }
 
     pub(crate) const fn merge(&mut self, delta: Self) {
-        self.video_packets_captured = self
-            .video_packets_captured
-            .saturating_add(delta.video_packets_captured);
+        self.video_packets_read = self
+            .video_packets_read
+            .saturating_add(delta.video_packets_read);
         self.video_frames_decoded = self
             .video_frames_decoded
             .saturating_add(delta.video_frames_decoded);
@@ -255,9 +255,9 @@ impl MediaRuntimeMetrics {
         self.video_packets_encoded = self
             .video_packets_encoded
             .saturating_add(delta.video_packets_encoded);
-        self.audio_packets_captured = self
-            .audio_packets_captured
-            .saturating_add(delta.audio_packets_captured);
+        self.audio_packets_read = self
+            .audio_packets_read
+            .saturating_add(delta.audio_packets_read);
         self.audio_frames_decoded = self
             .audio_frames_decoded
             .saturating_add(delta.audio_frames_decoded);
@@ -375,6 +375,12 @@ impl MediaSourceSession {
     ) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.set_audio_output_format(format),
+        }
+    }
+
+    pub(crate) fn set_playback_rate(&mut self, rate: f64) -> Option<String> {
+        match self {
+            Self::Mp4(session) => session.set_playback_rate(rate),
         }
     }
 

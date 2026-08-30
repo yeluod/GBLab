@@ -107,6 +107,7 @@
       [AudioCodec.G711A]: 'G.711 A-law',
       [AudioCodec.G711U]: 'G.711 μ-law',
       [AudioCodec.Aac]: 'AAC',
+      mp3: 'MP3',
       other: '其它音频',
     };
     return labels[codec] ?? '未知编码';
@@ -328,14 +329,14 @@
           <dd>{{ runtimeStatus.decodedFrames }}</dd>
           <dt>Read / Preview</dt>
           <dd>
-            {{ runtimeStatus.metrics.videoPacketsCaptured }} /
+            {{ runtimeStatus.metrics.videoPacketsRead }} /
             {{ runtimeStatus.metrics.videoPreviewFrames }}
           </dd>
           <dt>Encoded Video</dt>
           <dd>{{ runtimeStatus.metrics.videoPacketsEncoded }}</dd>
           <dt>Audio Packets / PCM</dt>
           <dd>
-            {{ runtimeStatus.metrics.audioPacketsCaptured }} /
+            {{ runtimeStatus.metrics.audioPacketsRead }} /
             {{ runtimeStatus.metrics.audioFramesDecoded }}
           </dd>
           <dt>Audio RMS / Peak</dt>

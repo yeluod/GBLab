@@ -22,9 +22,8 @@ pub use hub::{
 };
 use mp4::Mp4MediaSource;
 pub use packet::{
-    AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket, EncodedOutputInfo,
-    EncodedStreamDescriptor, FrameRate, MediaTimeBase, MediaTrackKind, RawAudioFrame,
-    RawVideoFrame, VideoCodec,
+    AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket,
+    EncodedStreamDescriptor, FrameRate, MediaTimeBase, MediaTrackKind, VideoCodec,
 };
 pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{

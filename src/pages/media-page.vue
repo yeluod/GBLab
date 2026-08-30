@@ -63,7 +63,6 @@
           :is-probing="store.isProbing"
           @select-mp4="runOperation(store.selectMp4)"
           @probe-mp4="runOperation(store.probeCurrentMp4, '媒体信息检测完成。')"
-          @select-recording-directory="runOperation(store.selectRecordingDirectory)"
         />
         <MediaStatusPanel
           :runtime-status="store.runtimeStatus"

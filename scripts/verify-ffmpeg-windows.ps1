@@ -38,7 +38,11 @@ foreach ($name in $lock.requiredLibraries) {
 $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
 if ($null -ne $dumpbin) {
   $imports = & $dumpbin.Source /DEPENDENTS $binaryPath | Out-String
-  foreach ($name in $lock.requiredLibraries) {
+  # requiredLibraries is the complete SDK/runtime closure shipped beside the
+  # executable. requiredRuntimeImports is the smaller set this MP4-only binary
+  # must reference directly; transitive/link-only libraries such as avdevice
+  # are still packaged and verified above without requiring a direct import.
+  foreach ($name in $lock.requiredRuntimeImports) {
     if ($imports -notlike "*$name*.dll*") { throw "Executable import table does not contain FFmpeg library $name" }
   }
   if ($imports -like '*ffmpeg.exe*' -or $imports -like '*ffprobe.exe*' -or $imports -like '*ffplay.exe*') { throw 'FFmpeg CLI executable was linked into the application' }

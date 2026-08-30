@@ -55,8 +55,6 @@ impl Default for AppConfiguration {
 pub struct MediaConfiguration {
     /// 媒体源配置。
     pub source: MediaSourceConfiguration,
-    /// 本地录像配置；第一阶段只保存设置，不执行录像。
-    pub recording: MediaRecordingConfiguration,
     /// 媒体页面偏好。
     pub preferences: MediaPreferences,
 }
@@ -66,7 +64,6 @@ pub struct MediaConfiguration {
 #[serde(default, rename_all = "camelCase")]
 pub struct MediaSourceConfiguration {
     /// 媒体源类型。
-    #[serde(deserialize_with = "deserialize_mp4_source_type")]
     pub r#type: MediaSourceType,
     /// MP4 文件配置。
     pub mp4: Mp4SourceConfiguration,
@@ -90,19 +87,6 @@ pub enum MediaSourceType {
     Mp4,
 }
 
-fn deserialize_mp4_source_type<'de, D>(deserializer: D) -> Result<MediaSourceType, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    match value.as_str() {
-        "mp4" | "camera" => Ok(MediaSourceType::Mp4),
-        _ => Err(<D::Error as serde::de::Error>::custom(format!(
-            "不支持的媒体源类型: {value}"
-        ))),
-    }
-}
-
 /// MP4 文件配置。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -118,28 +102,6 @@ impl Default for Mp4SourceConfiguration {
         Self {
             file_path: String::new(),
             is_looping: true,
-        }
-    }
-}
-
-/// 本地录像配置。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct MediaRecordingConfiguration {
-    /// 是否启用录像。
-    pub is_enabled: bool,
-    /// 录像目录。
-    pub directory: String,
-    /// 分片时长，单位为分钟。
-    pub segment_duration_minutes: u16,
-}
-
-impl Default for MediaRecordingConfiguration {
-    fn default() -> Self {
-        Self {
-            is_enabled: false,
-            directory: String::new(),
-            segment_duration_minutes: 10,
         }
     }
 }
@@ -444,23 +406,10 @@ impl ConfigurationStore {
 impl MediaConfiguration {
     fn normalize_and_validate(mut self) -> Result<Self, ConfigurationError> {
         self.source.mp4.file_path = self.source.mp4.file_path.trim().to_owned();
-        self.recording.directory = self.recording.directory.trim().to_owned();
         if self.source.mp4.file_path.len() > 4_096 {
             return Err(ConfigurationError::invalid_field(
                 "source.mp4.filePath",
                 "MP4 文件路径长度不能超过 4096 个字符",
-            ));
-        }
-        if self.recording.is_enabled && self.recording.directory.is_empty() {
-            return Err(ConfigurationError::invalid_field(
-                "recording.directory",
-                "启用录像后必须设置录像目录",
-            ));
-        }
-        if !matches!(self.recording.segment_duration_minutes, 5 | 10 | 30 | 60) {
-            return Err(ConfigurationError::invalid_field(
-                "recording.segmentDurationMinutes",
-                "录像分片时长必须为 5、10、30 或 60 分钟",
             ));
         }
         Ok(self)
@@ -729,22 +678,21 @@ mod tests {
     }
 
     #[test]
-    fn media_source_should_accept_mp4_and_legacy_camera_only()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn media_source_should_accept_mp4() -> Result<(), Box<dyn std::error::Error>> {
         let mp4: MediaSourceConfiguration =
             serde_json::from_str(r#"{"type":"mp4","mp4":{"filePath":"","isLooping":true}}"#)?;
-        let legacy: MediaSourceConfiguration =
-            serde_json::from_str(r#"{"type":"camera","mp4":{"filePath":"","isLooping":true}}"#)?;
         assert_eq!(mp4.r#type, MediaSourceType::Mp4);
-        assert_eq!(legacy.r#type, MediaSourceType::Mp4);
         Ok(())
     }
 
     #[test]
-    fn media_source_should_reject_unknown_type() {
-        let result: Result<MediaSourceConfiguration, _> =
-            serde_json::from_str(r#"{"type":"unknown","mp4":{"filePath":"","isLooping":true}}"#);
-        assert!(result.is_err());
+    fn media_source_should_reject_unsupported_and_legacy_types() {
+        for source_type in ["camera", "unknown"] {
+            let json =
+                format!(r#"{{"type":"{source_type}","mp4":{{"filePath":"","isLooping":true}}}}"#);
+            let result: Result<MediaSourceConfiguration, _> = serde_json::from_str(&json);
+            assert!(result.is_err(), "{source_type} must not be accepted");
+        }
     }
 
     #[test]

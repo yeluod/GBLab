@@ -20,13 +20,6 @@ describe('全局 MP4 媒体 Store', () => {
     expect(store.probeResult?.video.codec).toBe(VideoCodec.H265);
     expect(store.runtimeStatus.sourceStatus).toBe(MediaSourceStatus.Ready);
   });
-  it('录像开启时要求目录', async () => {
-    const store = useMediaStore();
-    await store.initialize();
-    store.draftConfig.recording.isEnabled = true;
-    store.draftConfig.recording.directory = '';
-    expect((await store.applyDraft()).ok).toBe(false);
-  });
   it('Apply 与 Save 遵循草稿生命周期', async () => {
     const store = useMediaStore();
     await store.initialize();

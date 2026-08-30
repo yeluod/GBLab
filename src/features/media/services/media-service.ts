@@ -14,7 +14,6 @@ export interface MediaService {
   saveConfig(config: GlobalMediaConfig): Promise<GlobalMediaConfig>;
   applyConfig(config: GlobalMediaConfig): Promise<MediaRuntimeStatus>;
   selectMp4(currentPath: string): Promise<string | null>;
-  selectRecordingDirectory(currentDirectory: string): Promise<string | null>;
   probeMp4(filePath: string): Promise<MediaProbeResult>;
   startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus>;
   stopPreview(): Promise<MediaRuntimeStatus>;

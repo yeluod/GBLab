@@ -15,7 +15,9 @@ use super::{
     AudioCodec, AudioStreamInfo, EncodedMediaCodec, EncodedMediaPacket, MediaError, MediaResult,
     MediaRuntimeMetrics, MediaTimeBase, MediaTrackKind, Mp4ProbeResult, VideoCodec,
     VideoStreamInfo,
-    audio_preview::{AudioOutputFormat, AudioPreviewDecoder, audio_levels},
+    audio_preview::{
+        AudioOutputFormat, AudioPcmFrame, AudioPreviewDecoder, AudioTempoProcessor, audio_levels,
+    },
     decoder::VideoDecoder,
     types::{MediaSource, MediaSourceSession, SourceReadOutput},
 };
@@ -119,26 +121,34 @@ impl MediaSource for Mp4MediaSource {
             .and_then(|index| context.streams().get(index))
             .and_then(|stream| gblab_ffmpeg_support::copy_codec_extradata(&stream.codecpar()))
             .map(Bytes::from);
-        let (audio_decoder, audio_error) = audio_stream_index
+        let audio_output_format = AudioOutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        let (audio_decoder, audio_tempo, audio_error) = audio_stream_index
             .and_then(|index| context.streams().get(index))
             .map(|stream| {
                 let time_base = MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
                     .ok_or_else(|| MediaError::AudioPreview("MP4 音频时间基无效".to_owned()))?;
-                AudioPreviewDecoder::new(
-                    &stream.codecpar(),
-                    time_base,
-                    AudioOutputFormat {
-                        sample_rate: 48_000,
-                        channels: 2,
-                    },
-                )
+                let decoder =
+                    AudioPreviewDecoder::new(&stream.codecpar(), time_base, audio_output_format)?;
+                let tempo = AudioTempoProcessor::new(audio_output_format, 1.0)?;
+                Ok::<_, MediaError>((decoder, tempo))
             })
-            .map_or((None, None), |result| match result {
-                Ok(decoder) => (Some(decoder), None),
-                Err(error) => (None, Some(format!("AudioDecode: {error}"))),
+            .map_or((None, None, None), |result| match result {
+                Ok((decoder, tempo)) => (Some(decoder), Some(tempo), None),
+                Err(error) => (None, None, Some(format!("AudioDecode: {error}"))),
             });
-        let timestamp_origin =
-            source_timestamp_origin(&context, video_stream_index, audio_stream_index);
+        // Container and stream `start_time` commonly report zero even when an
+        // AAC priming packet starts at -1024 samples. Probe the selected tracks'
+        // real first packet timestamps in an independent input context so the
+        // playback demuxer remains untouched.
+        let mut timestamp_context = self.open_context()?;
+        let timestamp_origin = source_timestamp_origin(
+            &mut timestamp_context,
+            video_stream_index,
+            audio_stream_index,
+        )?;
         Ok(MediaSourceSession::Mp4(Box::new(Mp4Session {
             context,
             probe,
@@ -151,6 +161,9 @@ impl MediaSource for Mp4MediaSource {
             video_codec_configuration,
             audio_codec_configuration,
             audio_decoder,
+            audio_tempo,
+            audio_output_format,
+            playback_rate: 1.0,
             audio_error,
             video_config_sent: false,
             audio_config_sent: false,
@@ -187,6 +200,9 @@ pub struct Mp4Session {
     video_codec_configuration: Option<Bytes>,
     audio_codec_configuration: Option<Bytes>,
     audio_decoder: Option<AudioPreviewDecoder>,
+    audio_tempo: Option<AudioTempoProcessor>,
+    audio_output_format: AudioOutputFormat,
+    playback_rate: f64,
     audio_error: Option<String>,
     video_config_sent: bool,
     audio_config_sent: bool,
@@ -212,7 +228,7 @@ impl Mp4Session {
     }
 
     pub(crate) const fn audio_preview_available(&self) -> bool {
-        self.audio_decoder.is_some()
+        self.audio_decoder.is_some() && self.audio_tempo.is_some()
     }
 
     pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
@@ -232,9 +248,84 @@ impl Mp4Session {
                 AudioPreviewDecoder::new(&stream.codecpar(), time_base, output_format)
             })
             .transpose()?;
+        let tempo = decoder
+            .as_ref()
+            .map(|_| AudioTempoProcessor::new(output_format, self.playback_rate))
+            .transpose()?;
         self.audio_decoder = decoder;
+        self.audio_tempo = tempo;
+        self.audio_output_format = output_format;
         self.audio_error = None;
         Ok(())
+    }
+
+    pub(crate) fn set_playback_rate(&mut self, rate: f64) -> Option<String> {
+        self.playback_rate = rate;
+        let decoder = self.audio_decoder.as_mut()?;
+        // A rate change starts a new local-audio generation. Discard decoder,
+        // resampler and tempo delay from the previous rate before accepting
+        // another packet, otherwise stale PCM can leak into the new queue.
+        decoder.flush();
+        match AudioTempoProcessor::new(self.audio_output_format, rate) {
+            Ok(processor) => {
+                self.audio_tempo = Some(processor);
+                self.audio_error = None;
+                None
+            }
+            Err(error) => {
+                let error = format!("AudioTempo: {error}");
+                self.audio_tempo = None;
+                self.audio_error = Some(error.clone());
+                Some(error)
+            }
+        }
+    }
+
+    fn decode_audio_preview(&mut self, packet: &AVPacket) -> MediaResult<Vec<AudioPcmFrame>> {
+        let Some(decoder) = self.audio_decoder.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let pcm_frames = decoder.decode(packet)?;
+        self.process_audio_frames(pcm_frames, false)
+    }
+
+    fn finish_audio_preview(&mut self) -> MediaResult<Vec<AudioPcmFrame>> {
+        let decoded = match self.audio_decoder.as_mut() {
+            Some(decoder) => decoder.finish()?,
+            None => return Ok(Vec::new()),
+        };
+        self.process_audio_frames(decoded, true)
+    }
+
+    fn process_audio_frames(
+        &mut self,
+        pcm_frames: Vec<AudioPcmFrame>,
+        finish: bool,
+    ) -> MediaResult<Vec<AudioPcmFrame>> {
+        let Some(processor) = self.audio_tempo.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let mut output = Vec::new();
+        for frame in pcm_frames {
+            output.extend(processor.process(&frame)?);
+        }
+        if finish {
+            output.extend(processor.finish()?);
+        }
+        Ok(output)
+    }
+
+    fn reset_audio_preview(&mut self) {
+        if let Some(decoder) = self.audio_decoder.as_mut() {
+            decoder.flush();
+        }
+        if let Some(processor) = self.audio_tempo.as_mut()
+            && let Err(error) = processor.reset()
+        {
+            let error = format!("AudioTempo: {error}");
+            self.audio_tempo = None;
+            self.audio_error = Some(error);
+        }
     }
 }
 
@@ -291,9 +382,7 @@ impl Mp4Session {
             )
             .map_err(|error| MediaError::Playback(error.to_string()))?;
         self.decoder.flush();
-        if let Some(decoder) = self.audio_decoder.as_mut() {
-            decoder.flush();
-        }
+        self.reset_audio_preview();
         self.video_bsf.flush();
         self.bsf_state = BsfState::Reading;
         if clear_pending {
@@ -331,16 +420,14 @@ impl Mp4Session {
         let mut packet = match self.context.read_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) if self.looping => {
-                let preview_frames = self.drain_video_for_loop()?;
-                let mut branch_errors = Vec::new();
+                let (preview_frames, mut branch_errors) = self.drain_video_for_loop()?;
                 let audio_frames = if self.preview_enabled {
-                    match self.audio_decoder.as_mut().map(AudioPreviewDecoder::finish) {
-                        Some(Ok(frames)) => frames,
-                        Some(Err(error)) => {
+                    match self.finish_audio_preview() {
+                        Ok(frames) => frames,
+                        Err(error) => {
                             branch_errors.push(format!("AudioDrain: {error}"));
                             Vec::new()
                         }
-                        None => Vec::new(),
                     }
                 } else {
                     Vec::new()
@@ -385,13 +472,12 @@ impl Mp4Session {
             Ok(None) => {
                 let mut branch_errors = Vec::new();
                 let audio_frames = if self.preview_enabled {
-                    match self.audio_decoder.as_mut().map(AudioPreviewDecoder::finish) {
-                        Some(Ok(frames)) => frames,
-                        Some(Err(error)) => {
+                    match self.finish_audio_preview() {
+                        Ok(frames) => frames,
+                        Err(error) => {
                             branch_errors.push(format!("AudioDrain: {error}"));
                             Vec::new()
                         }
-                        None => Vec::new(),
                     }
                 } else {
                     Vec::new()
@@ -402,7 +488,13 @@ impl Mp4Session {
                     (metrics.audio_rms, metrics.audio_peak) = audio_levels(&frame.samples);
                 }
                 let preview_frames = if self.preview_enabled {
-                    self.decoder.finish_preview()?
+                    match self.decoder.finish_preview() {
+                        Ok(frames) => frames,
+                        Err(error) => {
+                            branch_errors.push(format!("VideoPreview: {error}"));
+                            Vec::new()
+                        }
+                    }
                 } else {
                     Vec::new()
                 };
@@ -479,7 +571,7 @@ impl Mp4Session {
 
         if stream_index == self.video_stream_index {
             let mut metrics = MediaRuntimeMetrics::new();
-            metrics.video_packets_captured = 1;
+            metrics.video_packets_read = 1;
             // BSF output may be delayed or empty for an input packet. Keep the
             // source packet timestamp as a pacing fallback so preview playback
             // never turns into a tight demux loop just because no encoded packet
@@ -488,12 +580,20 @@ impl Mp4Session {
                 .or_else(|| valid_timestamp(packet.pts))
                 .map(|value| time_base.rescale(value, MediaTimeBase::MPEG_CLOCK));
             let mut preview_frames = Vec::new();
+            let mut branch_errors = Vec::new();
             if self.preview_enabled {
-                if let Some(frame) = self.decoder.decode_packet(&packet)? {
-                    preview_frames.push(frame);
-                }
-                while let Some(frame) = self.decoder.take_pending_frame() {
-                    preview_frames.push(frame);
+                match self.decoder.decode_packet(&packet) {
+                    Ok(frame) => {
+                        if let Some(frame) = frame {
+                            preview_frames.push(frame);
+                        }
+                        while let Some(frame) = self.decoder.take_pending_frame() {
+                            preview_frames.push(frame);
+                        }
+                    }
+                    Err(error) => {
+                        branch_errors.push(format!("VideoPreview: {error}"));
+                    }
                 }
                 metrics.video_frames_decoded = preview_frames.len() as u64;
                 metrics.video_preview_frames = preview_frames.len() as u64;
@@ -550,7 +650,7 @@ impl Mp4Session {
                 preview_frames,
                 audio_frames: Vec::new(),
                 metrics,
-                branch_errors: Vec::new(),
+                branch_errors,
                 retry_after: None,
                 looped,
                 end_of_stream: false,
@@ -559,20 +659,15 @@ impl Mp4Session {
 
         if self.audio_stream_index == Some(stream_index) {
             let mut metrics = MediaRuntimeMetrics::new();
-            metrics.audio_packets_captured = 1;
+            metrics.audio_packets_read = 1;
             let mut branch_errors = Vec::new();
             let audio_frames = if self.preview_enabled {
-                match self
-                    .audio_decoder
-                    .as_mut()
-                    .map(|decoder| decoder.decode(&packet))
-                {
-                    Some(Ok(frames)) => frames,
-                    Some(Err(error)) => {
+                match self.decode_audio_preview(&packet) {
+                    Ok(frames) => frames,
+                    Err(error) => {
                         branch_errors.push(format!("AudioPreview: {error}"));
                         Vec::new()
                     }
-                    None => Vec::new(),
                 }
             } else {
                 Vec::new()
@@ -717,9 +812,16 @@ impl Mp4Session {
         }
     }
 
-    fn drain_video_for_loop(&mut self) -> MediaResult<Vec<super::MediaVideoFrame>> {
+    fn drain_video_for_loop(&mut self) -> MediaResult<(Vec<super::MediaVideoFrame>, Vec<String>)> {
+        let mut branch_errors = Vec::new();
         let preview_frames = if self.preview_enabled {
-            self.decoder.finish_preview()?
+            match self.decoder.finish_preview() {
+                Ok(frames) => frames,
+                Err(error) => {
+                    branch_errors.push(format!("VideoPreview: {error}"));
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -760,7 +862,7 @@ impl Mp4Session {
                 }
             }
         }
-        Ok(preview_frames)
+        Ok((preview_frames, branch_errors))
     }
 }
 
@@ -801,10 +903,10 @@ fn video_info(
 }
 
 fn audio_info(parameters: &AVCodecParametersRef<'_>) -> MediaResult<AudioStreamInfo> {
-    let codec = if parameters.codec_id == ffi::AV_CODEC_ID_AAC {
-        AudioCodec::Aac
-    } else {
-        AudioCodec::Other
+    let codec = match parameters.codec_id {
+        ffi::AV_CODEC_ID_AAC => AudioCodec::Aac,
+        ffi::AV_CODEC_ID_MP3 => AudioCodec::Mp3,
+        _ => AudioCodec::Other,
     };
     Ok(AudioStreamInfo {
         codec,
@@ -858,7 +960,6 @@ fn encoded_packet(
         time_base,
         is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
         codec_configuration: None,
-        output_info: None,
     }
 }
 
@@ -871,11 +972,66 @@ fn valid_timestamp(value: i64) -> Option<i64> {
 }
 
 fn source_timestamp_origin(
-    context: &AVFormatContextInput,
+    context: &mut AVFormatContextInput,
     video_stream_index: usize,
     audio_stream_index: Option<usize>,
-) -> Option<i64> {
-    let stream_origin = [Some(video_stream_index), audio_stream_index]
+) -> MediaResult<Option<i64>> {
+    const PREROLL_PACKETS_PER_TRACK: usize = 64;
+    let mut video_origin = None;
+    let mut audio_origin = audio_stream_index.map(|_| None);
+    let mut video_packets = 0_usize;
+    let mut audio_packets = 0_usize;
+
+    while video_packets < PREROLL_PACKETS_PER_TRACK
+        || audio_stream_index.is_some() && audio_packets < PREROLL_PACKETS_PER_TRACK
+    {
+        let packet = match context.read_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(MediaError::Playback(format!(
+                    "读取 MP4 轨道起始时间戳失败：{error}"
+                )));
+            }
+        };
+        let Ok(stream_index) = usize::try_from(packet.stream_index) else {
+            continue;
+        };
+        if stream_index != video_stream_index && audio_stream_index != Some(stream_index) {
+            continue;
+        }
+        let first_timestamp = match (valid_timestamp(packet.dts), valid_timestamp(packet.pts)) {
+            (Some(dts), Some(pts)) => Some(dts.min(pts)),
+            (Some(timestamp), None) | (None, Some(timestamp)) => Some(timestamp),
+            (None, None) => None,
+        };
+        let Some(first_timestamp) = first_timestamp else {
+            continue;
+        };
+        let stream = context
+            .streams()
+            .get(stream_index)
+            .ok_or_else(|| MediaError::Playback("MP4 起始 packet 引用了无效轨道".to_owned()))?;
+        let time_base = MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
+            .ok_or_else(|| MediaError::Playback("MP4 轨道起始时间基无效".to_owned()))?;
+        let timestamp = time_base.rescale(first_timestamp, MediaTimeBase::MPEG_CLOCK);
+        if stream_index == video_stream_index {
+            video_packets = video_packets.saturating_add(1);
+            video_origin =
+                Some(video_origin.map_or(timestamp, |origin: i64| origin.min(timestamp)));
+        } else {
+            audio_packets = audio_packets.saturating_add(1);
+            if let Some(origin) = audio_origin.as_mut() {
+                *origin = Some(origin.map_or(timestamp, |origin: i64| origin.min(timestamp)));
+            }
+        }
+    }
+
+    let packet_origin = [video_origin, audio_origin.flatten()]
+        .into_iter()
+        .flatten()
+        .min();
+    let metadata_origin = [Some(video_stream_index), audio_stream_index]
         .into_iter()
         .flatten()
         .filter_map(|index| context.streams().get(index))
@@ -886,14 +1042,14 @@ fn source_timestamp_origin(
             })
         })
         .min();
-    stream_origin.or_else(|| {
+    Ok(packet_origin.or(metadata_origin).or_else(|| {
         valid_timestamp(context.start_time).and_then(|timestamp| {
             i32::try_from(ffi::AV_TIME_BASE)
                 .ok()
                 .and_then(|denominator| MediaTimeBase::new(1, denominator))
                 .map(|time_base| time_base.rescale(timestamp, MediaTimeBase::MPEG_CLOCK))
         })
-    })
+    }))
 }
 
 #[expect(clippy::cast_precision_loss, reason = "播放位置 API 使用 f64 秒精度")]
@@ -905,4 +1061,171 @@ fn timestamp_seconds(value: i64, time_base_denominator: i64) -> Option<f64> {
 fn scaled_timestamp(value: i64, numerator: i32, denominator: i32) -> Option<f64> {
     (value >= 0 && numerator > 0 && denominator > 0)
         .then_some(value as f64 * f64::from(numerator) / f64::from(denominator))
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::panic,
+        reason = "explicit panic messages preserve fixture and FFmpeg failures in unit-test diagnostics"
+    )]
+    use std::path::PathBuf;
+
+    use super::{BsfState, Mp4MediaSource};
+    use crate::media::types::{MediaSource, MediaSourceSession};
+    use crate::media::{MediaTimeBase, MediaTrackKind};
+
+    fn session(name: &str, looping: bool) -> Box<super::Mp4Session> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("assets")
+            .join(name);
+        match Mp4MediaSource::new(path).open(looping) {
+            Ok(MediaSourceSession::Mp4(session)) => session,
+            Err(error) => panic!("failed to open MP4 fixture {name}: {error}"),
+        }
+    }
+
+    #[test]
+    fn b_frame_source_pacing_should_prefer_dts() {
+        let mut session = session("h265-aac.mp4", false);
+
+        for _ in 0..256 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("failed to read B-frame fixture: {error}"),
+            };
+            let Some(packet) = output.packet else {
+                continue;
+            };
+            if packet.track == MediaTrackKind::Video && packet.pts != packet.dts {
+                let expected = packet
+                    .dts
+                    .map(|dts| packet.time_base.rescale(dts, MediaTimeBase::MPEG_CLOCK));
+                assert_eq!(output.pacing_timestamp, expected);
+                return;
+            }
+        }
+        panic!("fixture did not expose a B-frame packet");
+    }
+
+    #[test]
+    fn non_aac_audio_should_still_drive_source_pacing() {
+        let mut session = session("h264-unsupported-audio.mp4", false);
+
+        for _ in 0..512 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("failed to read MP3 fixture: {error}"),
+            };
+            if output.metrics.audio_packets_read > 0 {
+                assert!(output.packet.is_none(), "MP3 must remain preview-only");
+                assert!(output.pacing_timestamp.is_some());
+                return;
+            }
+        }
+        panic!("fixture did not expose an MP3 packet");
+    }
+
+    #[test]
+    fn no_audio_mp4_should_keep_video_pipeline_available() {
+        let mut session = session("h264-noaudio.mp4", false);
+        assert!(session.probe.audio.is_none());
+        assert!(session.audio_decoder.is_none());
+        assert!(session.audio_tempo.is_none());
+
+        for _ in 0..512 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("failed to read no-audio fixture: {error}"),
+            };
+            assert!(output.audio_frames.is_empty());
+            if output
+                .packet
+                .as_ref()
+                .is_some_and(|packet| packet.track == MediaTrackKind::Video)
+            {
+                return;
+            }
+        }
+        panic!("no-audio fixture did not expose a video packet");
+    }
+
+    #[test]
+    fn unavailable_audio_preview_branch_should_not_stop_video() {
+        let mut session = session("h264-aac.mp4", false);
+        session.audio_decoder = None;
+        session.audio_tempo = None;
+        session.audio_error = Some("AudioDecode: fixture decoder unavailable".to_owned());
+
+        for _ in 0..512 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("audio branch failure stopped source: {error}"),
+            };
+            if output
+                .packet
+                .as_ref()
+                .is_some_and(|packet| packet.track == MediaTrackKind::Video)
+            {
+                assert!(output.branch_errors.is_empty());
+                return;
+            }
+        }
+        panic!("video pipeline did not continue after audio preview became unavailable");
+    }
+
+    #[test]
+    fn eof_should_drain_bsf_once_and_remain_finished() {
+        let mut session = session("h265-noaudio.mp4", false);
+        let mut reached_eof = false;
+        for _ in 0..10_000 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("failed while draining MP4: {error}"),
+            };
+            if output.end_of_stream {
+                reached_eof = true;
+                break;
+            }
+        }
+        assert!(reached_eof);
+        assert_eq!(session.bsf_state, BsfState::Finished);
+        for _ in 0..3 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("finished BSF must be idempotent: {error}"),
+            };
+            assert!(output.end_of_stream);
+            assert!(output.packet.is_none());
+        }
+        assert_eq!(session.bsf_state, BsfState::Finished);
+    }
+
+    #[test]
+    fn loop_should_publish_audio_tail_before_new_generation_packet() {
+        let mut session = session("h264-aac.mp4", true);
+        let mut saw_drain_output = false;
+        let mut saw_loop_packet = false;
+        let mut saw_audio = false;
+        for _ in 0..10_000 {
+            let output = match session.read_source_output() {
+                Ok(output) => output,
+                Err(error) => panic!("failed while looping MP4: {error}"),
+            };
+            saw_audio |= !output.audio_frames.is_empty();
+            if session.loop_pending {
+                saw_drain_output = true;
+                assert!(output.branch_errors.is_empty());
+            }
+            if output.looped {
+                saw_loop_packet = true;
+                break;
+            }
+        }
+        assert!(saw_drain_output);
+        assert!(saw_audio);
+        assert!(saw_loop_packet);
+        assert_eq!(session.bsf_state, BsfState::Reading);
+    }
 }

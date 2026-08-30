@@ -1,9 +1,10 @@
 //! Decoded PCM preview, level metering and bounded native speaker output.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ffi::CString};
 
 use rsmpeg::{
     avcodec::{AVCodec, AVCodecContext, AVCodecParameters, AVPacket},
+    avfilter::{AVFilter, AVFilterGraph},
     avutil::{AVChannelLayout, AVFrame, AVRational},
     error::RsmpegError,
     ffi,
@@ -27,6 +28,197 @@ pub(super) struct AudioPcmFrame {
     pub(crate) pts: Option<i64>,
     /// PCM timestamp units are explicit: one unit is one sample at `sample_rate`.
     pub(crate) time_base: MediaTimeBase,
+}
+
+/// In-process `FFmpeg` `atempo` pipeline used by local MP4 audio preview.
+///
+/// Encoded AAC packets never enter this graph; they continue unchanged to the
+/// encoded stream hub. Rebuilding the graph is the explicit flush boundary for
+/// seek, loop and playback-rate generation changes.
+pub(super) struct AudioTempoProcessor {
+    graph: AVFilterGraph,
+    output_format: AudioOutputFormat,
+    rate: f64,
+}
+
+impl AudioTempoProcessor {
+    pub(crate) fn new(output_format: AudioOutputFormat, rate: f64) -> MediaResult<Self> {
+        let factors = atempo_factors(rate)?;
+        let graph = AVFilterGraph::new();
+        let source_filter = AVFilter::get_by_name(c"abuffer")
+            .ok_or_else(|| MediaError::AudioPreview("FFmpeg 缺少 abuffer filter".to_owned()))?;
+        let sink_filter = AVFilter::get_by_name(c"abuffersink")
+            .ok_or_else(|| MediaError::AudioPreview("FFmpeg 缺少 abuffersink filter".to_owned()))?;
+        let tempo_filter = AVFilter::get_by_name(c"atempo")
+            .ok_or_else(|| MediaError::AudioPreview("FFmpeg 缺少 atempo filter".to_owned()))?;
+        let layout = AVChannelLayout::from_nb_channels(i32::from(output_format.channels));
+        let layout = layout
+            .describe()
+            .map_err(|error| MediaError::AudioPreview(format!("读取输出声道布局失败：{error}")))?;
+        let source_args = CString::new(format!(
+            "time_base=1/{sample_rate}:sample_rate={sample_rate}:sample_fmt=flt:channel_layout={layout}",
+            sample_rate = output_format.sample_rate,
+            layout = layout.to_string_lossy(),
+        ))
+        .map_err(|_| MediaError::AudioPreview("atempo 输入参数包含 NUL".to_owned()))?;
+        let mut previous = graph
+            .create_filter_context(&source_filter, c"tempo_source", Some(&source_args))
+            .map_err(|error| {
+                MediaError::AudioPreview(format!("创建 atempo 输入 filter 失败：{error}"))
+            })?;
+        for (index, factor) in factors.iter().enumerate() {
+            let name = CString::new(format!("tempo_{index}"))
+                .map_err(|_| MediaError::AudioPreview("atempo filter 名称包含 NUL".to_owned()))?;
+            let args = CString::new(format!("tempo={factor:.8}"))
+                .map_err(|_| MediaError::AudioPreview("atempo 参数包含 NUL".to_owned()))?;
+            let mut next = graph
+                .create_filter_context(&tempo_filter, &name, Some(&args))
+                .map_err(|error| {
+                    MediaError::AudioPreview(format!("创建 atempo filter 失败：{error}"))
+                })?;
+            previous.link(0, &mut next, 0).map_err(|error| {
+                MediaError::AudioPreview(format!("连接 atempo filter 失败：{error}"))
+            })?;
+            previous = next;
+        }
+        let mut sink = graph
+            .create_filter_context(&sink_filter, c"tempo_sink", None)
+            .map_err(|error| {
+                MediaError::AudioPreview(format!("创建 atempo 输出 filter 失败：{error}"))
+            })?;
+        previous.link(0, &mut sink, 0).map_err(|error| {
+            MediaError::AudioPreview(format!("连接 atempo 输出 filter 失败：{error}"))
+        })?;
+        drop(previous);
+        drop(sink);
+        graph.config().map_err(|error| {
+            MediaError::AudioPreview(format!("配置 atempo filter graph 失败：{error}"))
+        })?;
+        Ok(Self {
+            graph,
+            output_format,
+            rate,
+        })
+    }
+
+    pub(crate) fn process(&self, frame: &AudioPcmFrame) -> MediaResult<Vec<AudioPcmFrame>> {
+        let channels = usize::from(self.output_format.channels);
+        if channels == 0 || !frame.samples.len().is_multiple_of(channels) {
+            return Err(MediaError::AudioPreview(
+                "PCM 样本数量与输出声道数不匹配".to_owned(),
+            ));
+        }
+        let sample_count = frame.samples.len() / channels;
+        let sample_count = i32::try_from(sample_count)
+            .map_err(|_| MediaError::AudioPreview("PCM frame 过大".to_owned()))?;
+        if sample_count == 0 {
+            return Ok(Vec::new());
+        }
+        let sample_rate = i32::try_from(self.output_format.sample_rate)
+            .map_err(|_| MediaError::AudioPreview("输出采样率超出范围".to_owned()))?;
+        let processor_time_base = MediaTimeBase::new(1, sample_rate)
+            .ok_or_else(|| MediaError::AudioPreview("atempo 时间基无效".to_owned()))?;
+        let mut input = AVFrame::new();
+        input.set_format(ffi::AV_SAMPLE_FMT_FLT);
+        input.set_sample_rate(sample_rate);
+        input.set_ch_layout(
+            AVChannelLayout::from_nb_channels(i32::from(self.output_format.channels)).into_inner(),
+        );
+        input.set_nb_samples(sample_count);
+        input.set_pts(frame.pts.map_or(ffi::AV_NOPTS_VALUE, |pts| {
+            frame.time_base.rescale(pts, processor_time_base)
+        }));
+        input
+            .alloc_buffer()
+            .map_err(|error| MediaError::AudioPreview(format!("分配 atempo PCM 失败：{error}")))?;
+        if !gblab_ffmpeg_support::write_interleaved_f32(&mut input, &frame.samples) {
+            return Err(MediaError::AudioPreview(
+                "写入 atempo PCM buffer 失败".to_owned(),
+            ));
+        }
+        self.source_context()?
+            .buffersrc_add_frame(Some(input), None)
+            .map_err(|error| MediaError::AudioPreview(format!("提交 atempo PCM 失败：{error}")))?;
+        self.drain(false)
+    }
+
+    pub(crate) fn finish(&self) -> MediaResult<Vec<AudioPcmFrame>> {
+        self.source_context()?
+            .buffersrc_add_frame(None, None)
+            .map_err(|error| MediaError::AudioPreview(format!("排空 atempo 输入失败：{error}")))?;
+        self.drain(true)
+    }
+
+    pub(crate) fn reset(&mut self) -> MediaResult<()> {
+        *self = Self::new(self.output_format, self.rate)?;
+        Ok(())
+    }
+
+    fn source_context(&self) -> MediaResult<rsmpeg::avfilter::AVFilterContextMut<'_>> {
+        self.graph
+            .get_filter(c"tempo_source")
+            .ok_or_else(|| MediaError::AudioPreview("atempo 输入 filter 已丢失".to_owned()))
+    }
+
+    fn drain(&self, finishing: bool) -> MediaResult<Vec<AudioPcmFrame>> {
+        let mut sink = self
+            .graph
+            .get_filter(c"tempo_sink")
+            .ok_or_else(|| MediaError::AudioPreview("atempo 输出 filter 已丢失".to_owned()))?;
+        let sink_time_base = sink.get_time_base();
+        let time_base = MediaTimeBase::new(sink_time_base.num, sink_time_base.den)
+            .ok_or_else(|| MediaError::AudioPreview("atempo 输出时间基无效".to_owned()))?;
+        let mut output = Vec::new();
+        loop {
+            match sink.buffersink_get_frame(None) {
+                Ok(frame) => {
+                    let samples =
+                        gblab_ffmpeg_support::copy_interleaved_f32(&frame).ok_or_else(|| {
+                            MediaError::AudioPreview("读取 atempo PCM 失败".to_owned())
+                        })?;
+                    output.push(AudioPcmFrame {
+                        samples,
+                        pts: (frame.pts != ffi::AV_NOPTS_VALUE).then_some(frame.pts),
+                        time_base,
+                    });
+                }
+                Err(RsmpegError::BufferSinkDrainError | RsmpegError::BufferSinkEofError) => break,
+                Err(error) if finishing => {
+                    return Err(MediaError::AudioPreview(format!(
+                        "排空 atempo 输出失败：{error}"
+                    )));
+                }
+                Err(error) => {
+                    return Err(MediaError::AudioPreview(format!(
+                        "读取 atempo 输出失败：{error}"
+                    )));
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn atempo_factors(rate: f64) -> MediaResult<Vec<f64>> {
+    if !rate.is_finite() || !(0.25..=4.0).contains(&rate) {
+        return Err(MediaError::AudioPreview(
+            "音频倍速必须介于 0.25 和 4.0".to_owned(),
+        ));
+    }
+    let mut remaining = rate;
+    let mut factors = Vec::new();
+    if remaining < 0.5 {
+        factors.push(0.5);
+        remaining /= 0.5;
+    }
+    if remaining > 2.0 {
+        factors.push(2.0);
+        remaining /= 2.0;
+    }
+    if (remaining - 1.0).abs() > f64::EPSILON {
+        factors.push(remaining);
+    }
+    Ok(factors)
 }
 
 /// Decodes one audio stream and converts it to packed `f32` PCM for metering and playback.
@@ -553,7 +745,15 @@ impl AudioPreviewSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{audio_levels, controlled_sample};
+    #![expect(
+        clippy::panic,
+        reason = "explicit panic messages preserve FFmpeg failures in unit-test diagnostics"
+    )]
+    use super::{
+        AudioOutputFormat, AudioPcmFrame, AudioTempoProcessor, atempo_factors, audio_levels,
+        controlled_sample,
+    };
+    use crate::media::MediaTimeBase;
 
     #[test]
     fn silence_should_have_zero_rms_and_peak() {
@@ -572,6 +772,120 @@ mod tests {
         assert!(controlled_sample(0.8, true, 1.0).abs() < f32::EPSILON);
         assert!((controlled_sample(0.8, false, 0.25) - 0.2).abs() < f32::EPSILON);
         assert!((controlled_sample(0.8, false, 2.0) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn atempo_chain_should_cover_all_supported_rates() {
+        assert_eq!(atempo_factors(0.25).ok(), Some(vec![0.5, 0.5]));
+        assert_eq!(atempo_factors(0.5).ok(), Some(vec![0.5]));
+        assert_eq!(atempo_factors(1.0).ok(), Some(Vec::new()));
+        assert_eq!(atempo_factors(1.5).ok(), Some(vec![1.5]));
+        assert_eq!(atempo_factors(2.0).ok(), Some(vec![2.0]));
+        assert_eq!(atempo_factors(4.0).ok(), Some(vec![2.0, 2.0]));
+        assert!(atempo_factors(0.1).is_err());
+    }
+
+    #[test]
+    fn atempo_reset_should_discard_the_previous_audio_generation() {
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u16 = 2;
+        let format = AudioOutputFormat {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+        };
+        let time_base =
+            MediaTimeBase::new(1, SAMPLE_RATE.cast_signed()).unwrap_or(MediaTimeBase::MPEG_CLOCK);
+        let mut processor = match AudioTempoProcessor::new(format, 0.5) {
+            Ok(processor) => processor,
+            Err(error) => panic!("failed to create atempo: {error}"),
+        };
+        let old_generation = AudioPcmFrame {
+            samples: vec![0.1; 2_000 * usize::from(CHANNELS)],
+            pts: Some(0),
+            time_base,
+        };
+        assert!(processor.process(&old_generation).is_ok());
+        assert!(processor.reset().is_ok());
+
+        let mut output = Vec::new();
+        for index in 0..8 {
+            let new_generation = AudioPcmFrame {
+                samples: vec![0.8; 2_000 * usize::from(CHANNELS)],
+                pts: Some(i64::from(index) * 2_000),
+                time_base,
+            };
+            match processor.process(&new_generation) {
+                Ok(frames) => output.extend(frames),
+                Err(error) => panic!("failed to process reset atempo: {error}"),
+            }
+        }
+        match processor.finish() {
+            Ok(frames) => output.extend(frames),
+            Err(error) => panic!("failed to drain reset atempo: {error}"),
+        }
+        assert!(!output.is_empty());
+        assert!(
+            output
+                .iter()
+                .flat_map(|frame| &frame.samples)
+                .all(|sample| { (*sample - 0.8).abs() < 0.001 })
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The test compares bounded sample counts with a floating-point ratio"
+    )]
+    fn atempo_should_scale_pcm_duration_for_all_supported_rates() {
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u16 = 2;
+        let format = AudioOutputFormat {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+        };
+        let time_base =
+            MediaTimeBase::new(1, SAMPLE_RATE.cast_signed()).unwrap_or(MediaTimeBase::MPEG_CLOCK);
+
+        for rate in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
+            let processor = match AudioTempoProcessor::new(format, rate) {
+                Ok(processor) => processor,
+                Err(error) => panic!("failed to create atempo {rate}: {error}"),
+            };
+            let mut output_samples = 0_usize;
+            for index in 0..48 {
+                let frame = AudioPcmFrame {
+                    samples: vec![0.1; 1_000 * usize::from(CHANNELS)],
+                    pts: Some(i64::from(index) * 1_000),
+                    time_base,
+                };
+                let output = match processor.process(&frame) {
+                    Ok(output) => output,
+                    Err(error) => panic!("failed to process atempo {rate}: {error}"),
+                };
+                output_samples = output_samples.saturating_add(
+                    output
+                        .iter()
+                        .map(|frame| frame.samples.len() / usize::from(CHANNELS))
+                        .sum::<usize>(),
+                );
+            }
+            let tail = match processor.finish() {
+                Ok(output) => output,
+                Err(error) => panic!("failed to drain atempo {rate}: {error}"),
+            };
+            output_samples = output_samples.saturating_add(
+                tail.iter()
+                    .map(|frame| frame.samples.len() / usize::from(CHANNELS))
+                    .sum::<usize>(),
+            );
+            let expected = (f64::from(SAMPLE_RATE) / rate).round();
+            let relative_error = ((output_samples as f64) - expected).abs() / expected;
+            assert!(
+                relative_error < 0.08,
+                "unexpected atempo duration for {rate}: {output_samples} vs {expected}"
+            );
+        }
     }
 }
 

@@ -9,7 +9,8 @@ describe('normalizeDetectedAudioCodec', () => {
     expect(normalizeDetectedAudioCodec(AudioCodec.G711A)).toBe(AudioCodec.G711A);
   });
 
-  it('maps unknown source codecs to other', () => {
-    expect(normalizeDetectedAudioCodec('mp3')).toBe('other');
+  it('distinguishes MP3 from unknown source codecs', () => {
+    expect(normalizeDetectedAudioCodec('mp3')).toBe('mp3');
+    expect(normalizeDetectedAudioCodec('opus')).toBe('other');
   });
 });

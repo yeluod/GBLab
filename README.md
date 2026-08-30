@@ -16,12 +16,12 @@ GBLab 是面向开发联调与压测的 GB28181 多设备模拟器桌面应用�
 ## 媒体核心
 
 应用只维护一套全局媒体源，所有模拟设备和通道共享。`GlobalMediaRuntime` 的专用 owner
-线程独占 FFmpeg 输入、解码器、重采样器和编码器；Tauri 命令只通过有界命令队列控制
+线程独占 FFmpeg 输入、解码器、重采样器、tempo 和 bitstream filter；Tauri 命令只通过有界命令队列控制
 打开、播放、暂停、停止、关闭、Seek 和单帧操作，不直接持有 FFmpeg context。
 
 - MP4 只解封装一次；H.264/H.265 通过 FFmpeg bitstream filter 输出 Annex-B，AAC 直接透传。
-- 编码音视频统一归一化到 90 kHz 单调时间线，再通过有界 fan-out 独立提供给 Preview、Recorder 和 Live consumer。
-- Preview 使用可丢帧的独立队列和二进制 Tauri IPC，不以 JSON 数组传输 RGBA，也不会阻塞录像或直播消费者。
+- 编码音视频统一归一化到 90 kHz 单调时间线，再通过有界 fan-out 独立提供给 Recorder 和 Live consumer。
+- Preview 使用独立的有界可丢帧队列和二进制 Tauri IPC，不以 JSON 数组传输 RGBA，也不会阻塞 Recorder 或 Live consumer。
 
 当前媒体核心不包含 MPEG-PS、RTP、SIP `INVITE` 媒体会话、实际录像文件写入和历史回放；这些能力应直接消费现有 `EncodedMediaPacket`，不得重复打开全局 MP4 源。
 

@@ -142,7 +142,6 @@ mod tests {
             time_base: MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
             is_keyframe: true,
             codec_configuration: None,
-            output_info: None,
         }
     }
 
@@ -175,7 +174,6 @@ mod tests {
             time_base: MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
             is_keyframe: false,
             codec_configuration: None,
-            output_info: None,
         };
         clock.normalize(&mut packet);
 

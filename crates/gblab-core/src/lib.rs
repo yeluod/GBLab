@@ -16,9 +16,8 @@ mod error;
 
 pub use application::{CoreInfo, CoreService, DevicePage};
 pub use configuration::{
-    DeviceCollectionConfiguration, MediaConfiguration, MediaPreferences,
-    MediaRecordingConfiguration, MediaSourceConfiguration, MediaSourceType, Mp4SourceConfiguration,
-    SignalCharset, SipServiceConfiguration, SipTransport,
+    DeviceCollectionConfiguration, MediaConfiguration, MediaPreferences, MediaSourceConfiguration,
+    MediaSourceType, Mp4SourceConfiguration, SignalCharset, SipServiceConfiguration, SipTransport,
 };
 pub use domain::{
     BatchDeviceDraft, DeviceKind, DeviceSnapshot, DeviceUpdateDraft, SimulatedChannel,

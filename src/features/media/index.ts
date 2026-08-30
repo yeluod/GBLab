@@ -24,7 +24,6 @@ export type {
   MediaPreferences,
   MediaSourceConfig,
   Mp4SourceConfig,
-  RecordingConfig,
 } from './types/media-config';
 export { MediaSourceStatus, normalizeDetectedAudioCodec } from './types/media-runtime';
 export type {

@@ -2,7 +2,6 @@
 
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU8, Ordering},
     sync::{Arc, Mutex, RwLock, mpsc},
     thread,
     time::{Duration, Instant},
@@ -15,8 +14,6 @@ use super::{
     Mp4MediaSource,
     types::{AudioSinkInfo, AudioSinkStatus, MediaSource, MediaSourceSession},
 };
-use gblab_ffmpeg_support::InterruptReason;
-
 const COMMAND_CAPACITY: usize = 32;
 const PREVIEW_CAPACITY: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,24 +63,16 @@ pub struct GlobalMediaHandle {
     commands: mpsc::SyncSender<MediaCommand>,
     status: Arc<RwLock<MediaRuntimeStatus>>,
     preview: Arc<Mutex<mpsc::Receiver<MediaVideoFrame>>>,
-    interrupt: Arc<AtomicU8>,
 }
 
 impl GlobalMediaHandle {
     /// Opens the single MP4 source on the owner worker.
     pub fn open_mp4(&self, path: PathBuf, looping: bool) -> MediaResult<MediaRuntimeStatus> {
-        self.interrupt
-            .store(InterruptReason::Reconfigure as u8, Ordering::Release);
-        let result = self.request_status(|reply| MediaCommand::OpenMp4 {
+        self.request_status(|reply| MediaCommand::OpenMp4 {
             path,
             looping,
             reply,
-        });
-        if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
-            self.interrupt
-                .store(InterruptReason::None as u8, Ordering::Release);
-        }
-        result
+        })
     }
 
     /// Starts or resumes the source.
@@ -98,25 +87,22 @@ impl GlobalMediaHandle {
 
     /// Detaches the UI preview consumer; source shutdown is demand-driven.
     pub fn detach_preview(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(
-            InterruptReason::PreviewDetach,
-            MediaCommand::DetachPreview,
-        )
+        self.request_status(MediaCommand::DetachPreview)
     }
 
     /// Pauses source production.
     pub fn pause(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(InterruptReason::Pause, MediaCommand::Pause)
+        self.request_status(MediaCommand::Pause)
     }
 
     /// Stops production and resets the active MP4 session to its beginning.
     pub fn stop(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(InterruptReason::Stop, MediaCommand::Stop)
+        self.request_status(MediaCommand::Stop)
     }
 
     /// Closes the current source and releases every owned codec/input context.
     pub fn close(&self) -> MediaResult<MediaRuntimeStatus> {
-        self.request_interrupting_status(InterruptReason::Close, MediaCommand::Close)
+        self.request_status(MediaCommand::Close)
     }
 
     /// Resets an MP4 source to its beginning.
@@ -211,31 +197,11 @@ impl GlobalMediaHandle {
         self.send(build(reply))?;
         match receiver.recv_timeout(COMMAND_TIMEOUT) {
             Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Cancel blocking source work before reporting timeout. The worker checks this
-                // interrupt flag in the FFmpeg input callback before the caller abandons the request.
-                self.interrupt
-                    .store(InterruptReason::Timeout as u8, Ordering::Release);
-                Err(MediaError::CommandTimedOut)
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MediaError::CommandTimedOut),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaError::RuntimeUnavailable(
                 "媒体 worker 已停止".to_owned(),
             )),
         }
-    }
-
-    fn request_interrupting_status(
-        &self,
-        reason: InterruptReason,
-        build: impl FnOnce(StatusReply) -> MediaCommand,
-    ) -> MediaResult<MediaRuntimeStatus> {
-        self.interrupt.store(reason as u8, Ordering::Release);
-        let result = self.request_status(build);
-        if matches!(result, Err(MediaError::RuntimeUnavailable(_))) {
-            self.interrupt
-                .store(InterruptReason::None as u8, Ordering::Release);
-        }
-        result
     }
 
     fn send(&self, command: MediaCommand) -> MediaResult<()> {
@@ -260,29 +226,41 @@ pub struct GlobalMediaRuntime {
 
 impl GlobalMediaRuntime {
     /// Starts the dedicated media owner thread.
-    #[must_use]
-    pub fn start() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::RuntimeUnavailable`] when the operating system
+    /// cannot create the owner thread.
+    pub fn start() -> MediaResult<Self> {
+        Self::start_with_spawner(|job| {
+            thread::Builder::new()
+                .name("gblab-media-source".to_owned())
+                .spawn(job)
+        })
+    }
+
+    fn start_with_spawner<F>(spawner: F) -> MediaResult<Self>
+    where
+        F: FnOnce(Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<thread::JoinHandle<()>>,
+    {
         let (commands, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (preview_sender, preview_receiver) = mpsc::sync_channel(PREVIEW_CAPACITY);
         let status = Arc::new(RwLock::new(MediaRuntimeStatus::unconfigured()));
-        let interrupt = Arc::new(AtomicU8::new(InterruptReason::None as u8));
         let worker_status = Arc::clone(&status);
-        let worker_interrupt = Arc::clone(&interrupt);
-        let worker = thread::Builder::new()
-            .name("gblab-media-source".to_owned())
-            .spawn(move || {
-                MediaWorker::new(receiver, preview_sender, worker_status, worker_interrupt).run();
-            })
-            .ok();
-        Self {
+        let worker = spawner(Box::new(move || {
+            MediaWorker::new(receiver, preview_sender, worker_status).run();
+        }))
+        .map_err(|error| {
+            MediaError::RuntimeUnavailable(format!("创建媒体 worker 失败: {error}"))
+        })?;
+        Ok(Self {
             handle: GlobalMediaHandle {
                 commands,
                 status,
                 preview: Arc::new(Mutex::new(preview_receiver)),
-                interrupt,
             },
-            worker: Mutex::new(worker),
-        }
+            worker: Mutex::new(Some(worker)),
+        })
     }
 
     /// Returns a cloneable command handle.
@@ -293,9 +271,6 @@ impl GlobalMediaRuntime {
 
     /// Stops and joins the owner thread. Calling this more than once is harmless.
     pub fn shutdown(&self) -> MediaResult<()> {
-        self.handle
-            .interrupt
-            .store(InterruptReason::Shutdown as u8, Ordering::Release);
         let (reply, receiver) = mpsc::sync_channel(1);
         if self
             .handle
@@ -327,12 +302,6 @@ impl Drop for GlobalMediaRuntime {
     }
 }
 
-impl Default for GlobalMediaRuntime {
-    fn default() -> Self {
-        Self::start()
-    }
-}
-
 struct MediaWorker {
     commands: mpsc::Receiver<MediaCommand>,
     preview: mpsc::SyncSender<MediaVideoFrame>,
@@ -344,7 +313,6 @@ struct MediaWorker {
     next_read_at: Instant,
     pacing_anchor: Option<Instant>,
     last_media_timestamp: Option<i64>,
-    interrupt: Arc<AtomicU8>,
     preview_attached: bool,
     audio_sink: Option<AudioPreviewSink>,
     last_audio_activity: Option<Instant>,
@@ -355,7 +323,6 @@ impl MediaWorker {
         commands: mpsc::Receiver<MediaCommand>,
         preview: mpsc::SyncSender<MediaVideoFrame>,
         shared_status: Arc<RwLock<MediaRuntimeStatus>>,
-        interrupt: Arc<AtomicU8>,
     ) -> Self {
         Self {
             commands,
@@ -368,7 +335,6 @@ impl MediaWorker {
             next_read_at: Instant::now(),
             pacing_anchor: None,
             last_media_timestamp: None,
-            interrupt,
             preview_attached: false,
             audio_sink: None,
             last_audio_activity: None,
@@ -416,17 +382,6 @@ impl MediaWorker {
                 continue;
             }
             if let Err(error) = self.produce_once() {
-                let interrupt = InterruptReason::from_u8(
-                    self.interrupt
-                        .swap(InterruptReason::None as u8, Ordering::AcqRel),
-                );
-                if interrupt != InterruptReason::None {
-                    // An interrupt is the expected wake-up path for pause, stop,
-                    // close, detach and reconfigure.  The queued command owns
-                    // the final state transition; do not expose AVERROR_EXIT as
-                    // a user-visible source failure.
-                    continue;
-                }
                 self.status.source_status = MediaSourceStatus::Stopped;
                 self.status.last_error = Some(format!("FatalSource: {error}"));
                 self.publish_status();
@@ -476,14 +431,6 @@ impl MediaWorker {
             self.status.metrics.audio_rms = 0.0;
             self.status.metrics.audio_peak = 0.0;
         }
-        let encoded_branch_failed = output
-            .branch_errors
-            .iter()
-            .any(|error| error.starts_with("VideoEncode:") || error.starts_with("AudioEncode:"));
-        if encoded_branch_failed {
-            self.hub.disconnect_encoded_consumers();
-            let _ = self.reconcile_runtime_demand();
-        }
         let branch_errors = output.branch_errors;
         if let Some(error) = branch_errors.iter().next_back().cloned() {
             self.status.last_pipeline_error = Some(error);
@@ -496,7 +443,6 @@ impl MediaWorker {
             self.status.last_pipeline_error = None;
         }
         if self.preview_attached
-            && self.status.source_kind == Some(MediaSourceKind::Mp4)
             && let Some(sink) = self.audio_sink.as_ref()
         {
             for frame in output.audio_frames {
@@ -534,8 +480,6 @@ impl MediaWorker {
         reason = "The owner thread keeps serialized media commands in one explicit dispatcher"
     )]
     fn handle_command(&mut self, command: MediaCommand) -> bool {
-        self.interrupt
-            .store(InterruptReason::None as u8, Ordering::Release);
         match command {
             MediaCommand::OpenMp4 {
                 path,
@@ -545,7 +489,7 @@ impl MediaWorker {
                 let result = self
                     .ensure_source_replacement_allowed()
                     .and_then(|()| Mp4MediaSource::new(path).open(looping))
-                    .map(|session| self.replace_session(session, MediaSourceKind::Mp4));
+                    .map(|session| self.replace_session(session));
                 Self::reply_status(&reply, result);
             }
             MediaCommand::Play(reply) => {
@@ -566,9 +510,7 @@ impl MediaWorker {
                     self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
                         position / self.status.playback_rate.max(0.01),
                     ));
-                    self.sync_audio_sink_playback(
-                        self.status.source_kind == Some(MediaSourceKind::Mp4),
-                    );
+                    self.sync_audio_sink_playback(true);
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
@@ -637,7 +579,33 @@ impl MediaWorker {
                         "存在 Live/Recorder 消费者时不能修改全局播放倍速".to_owned(),
                     ))
                 } else if rate.is_finite() && (0.25..=4.0).contains(&rate) {
+                    let audio_error = match self
+                        .session
+                        .as_mut()
+                        .ok_or(MediaError::NoSourceOpen)
+                        .map(|session| session.set_playback_rate(rate))
+                    {
+                        Ok(error) => error,
+                        Err(error) => {
+                            Self::reply_status(&reply, Err(error));
+                            self.publish_status();
+                            return true;
+                        }
+                    };
                     self.status.playback_rate = rate;
+                    if let Some(error) = audio_error {
+                        self.status.last_pipeline_error = Some(error);
+                    } else if self
+                        .status
+                        .last_pipeline_error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("AudioTempo:"))
+                    {
+                        self.status.last_pipeline_error = None;
+                    }
+                    if let Some(sink) = self.audio_sink.as_ref() {
+                        sink.clear();
+                    }
                     let current = self
                         .last_media_timestamp
                         .map(MediaClock::timestamp_seconds)
@@ -707,11 +675,7 @@ impl MediaWorker {
         true
     }
 
-    fn replace_session(
-        &mut self,
-        session: MediaSourceSession,
-        source_kind: MediaSourceKind,
-    ) -> MediaRuntimeStatus {
+    fn replace_session(&mut self, session: MediaSourceSession) -> MediaRuntimeStatus {
         if let Some(sink) = self.audio_sink.take() {
             sink.clear();
         }
@@ -723,7 +687,7 @@ impl MediaWorker {
         self.last_media_timestamp = None;
         self.reset_or_continue_clock();
         self.status = MediaRuntimeStatus::ready(
-            source_kind,
+            MediaSourceKind::Mp4,
             probe.video,
             probe.audio,
             probe.duration_seconds,
@@ -1020,19 +984,12 @@ const fn unavailable_audio_sink(error: String) -> AudioSinkInfo {
 }
 
 fn pipeline_error_recovered(error: &str, metrics: super::MediaRuntimeMetrics) -> bool {
-    if error.starts_with("PreviewConversion:") {
-        return metrics.video_preview_frames > 0;
-    }
-    if error.starts_with("VideoEncode:") {
-        return metrics.video_packets_encoded > 0;
-    }
-    if error.starts_with("AudioEncode:") {
-        return metrics.audio_packets_encoded > 0;
-    }
-    (error.starts_with("AudioDecode:")
-        || error.starts_with("AudioPreview:")
-        || error.starts_with("AudioDrain:"))
-        && metrics.audio_frames_decoded > 0
+    (error.starts_with("VideoPreview:") && metrics.video_preview_frames > 0)
+        || ((error.starts_with("AudioDecode:")
+            || error.starts_with("AudioPreview:")
+            || error.starts_with("AudioDrain:")
+            || error.starts_with("AudioTempo:"))
+            && metrics.audio_frames_decoded > 0)
 }
 
 fn pacing_deadline(anchor: Instant, media_seconds: f64, rate: f64) -> Instant {
@@ -1042,9 +999,14 @@ fn pacing_deadline(anchor: Instant, media_seconds: f64, rate: f64) -> Instant {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::panic,
+        reason = "the runtime test helper reports worker-start failures with full context"
+    )]
     use std::{
+        io,
         path::PathBuf,
-        sync::{Arc, atomic::AtomicU8, mpsc},
+        sync::{Arc, mpsc},
         time::{Duration, Instant},
     };
 
@@ -1055,9 +1017,16 @@ mod tests {
     use crate::media::MediaRuntimeMetrics;
     use crate::media::{AudioSinkStatus, MediaError, MediaSourceStatus};
 
+    fn start_runtime() -> GlobalMediaRuntime {
+        match GlobalMediaRuntime::start() {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("failed to start media runtime: {error}"),
+        }
+    }
+
     #[test]
     fn runtime_should_start_and_shutdown_without_a_source() {
-        let runtime = GlobalMediaRuntime::start();
+        let runtime = start_runtime();
 
         assert_eq!(
             runtime.handle().status().source_status,
@@ -1069,9 +1038,6 @@ mod tests {
     #[test]
     fn pipeline_error_should_clear_only_after_the_same_branch_recovers() {
         let mut metrics = MediaRuntimeMetrics::default();
-        assert!(!pipeline_error_recovered("VideoEncode: failed", metrics));
-        metrics.video_packets_encoded = 1;
-        assert!(pipeline_error_recovered("VideoEncode: failed", metrics));
         assert!(!pipeline_error_recovered("AudioDecode: failed", metrics));
         metrics.audio_frames_decoded = 1;
         assert!(pipeline_error_recovered("AudioDecode: failed", metrics));
@@ -1084,9 +1050,7 @@ mod tests {
         let shared_status = Arc::new(std::sync::RwLock::new(
             crate::media::MediaRuntimeStatus::unconfigured(),
         ));
-        let interrupt = Arc::new(AtomicU8::new(0));
-        let mut worker =
-            MediaWorker::new(command_receiver, preview_sender, shared_status, interrupt);
+        let mut worker = MediaWorker::new(command_receiver, preview_sender, shared_status);
         worker.status.audio_sink = Some(unavailable_audio_sink("speaker unavailable".to_owned()));
         worker.status.last_pipeline_error = Some("AudioSink: speaker unavailable".to_owned());
 
@@ -1108,7 +1072,7 @@ mod tests {
 
     #[test]
     fn commands_should_preserve_no_source_error() {
-        let runtime = GlobalMediaRuntime::start();
+        let runtime = start_runtime();
 
         assert!(matches!(
             runtime.handle().play(),
@@ -1136,8 +1100,8 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_interrupts_should_not_publish_a_source_error() {
-        let runtime = GlobalMediaRuntime::start();
+    fn lifecycle_commands_should_not_publish_a_source_error() {
+        let runtime = start_runtime();
         let handle = runtime.handle();
         let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -1154,7 +1118,7 @@ mod tests {
 
     #[test]
     fn mp4_worker_should_support_full_control_and_source_replacement_lifecycle() {
-        let runtime = GlobalMediaRuntime::start();
+        let runtime = start_runtime();
         let handle = runtime.handle();
         let asset = |name: &str| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1183,7 +1147,7 @@ mod tests {
 
     #[test]
     fn mp4_aac_preview_should_decode_pcm_without_an_encoded_consumer() {
-        let runtime = GlobalMediaRuntime::start();
+        let runtime = start_runtime();
         let handle = runtime.handle();
         let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -1201,7 +1165,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
 
         let status = handle.status();
-        assert!(status.metrics.audio_packets_captured > 0);
+        assert!(status.metrics.audio_packets_read > 0);
         assert!(status.metrics.audio_frames_decoded > 0);
         assert_eq!(status.active_live_consumers, 0);
         assert!(!status.muted);
@@ -1215,5 +1179,18 @@ mod tests {
             assert!(sink.played_samples > 0);
         }
         assert!(runtime.shutdown().is_ok());
+    }
+
+    #[test]
+    fn worker_spawn_failure_should_be_reported() {
+        let result = GlobalMediaRuntime::start_with_spawner(|_| {
+            Err(io::Error::other("injected worker spawn failure"))
+        });
+
+        assert!(matches!(
+            result,
+            Err(MediaError::RuntimeUnavailable(message))
+                if message.contains("injected worker spawn failure")
+        ));
     }
 }

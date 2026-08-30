@@ -56,11 +56,6 @@ type BackendMediaConfig = {
     type: 'mp4';
     mp4: { filePath: string; isLooping: boolean };
   };
-  recording: {
-    isEnabled: boolean;
-    directory: string;
-    segmentDurationMinutes: 5 | 10 | 30 | 60;
-  };
   preferences: { shouldProbeAfterSelection: boolean };
 };
 
@@ -70,7 +65,6 @@ function fromBackendConfig(value: BackendMediaConfig): GlobalMediaConfig {
       type: MediaSourceType.Mp4,
       mp4: { ...value.source.mp4 },
     },
-    recording: { ...value.recording },
     preferences: { ...value.preferences },
   };
 }
@@ -81,7 +75,6 @@ function toBackendConfig(value: GlobalMediaConfig): BackendMediaConfig {
       type: 'mp4',
       mp4: { ...value.source.mp4 },
     },
-    recording: { ...value.recording },
     preferences: { ...value.preferences },
   };
 }
@@ -180,16 +173,6 @@ export class TauriMediaService implements MediaService {
     return typeof selected === 'string' ? selected : null;
   }
 
-  async selectRecordingDirectory(currentDirectory: string): Promise<string | null> {
-    const options: OpenDialogOptions = {
-      multiple: false,
-      directory: true,
-    };
-    const trimmedDirectory = currentDirectory.trim();
-    if (trimmedDirectory.length > 0) options.defaultPath = trimmedDirectory;
-    const selected = await open(options);
-    return typeof selected === 'string' ? selected : null;
-  }
   async probeMp4(filePath: string): Promise<MediaProbeResult> {
     return toProbe(await invokeCommand<BackendProbeResult>('probe_mp4', { filePath }));
   }

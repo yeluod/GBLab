@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "Audited safe wrapper for FFmpeg packet, interrupt and MP4 audio helpers"
+description = "Audited safe wrapper for FFmpeg packet and MP4 audio helpers"
 publish = false
 
 [dependencies]

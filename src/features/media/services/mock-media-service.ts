@@ -73,10 +73,6 @@ export class MockMediaService implements MediaService {
     return paths[(currentIndex + 1 + paths.length) % paths.length] ?? paths[0] ?? null;
   }
 
-  async selectRecordingDirectory(currentDirectory: string): Promise<string | null> {
-    return currentDirectory === '/mock/records' ? '/mock/records/archive' : '/mock/records';
-  }
-
   async probeMp4(filePath: string): Promise<MediaProbeResult> {
     this.failIfRequested('probeMp4');
     const result = MOCK_PROBE_RESULTS[filePath];

@@ -91,6 +91,7 @@ jobs:
           rust: 'false'
       - run: pnpm run format:check
       - run: pnpm run lint
+      - run: pnpm run type:check
       - run: pnpm run test:run
       - run: pnpm run build
 
@@ -109,8 +110,9 @@ jobs:
         with:
           platform: linux
       - run: cargo fmt --all -- --check
-      - run: cargo clippy -p gblab-core -p gblab-ffmpeg-support --all-targets --all-features --locked -- -D warnings
-      - run: cargo test -p gblab-core -p gblab-ffmpeg-support --locked
+      - run: cargo check --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   native-verify:
     name: Native desktop verification
@@ -119,5 +121,5 @@ jobs:
     with:
       platform: all
       ref: ${{ github.sha }}
-      bundle: false
+      bundle: ${{ github.event_name == 'workflow_dispatch' }}
     secrets: inherit

@@ -28,7 +28,7 @@ pub fn run() -> Result<(), tauri::Error> {
             let core = CoreService::open(&configuration_path)?;
             let (registration, supervisor) = RegistrationHandle::prepare();
             tauri::async_runtime::spawn(supervisor);
-            let state = AppState::new(core, registration);
+            let state = AppState::new(core, registration)?;
             let mut registration_events = state.registration.subscribe();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

@@ -10,11 +10,6 @@ export function createDefaultMediaConfig(): GlobalMediaConfig {
         isLooping: true,
       },
     },
-    recording: {
-      isEnabled: false,
-      directory: '/mock/records',
-      segmentDurationMinutes: 10,
-    },
     preferences: {
       shouldProbeAfterSelection: true,
     },

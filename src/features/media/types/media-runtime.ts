@@ -2,12 +2,13 @@ import { AudioCodec } from './media-config';
 import type { VideoCodec } from './media-config';
 
 /** Codec detected in an MP4 source stream. */
-export type DetectedAudioCodec = AudioCodec | 'other';
+export type DetectedAudioCodec = AudioCodec | 'mp3' | 'other';
 
 export function normalizeDetectedAudioCodec(value: string): DetectedAudioCodec {
   if (value === AudioCodec.Aac) return AudioCodec.Aac;
   if (value === AudioCodec.G711A) return AudioCodec.G711A;
   if (value === AudioCodec.G711U) return AudioCodec.G711U;
+  if (value === 'mp3') return 'mp3';
   return 'other';
 }
 
@@ -75,11 +76,11 @@ export interface AudioSinkInfo {
 }
 
 export interface MediaRuntimeMetrics {
-  videoPacketsCaptured: number;
+  videoPacketsRead: number;
   videoFramesDecoded: number;
   videoPreviewFrames: number;
   videoPacketsEncoded: number;
-  audioPacketsCaptured: number;
+  audioPacketsRead: number;
   audioFramesDecoded: number;
   audioPacketsEncoded: number;
   audioRms: number;
@@ -88,11 +89,11 @@ export interface MediaRuntimeMetrics {
 
 export function createEmptyMediaRuntimeMetrics(): MediaRuntimeMetrics {
   return {
-    videoPacketsCaptured: 0,
+    videoPacketsRead: 0,
     videoFramesDecoded: 0,
     videoPreviewFrames: 0,
     videoPacketsEncoded: 0,
-    audioPacketsCaptured: 0,
+    audioPacketsRead: 0,
     audioFramesDecoded: 0,
     audioPacketsEncoded: 0,
     audioRms: 0,

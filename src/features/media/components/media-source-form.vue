@@ -1,14 +1,5 @@
 <script setup lang="ts">
-  import {
-    NButton,
-    NDivider,
-    NForm,
-    NFormItem,
-    NInput,
-    NInputGroup,
-    NSelect,
-    NSwitch,
-  } from 'naive-ui';
+  import { NButton, NDivider, NForm, NFormItem, NInput, NInputGroup, NSwitch } from 'naive-ui';
 
   import type { GlobalMediaConfig } from '../types/media-config';
   import type { MediaFieldErrors } from '../stores/media-store';
@@ -22,13 +13,7 @@
   const emit = defineEmits<{
     selectMp4: [];
     probeMp4: [];
-    selectRecordingDirectory: [];
   }>();
-
-  const segmentOptions = [5, 10, 30, 60].map((value) => ({
-    label: `${value} 分钟`,
-    value,
-  }));
 
   function validationProps(
     path: string,
@@ -70,38 +55,6 @@
       <NFormItem label="循环播放" :show-feedback="false">
         <NSwitch v-model:value="config.source.mp4.isLooping" />
       </NFormItem>
-
-      <NDivider title-placement="left">本地录像</NDivider>
-      <NFormItem label="启用录像" :show-feedback="false">
-        <NSwitch v-model:value="config.recording.isEnabled" />
-      </NFormItem>
-      <div class="media-form-grid recording-grid">
-        <NFormItem label="录像目录" v-bind="validationProps('recording.directory')">
-          <NInputGroup>
-            <NInput
-              v-model:value="config.recording.directory"
-              placeholder="请选择录像目录"
-              :disabled="!config.recording.isEnabled"
-              readonly
-            />
-            <NButton
-              data-testid="select-recording-directory"
-              :disabled="!config.recording.isEnabled"
-              @click="emit('selectRecordingDirectory')"
-            >
-              <template #icon><AppIcon icon="file" /></template>
-              选择
-            </NButton>
-          </NInputGroup>
-        </NFormItem>
-        <NFormItem label="分段时长">
-          <NSelect
-            v-model:value="config.recording.segmentDurationMinutes"
-            :options="segmentOptions"
-            :disabled="!config.recording.isEnabled"
-          />
-        </NFormItem>
-      </div>
     </NForm>
   </section>
 </template>

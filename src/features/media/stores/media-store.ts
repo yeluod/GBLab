@@ -65,10 +65,6 @@ export function validateMediaConfig(config: GlobalMediaConfig): MediaFieldErrors
     errors['source.mp4.filePath'] = '请选择 MP4 文件。';
   }
 
-  if (config.recording.isEnabled && config.recording.directory.trim().length === 0) {
-    errors['recording.directory'] = '启用本地录像后必须选择录像目录。';
-  }
-
   return errors;
 }
 
@@ -192,21 +188,6 @@ export const useMediaStore = defineStore('media', () => {
       return handleServiceFailure(error);
     } finally {
       isProbing.value = false;
-    }
-  }
-
-  async function selectRecordingDirectory(): Promise<MediaOperationResult> {
-    try {
-      const directory = await service.selectRecordingDirectory(
-        draftConfig.value.recording.directory,
-      );
-      if (directory !== null) {
-        draftConfig.value.recording.directory = directory;
-        delete fieldErrors.value['recording.directory'];
-      }
-      return { ok: true };
-    } catch (error) {
-      return handleServiceFailure(error);
     }
   }
 
@@ -399,7 +380,6 @@ export const useMediaStore = defineStore('media', () => {
     initialize,
     selectMp4,
     probeCurrentMp4,
-    selectRecordingDirectory,
     applyDraft,
     saveDraft,
     resetDraft,

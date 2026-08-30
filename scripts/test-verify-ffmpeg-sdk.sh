@@ -14,6 +14,7 @@ cat > "$lockfile" <<'JSON'
   "license": "LGPL-2.1-or-later",
   "linkMode": "dynamic",
   "requiredLibraries": ["avcodec"],
+  "requiredRuntimeImports": ["avcodec"],
   "platforms": {
     "linux-x86_64": {
       "platform": "linux",

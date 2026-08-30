@@ -153,6 +153,9 @@ pub enum VideoCodec {
 pub enum AudioCodec {
     /// AAC.
     Aac,
+    /// MPEG Layer III detected in an MP4 source. MP3 remains preview-only in
+    /// the current encoded-stream contract.
+    Mp3,
     /// G.711 A-law.
     G711a,
     /// G.711 mu-law.
@@ -219,23 +222,6 @@ pub struct EncodedStreamDescriptor {
     pub configuration_format: Option<CodecConfigurationFormat>,
 }
 
-/// Final encoder output parameters carried with a packet.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EncodedOutputInfo {
-    /// Encoded video width, when applicable.
-    pub width: Option<u32>,
-    /// Encoded video height, when applicable.
-    pub height: Option<u32>,
-    /// Encoded video frame rate, when known.
-    pub frame_rate: Option<FrameRate>,
-    /// Encoded audio sample rate, when applicable.
-    pub sample_rate: Option<u32>,
-    /// Encoded audio channels, when applicable.
-    pub channels: Option<u32>,
-    /// Encoded bitrate, when known.
-    pub bitrate: Option<u64>,
-}
-
 /// Packet ready for recorder, live-session and preview consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedMediaPacket {
@@ -257,8 +243,6 @@ pub struct EncodedMediaPacket {
     pub is_keyframe: bool,
     /// Optional codec initialization data required by a downstream muxer.
     pub codec_configuration: Option<Bytes>,
-    /// Final output parameters from the encoder, if this packet was encoded locally.
-    pub output_info: Option<EncodedOutputInfo>,
 }
 
 impl EncodedMediaPacket {
@@ -269,40 +253,6 @@ impl EncodedMediaPacket {
             .or(self.dts)
             .map_or(0.0, |timestamp| self.time_base.seconds(timestamp))
     }
-}
-
-/// Raw decoded video frame used between capture/decode and encode/preview stages.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RawVideoFrame {
-    /// Frame width.
-    pub width: u32,
-    /// Frame height.
-    pub height: u32,
-    /// Backend pixel-format name.
-    pub pixel_format: String,
-    /// Tightly packed frame bytes where applicable.
-    pub data: Bytes,
-    /// Presentation timestamp.
-    pub pts: Option<i64>,
-    /// Timestamp time base.
-    pub time_base: MediaTimeBase,
-}
-
-/// Raw decoded audio frame used before resampling and encoding.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RawAudioFrame {
-    /// Interleaved or planar bytes as described by `sample_format`.
-    pub data: Bytes,
-    /// `FFmpeg` sample-format name.
-    pub sample_format: String,
-    /// Sample rate.
-    pub sample_rate: u32,
-    /// Channel count.
-    pub channels: u32,
-    /// Presentation timestamp.
-    pub pts: Option<i64>,
-    /// Timestamp time base.
-    pub time_base: MediaTimeBase,
 }
 
 #[cfg(test)]
