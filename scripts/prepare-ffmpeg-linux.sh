@@ -83,6 +83,15 @@ if [[ ! -f "$output_root/FFMPEG-LICENSE.txt" ]]; then
   cp "$license_file" "$output_root/FFMPEG-LICENSE.txt"
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
-  { printf 'FFMPEG_INCLUDE_DIR=%s\n' "$output_root/include"; printf 'FFMPEG_LIBS_DIR=%s\n' "$output_root/lib"; printf 'FFMPEG_LINK_MODE=dynamic\n'; } >> "$GITHUB_ENV"
+  runtime_library_path="$output_root/lib"
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    runtime_library_path="$runtime_library_path:$LD_LIBRARY_PATH"
+  fi
+  {
+    printf 'FFMPEG_INCLUDE_DIR=%s\n' "$output_root/include"
+    printf 'FFMPEG_LIBS_DIR=%s\n' "$output_root/lib"
+    printf 'FFMPEG_LINK_MODE=dynamic\n'
+    printf 'LD_LIBRARY_PATH=%s\n' "$runtime_library_path"
+  } >> "$GITHUB_ENV"
 fi
 printf 'FFmpeg Linux SDK ready: %s\n' "$output_root"
