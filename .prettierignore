@@ -3,7 +3,6 @@ pnpm-lock.yaml
 CHANGELOG.md
 README.md
 .codex/
-coverage/
 dist/
 node_modules/
 .ffmpeg-sdk/
