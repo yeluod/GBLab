@@ -123,8 +123,7 @@ select {
   letter-spacing: 0;
 }
 
-.brand div span,
-.sidebar-footer > span {
+.brand div span {
   color: #8090a4;
   font-size: 0.67rem;
   letter-spacing: 0.055em;
@@ -146,39 +145,6 @@ select {
 
 .main-nav .n-menu-item-content {
   border-radius: 6px;
-}
-
-.sidebar-footer {
-  display: grid;
-  gap: 11px;
-  margin-top: auto;
-  padding: 16px 4px 0;
-  border-top: 1px solid #edf1f5;
-}
-
-.sidebar-runtime {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  color: #64748b;
-  font-size: 0.76rem;
-}
-
-.runtime-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #94a3b8;
-}
-
-.runtime-dot.is-active {
-  background: #16805c;
-  box-shadow: 0 0 0 3px rgb(22 128 92 / 12%);
-}
-
-.sidebar-footer > span {
-  line-height: 1.5;
-  text-transform: none;
 }
 
 .app-main {
@@ -425,8 +391,25 @@ select {
   padding-top: 14px;
 }
 
-.interaction-message {
+.interaction-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin-bottom: 14px;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.interaction-message-content {
+  max-height: min(62vh, 680px);
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
   color: #334155;
+  background: #f8fafc;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.76rem;
   line-height: 1.45;

@@ -6,6 +6,7 @@
     NCheckbox,
     NDataTable,
     NInput,
+    NModal,
     NSelect,
     NTag,
     useDialog,
@@ -14,7 +15,14 @@
     type DataTableInst,
   } from 'naive-ui';
 
-  import { useSimulatorStore, type InteractionLog } from '@/features/simulator';
+  import {
+    classifyInteractionMessage,
+    directionLabel,
+    formatLogsAsTsv,
+    formatTimestamp,
+    useSimulatorStore,
+    type InteractionLog,
+  } from '@/features/simulator';
   import AppIcon from '@/shared/components/app-icon.vue';
 
   const store = useSimulatorStore();
@@ -26,6 +34,8 @@
   const channelKeyword = ref('');
   const messageKeyword = ref('');
   const selectedLogIds = ref<Set<string>>(new Set());
+  const activeLog = ref<InteractionLog | null>(null);
+  const isMessageModalVisible = ref(false);
 
   const directionOptions = [
     { label: '全部方向', value: 'all' },
@@ -88,20 +98,6 @@
     selectedLogIds.value = new Set();
   }
 
-  function directionLabel(direction: InteractionLog['direction']): string {
-    return direction === 'send' ? '设备 → 服务' : '服务 → 设备';
-  }
-
-  function formatLogForCopy(log: InteractionLog): string {
-    return [
-      formatTimestamp(log.timestamp),
-      directionLabel(log.direction),
-      log.deviceId,
-      log.channelId ?? '—',
-      log.message,
-    ].join('\t');
-  }
-
   async function copyText(text: string): Promise<void> {
     if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function') {
       await navigator.clipboard.writeText(text);
@@ -125,10 +121,7 @@
     if (selectedLogs.value.length === 0) {
       return;
     }
-    const content = [
-      ['时间', '方向', '设备 ID', '通道 ID', '消息'].join('\t'),
-      ...selectedLogs.value.map(formatLogForCopy),
-    ].join('\n');
+    const content = formatLogsAsTsv(selectedLogs.value);
     try {
       await copyText(content);
       message.success(`已复制 ${selectedLogs.value.length} 条日志。`);
@@ -171,6 +164,9 @@
     (ids) => {
       const validIds = new Set(ids);
       selectedLogIds.value = new Set([...selectedLogIds.value].filter((id) => validIds.has(id)));
+      if (activeLog.value !== null && !validIds.has(activeLog.value.id)) {
+        closeMessage();
+      }
     },
   );
 
@@ -183,10 +179,6 @@
     await scrollToLatest();
   });
 
-  function formatTimestamp(timestamp: number): string {
-    return new Date(timestamp).toLocaleString('zh-CN', { hour12: false });
-  }
-
   function directionMeta(direction: InteractionLog['direction']): {
     label: string;
     type: 'info' | 'success';
@@ -194,6 +186,37 @@
     return direction === 'send'
       ? { label: '设备 → 服务', type: 'info' }
       : { label: '服务 → 设备', type: 'success' };
+  }
+
+  function messageTypeMeta(log: InteractionLog): {
+    label: string;
+    type: 'default' | 'info' | 'success' | 'warning' | 'error';
+  } {
+    const messageType = classifyInteractionMessage(log.message);
+    if (messageType.kind === 'sip-response') {
+      return {
+        label: messageType.label,
+        type:
+          messageType.status >= 400 ? 'error' : messageType.status >= 300 ? 'warning' : 'success',
+      };
+    }
+    if (messageType.kind === 'gb-command') {
+      return { label: messageType.label, type: 'info' };
+    }
+    if (messageType.kind === 'sip-request') {
+      return { label: messageType.label, type: 'default' };
+    }
+    return { label: messageType.label, type: 'default' };
+  }
+
+  function openMessage(log: InteractionLog): void {
+    activeLog.value = log;
+    isMessageModalVisible.value = true;
+  }
+
+  function closeMessage(): void {
+    isMessageModalVisible.value = false;
+    activeLog.value = null;
   }
 
   const columns: DataTableColumns<InteractionLog> = [
@@ -238,6 +261,20 @@
         );
       },
     },
+    {
+      title: '消息类型',
+      key: 'messageType',
+      width: 170,
+      align: 'center',
+      render: (log) => {
+        const meta = messageTypeMeta(log);
+        return h(
+          NTag,
+          { type: meta.type, size: 'small', bordered: false },
+          { default: () => meta.label },
+        );
+      },
+    },
     { title: '设备 ID', key: 'deviceId', minWidth: 220, align: 'center' },
     {
       title: '通道 ID',
@@ -247,10 +284,23 @@
       render: (log) => log.channelId ?? '—',
     },
     {
-      title: '消息',
-      key: 'message',
-      minWidth: 520,
-      render: (log) => h('code', { class: 'interaction-message' }, log.message),
+      title: '操作',
+      key: 'actions',
+      width: 72,
+      align: 'center',
+      render: (log) =>
+        h(
+          NButton,
+          {
+            quaternary: true,
+            circle: true,
+            size: 'small',
+            'aria-label': '查看完整消息',
+            title: '查看完整消息',
+            onClick: () => openMessage(log),
+          },
+          { icon: () => h(AppIcon, { icon: 'message', size: 16 }) },
+        ),
     },
   ];
 </script>
@@ -307,11 +357,31 @@
           :columns="columns"
           :data="filteredLogs"
           :pagination="false"
-          :scroll-x="1350"
+          :scroll-x="1100"
           :scrollbar-props="{ trigger: 'none', size: 10 }"
           :row-key="(log) => log.id"
         />
       </div>
     </NCard>
+
+    <NModal
+      v-model:show="isMessageModalVisible"
+      preset="card"
+      title="完整消息"
+      :style="{ width: 'min(900px, calc(100vw - 48px))' }"
+      :mask-closable="true"
+      @after-leave="closeMessage"
+    >
+      <template v-if="activeLog !== null">
+        <div class="interaction-message-meta">
+          <NTag size="small" :bordered="false">{{ messageTypeMeta(activeLog).label }}</NTag>
+          <span>{{ formatTimestamp(activeLog.timestamp) }}</span>
+          <span>{{ directionLabel(activeLog.direction) }}</span>
+          <span>设备 {{ activeLog.deviceId }}</span>
+          <span>通道 {{ activeLog.channelId ?? '—' }}</span>
+        </div>
+        <pre class="interaction-message-content">{{ activeLog.message }}</pre>
+      </template>
+    </NModal>
   </section>
 </template>

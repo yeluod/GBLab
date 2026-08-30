@@ -1,14 +1,12 @@
 <script setup lang="ts">
   import { computed, h } from 'vue';
-  import { NButton, NMenu, type MenuOption } from 'naive-ui';
+  import { NMenu, type MenuOption } from 'naive-ui';
   import { useRoute, useRouter } from 'vue-router';
 
-  import { useSimulatorStore } from '@/features/simulator';
   import AppIcon from '@/shared/components/app-icon.vue';
 
   const route = useRoute();
   const router = useRouter();
-  const store = useSimulatorStore();
   const menuOptions: MenuOption[] = [
     { label: '运行总览', key: 'Overview', icon: () => h(AppIcon, { icon: 'gauge', size: 18 }) },
     { label: '设备管理', key: 'Devices', icon: () => h(AppIcon, { icon: 'server', size: 18 }) },
@@ -29,10 +27,6 @@
   function handleMenuUpdate(key: string): void {
     void router.push({ name: key });
   }
-
-  function openDeviceManagement(): void {
-    void router.push({ name: 'Devices' });
-  }
 </script>
 
 <template>
@@ -49,23 +43,6 @@
       <nav class="main-nav">
         <NMenu :value="activeMenuKey" :options="menuOptions" @update:value="handleMenuUpdate" />
       </nav>
-
-      <div class="sidebar-footer">
-        <NButton
-          block
-          type="primary"
-          :disabled="store.hasCompletedBatchAdd"
-          @click="openDeviceManagement"
-        >
-          <template #icon><AppIcon icon="plus" /></template>
-          {{ store.hasCompletedBatchAdd ? '设备已批量添加' : '批量添加设备' }}
-        </NButton>
-        <div class="sidebar-runtime">
-          <span class="runtime-dot" :class="{ 'is-active': store.isRegistrationActive }"></span>
-          <span>{{ store.isRegistrationActive ? '注册运行中' : '注册未启动' }}</span>
-        </div>
-        <span>JSON 配置 · SIP 运行状态仅驻留内存</span>
-      </div>
     </aside>
 
     <main class="app-main">
