@@ -109,8 +109,8 @@ jobs:
         with:
           platform: linux
       - run: cargo fmt --all -- --check
-      - run: cargo clippy -p gblab-core -p gblab-ffmpeg-device --all-targets --all-features --locked -- -D warnings
-      - run: cargo test -p gblab-core -p gblab-ffmpeg-device --locked
+      - run: cargo clippy -p gblab-core -p gblab-ffmpeg-support --all-targets --all-features --locked -- -D warnings
+      - run: cargo test -p gblab-core -p gblab-ffmpeg-support --locked
 
   native-verify:
     name: Native desktop verification

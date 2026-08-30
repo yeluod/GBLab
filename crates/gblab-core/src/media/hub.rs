@@ -567,7 +567,7 @@ mod tests {
         let _ = hub.broadcast(&Arc::new(audio));
 
         hub.replace_source(Mp4ProbeResult {
-            file_path: "camera".to_owned(),
+            file_path: "replacement.mp4".to_owned(),
             video: VideoStreamInfo {
                 codec: VideoCodec::H265,
                 width: 1920,

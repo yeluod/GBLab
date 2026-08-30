@@ -1,11 +1,4 @@
-import {
-  AudioCodec,
-  CaptureDeviceStatus,
-  EncoderBackend,
-  VideoCodec,
-  type CaptureDeviceCapabilities,
-  type CaptureDeviceInfo,
-} from '../types/media-config';
+import { AudioCodec, VideoCodec } from '../types/media-config';
 import {
   createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
@@ -21,76 +14,6 @@ export const MOCK_MP4_PATHS = {
   h265VideoOnly: '/mock/media/h265-video-only.mp4',
   probeError: '/mock/media/probe-error.mp4',
 } as const;
-
-export const MOCK_VIDEO_DEVICES: CaptureDeviceInfo[] = [
-  {
-    id: 'camera-integrated',
-    name: 'Integrated / FaceTime HD Camera',
-    status: CaptureDeviceStatus.Available,
-  },
-  {
-    id: 'camera-usb',
-    name: 'External USB Camera',
-    status: CaptureDeviceStatus.Available,
-  },
-  {
-    id: 'camera-busy',
-    name: 'Virtual Camera (Busy)',
-    status: CaptureDeviceStatus.Busy,
-  },
-];
-
-export const MOCK_AUDIO_DEVICES: CaptureDeviceInfo[] = [
-  {
-    id: 'microphone-built-in',
-    name: 'Built-in Microphone',
-    status: CaptureDeviceStatus.Available,
-  },
-  {
-    id: 'microphone-usb',
-    name: 'External USB Microphone',
-    status: CaptureDeviceStatus.Available,
-  },
-];
-
-export const MOCK_VIDEO_CAPABILITIES: Record<string, CaptureDeviceCapabilities> = {
-  'camera-integrated': {
-    deviceId: 'camera-integrated',
-    modes: [
-      { width: 640, height: 480, frameRates: [15, 25, 30].map(exactFrameRate) },
-      { width: 1280, height: 720, frameRates: [25, 30, 60].map(exactFrameRate) },
-      { width: 1920, height: 1080, frameRates: [25, 30].map(exactFrameRate) },
-    ],
-  },
-  'camera-usb': {
-    deviceId: 'camera-usb',
-    modes: [
-      { width: 640, height: 480, frameRates: [15, 30].map(exactFrameRate) },
-      { width: 1280, height: 720, frameRates: [25, 30].map(exactFrameRate) },
-    ],
-  },
-};
-
-export const MOCK_VIDEO_ENCODER_CAPABILITIES = {
-  encoders: [
-    {
-      codec: VideoCodec.H264,
-      backend: EncoderBackend.VideoToolbox,
-      encoderName: 'h264_videotoolbox',
-      hardware: true,
-    },
-    {
-      codec: VideoCodec.H265,
-      backend: EncoderBackend.VideoToolbox,
-      encoderName: 'hevc_videotoolbox',
-      hardware: true,
-    },
-  ],
-};
-
-function exactFrameRate(value: number): { kind: 'exact'; value: number } {
-  return { kind: 'exact', value };
-}
 
 const commonAudio = {
   codec: AudioCodec.Aac,
@@ -169,7 +92,6 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
-    audioMonitoring: false,
     errorMessage: null,
     pipelineErrorMessage: null,
     audioSink: null,

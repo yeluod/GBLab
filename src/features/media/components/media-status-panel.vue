@@ -5,7 +5,6 @@
   import {
     AudioCodec,
     MediaSourceStatus,
-    MediaSourceType,
     VideoCodec,
     type DetectedAudioCodec,
     type MediaProbeResult,
@@ -18,7 +17,6 @@
     probeResult: MediaProbeResult | null;
     isPreviewPending: boolean;
     canStartPreview: boolean;
-    sourceType: MediaSourceType;
     previewFrame?: { width: number; height: number; rgba: Uint8Array } | null;
   }>();
   const emit = defineEmits<{
@@ -30,7 +28,6 @@
     seek: [positionSeconds: number];
     playbackRateChange: [rate: number];
     audioControlChange: [muted: boolean, volume: number];
-    audioMonitoringChange: [enabled: boolean];
   }>();
 
   const sourceStatusText: Record<MediaSourceStatus, string> = {
@@ -62,14 +59,8 @@
   const displayedAudio = computed(() =>
     props.probeResult === null ? props.runtimeStatus.audio : props.probeResult.audio,
   );
-  const previewTitle = computed(() =>
-    props.sourceType === MediaSourceType.Camera ? '摄像头预览' : 'MP4 预览',
-  );
-  const previewEmptyDescription = computed(() =>
-    props.sourceType === MediaSourceType.Camera
-      ? '选择摄像头和采集参数后可开始预览'
-      : '选择并检测 MP4 后可开始预览',
-  );
+  const previewTitle = 'MP4 预览';
+  const previewEmptyDescription = '选择并检测 MP4 后可开始预览';
   const previewCanvas = ref<HTMLCanvasElement | null>(null);
   const seekPosition = ref(0);
   const isSeekEditing = ref(false);
@@ -209,9 +200,8 @@
 
       <div
         v-if="
-          sourceType === MediaSourceType.Mp4 &&
-          (runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
-            runtimeStatus.sourceStatus === MediaSourceStatus.Paused)
+          runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+          runtimeStatus.sourceStatus === MediaSourceStatus.Paused
         "
         class="playback-controls"
       >
@@ -336,14 +326,14 @@
           <dd>{{ runtimeStatus.activeRecorderConsumers }}</dd>
           <dt>Decoded Frames</dt>
           <dd>{{ runtimeStatus.decodedFrames }}</dd>
-          <dt>Capture / Preview</dt>
+          <dt>Read / Preview</dt>
           <dd>
             {{ runtimeStatus.metrics.videoPacketsCaptured }} /
             {{ runtimeStatus.metrics.videoPreviewFrames }}
           </dd>
           <dt>Encoded Video</dt>
           <dd>{{ runtimeStatus.metrics.videoPacketsEncoded }}</dd>
-          <dt>Mic Packets / PCM</dt>
+          <dt>Audio Packets / PCM</dt>
           <dd>
             {{ runtimeStatus.metrics.audioPacketsCaptured }} /
             {{ runtimeStatus.metrics.audioFramesDecoded }}
@@ -366,15 +356,6 @@
               <dt>Audio Sink Error</dt>
               <dd class="runtime-error">{{ runtimeStatus.audioSink.lastError }}</dd>
             </template>
-          </template>
-          <template v-if="sourceType === MediaSourceType.Camera && displayedAudio !== null">
-            <dt>音频监听</dt>
-            <dd>
-              <NSwitch
-                :value="runtimeStatus.audioMonitoring"
-                @update:value="emit('audioMonitoringChange', $event)"
-              />
-            </dd>
           </template>
           <template v-if="runtimeStatus.pipelineErrorMessage !== null">
             <dt>Pipeline Error</dt>

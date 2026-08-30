@@ -7,21 +7,12 @@ import {
 } from '../types/media-runtime';
 import { MediaServiceError, type MediaService, type MediaVideoFrame } from './media-service';
 import {
-  MOCK_AUDIO_DEVICES,
   MOCK_MP4_PATHS,
   MOCK_PROBE_RESULTS,
-  MOCK_VIDEO_CAPABILITIES,
-  MOCK_VIDEO_ENCODER_CAPABILITIES,
-  MOCK_VIDEO_DEVICES,
   createInitialRuntimeStatus,
 } from './mock-media-fixtures';
 
-import type {
-  CaptureDeviceCapabilities,
-  CaptureDeviceInfo,
-  GlobalMediaConfig,
-  VideoEncoderCapabilities,
-} from '../types/media-config';
+import type { GlobalMediaConfig } from '../types/media-config';
 import type { MediaProbeResult } from '../types/media-runtime';
 
 export type MockMediaOperation =
@@ -29,10 +20,6 @@ export type MockMediaOperation =
   | 'saveConfig'
   | 'applyConfig'
   | 'probeMp4'
-  | 'listVideoDevices'
-  | 'listAudioDevices'
-  | 'getVideoCapabilities'
-  | 'getVideoEncoderCapabilities'
   | 'startPreview'
   | 'stopPreview'
   | 'getRuntimeStatus';
@@ -99,30 +86,6 @@ export class MockMediaService implements MediaService {
     return clone(result);
   }
 
-  async listVideoDevices(): Promise<CaptureDeviceInfo[]> {
-    this.failIfRequested('listVideoDevices');
-    return clone(MOCK_VIDEO_DEVICES);
-  }
-
-  async listAudioDevices(): Promise<CaptureDeviceInfo[]> {
-    this.failIfRequested('listAudioDevices');
-    return clone(MOCK_AUDIO_DEVICES);
-  }
-
-  async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
-    this.failIfRequested('getVideoCapabilities');
-    const capabilities = MOCK_VIDEO_CAPABILITIES[deviceId];
-    if (capabilities === undefined) {
-      throw new MediaServiceError('摄像头不可用或不支持能力检测。');
-    }
-    return clone(capabilities);
-  }
-
-  async getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities> {
-    this.failIfRequested('getVideoEncoderCapabilities');
-    return clone(MOCK_VIDEO_ENCODER_CAPABILITIES);
-  }
-
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     this.failIfRequested('startPreview');
     this.runtimeStatus = this.createRuntimeStatus(config, MediaSourceStatus.Previewing);
@@ -162,11 +125,6 @@ export class MockMediaService implements MediaService {
   async setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus> {
     this.runtimeStatus.muted = muted;
     this.runtimeStatus.volume = volume;
-    return clone(this.runtimeStatus);
-  }
-
-  async setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus> {
-    this.runtimeStatus.audioMonitoring = enabled;
     return clone(this.runtimeStatus);
   }
 
@@ -226,47 +184,11 @@ export class MockMediaService implements MediaService {
         metrics: createEmptyMediaRuntimeMetrics(),
         muted: false,
         volume: 1,
-        audioMonitoring: false,
         errorMessage: null,
         pipelineErrorMessage: null,
         audioSink: null,
       };
     }
-
-    const { video, audio } = config.source.camera;
-    return {
-      sourceStatus,
-      sourceLabel:
-        MOCK_VIDEO_DEVICES.find((device) => device.id === video.deviceId)?.name ?? 'Camera',
-      video: {
-        codec: video.codec,
-        width: video.width,
-        height: video.height,
-        framesPerSecond: video.framesPerSecond,
-        bitrateKbps: video.bitrateKbps,
-        durationSeconds: null,
-      },
-      audio: audio.isEnabled
-        ? {
-            codec: audio.codec,
-            sampleRate: audio.sampleRate,
-            channels: audio.channels,
-            bitrateKbps: audio.bitrateKbps,
-          }
-        : null,
-      activeLiveConsumers: 0,
-      activeRecorderConsumers: 0,
-      durationSeconds: null,
-      positionSeconds: 0,
-      playbackRate: 1,
-      decodedFrames: 0,
-      metrics: createEmptyMediaRuntimeMetrics(),
-      muted: false,
-      volume: 1,
-      audioMonitoring: false,
-      errorMessage: null,
-      pipelineErrorMessage: null,
-      audioSink: null,
-    };
+    throw new MediaServiceError('仅支持 MP4 文件源。');
   }
 }

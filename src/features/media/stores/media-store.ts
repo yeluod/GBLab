@@ -2,15 +2,9 @@ import { computed, ref, toRaw } from 'vue';
 import { defineStore } from 'pinia';
 
 import { getMediaService } from '../services/media-service-provider';
-import { createMediaCapabilityController } from '../controllers/media-capability-controller';
 import { createPreviewController } from '../controllers/preview-controller';
 import { createDefaultMediaConfig } from '../types/media-defaults';
-import {
-  CaptureDeviceStatus,
-  MediaSourceType,
-  isFrameRateSupported,
-  type GlobalMediaConfig,
-} from '../types/media-config';
+import { MediaSourceType, type GlobalMediaConfig } from '../types/media-config';
 import {
   createEmptyMediaRuntimeMetrics,
   MediaSourceStatus,
@@ -57,7 +51,6 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
-    audioMonitoring: false,
     errorMessage: message,
     pipelineErrorMessage: null,
     audioSink: null,
@@ -68,50 +61,8 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
 export function validateMediaConfig(config: GlobalMediaConfig): MediaFieldErrors {
   const errors: MediaFieldErrors = {};
 
-  if (config.source.type === MediaSourceType.Mp4) {
-    if (config.source.mp4.filePath.trim().length === 0) {
-      errors['source.mp4.filePath'] = '请选择 MP4 文件。';
-    }
-  } else {
-    const { video, audio } = config.source.camera;
-    if (video.deviceId.length === 0) {
-      errors['source.camera.video.deviceId'] = '请选择摄像头。';
-    }
-    if (video.width <= 0 || video.height <= 0) {
-      errors['source.camera.video.resolution'] = '请选择有效分辨率。';
-    }
-    if (video.framesPerSecond <= 0) {
-      errors['source.camera.video.framesPerSecond'] = '请选择有效帧率。';
-    }
-    if (video.bitrateKbps < 128 || video.bitrateKbps > 100_000) {
-      errors['source.camera.video.bitrateKbps'] = '视频码率必须介于 128 与 100000 Kbps。';
-    }
-
-    if (audio.isEnabled) {
-      if (audio.deviceId.length === 0) {
-        errors['source.camera.audio.deviceId'] = '启用音频后必须选择麦克风。';
-      }
-      if (audio.sampleRate <= 0) {
-        errors['source.camera.audio.sampleRate'] = '请选择音频采样率。';
-      }
-      if (![1, 2].includes(audio.channels)) {
-        errors['source.camera.audio.channels'] = '声道数只能为单声道或双声道。';
-      }
-      if (audio.bitrateKbps <= 0) {
-        errors['source.camera.audio.bitrateKbps'] = '请输入有效音频码率。';
-      }
-      if (audio.codec === 'g711a' || audio.codec === 'g711u') {
-        if (audio.sampleRate !== 8000) {
-          errors['source.camera.audio.sampleRate'] = 'G.711 必须使用 8000 Hz。';
-        }
-        if (audio.channels !== 1) {
-          errors['source.camera.audio.channels'] = 'G.711 必须使用单声道。';
-        }
-        if (audio.bitrateKbps !== 64) {
-          errors['source.camera.audio.bitrateKbps'] = 'G.711 必须使用 64 Kbps。';
-        }
-      }
-    }
+  if (config.source.mp4.filePath.trim().length === 0) {
+    errors['source.mp4.filePath'] = '请选择 MP4 文件。';
   }
 
   if (config.recording.isEnabled && config.recording.directory.trim().length === 0) {
@@ -141,7 +92,6 @@ export const useMediaStore = defineStore('media', () => {
     metrics: createEmptyMediaRuntimeMetrics(),
     muted: false,
     volume: 1,
-    audioMonitoring: false,
     errorMessage: null,
     pipelineErrorMessage: null,
     audioSink: null,
@@ -154,23 +104,6 @@ export const useMediaStore = defineStore('media', () => {
   const isApplying = ref(false);
   const isSaving = ref(false);
   const isPreviewPending = ref(false);
-  const capabilities = createMediaCapabilityController(
-    service,
-    draftConfig,
-    fieldErrors,
-    errorMessage,
-  );
-  const {
-    videoDevices,
-    audioDevices,
-    videoCapabilities,
-    supportedVideoCodecs,
-    videoEncoderCapabilities,
-    capabilityError,
-    encoderCapabilityError,
-    isRefreshingDevices,
-    isLoadingVideoCapabilities,
-  } = capabilities;
   const preview = createPreviewController(service, runtimeStatus, (error) => {
     handleServiceFailure(error, true);
   });
@@ -178,34 +111,15 @@ export const useMediaStore = defineStore('media', () => {
   const hasUnsavedChanges = computed(
     () => JSON.stringify(savedConfig.value) !== JSON.stringify(draftConfig.value),
   );
-  const hasValidCameraMode = computed(() => {
-    const video = draftConfig.value.source.camera.video;
-    return (
-      capabilityError.value === null &&
-      videoDevices.value.some(
-        (device) => device.id === video.deviceId && device.status === CaptureDeviceStatus.Available,
-      ) &&
-      videoCapabilities.value?.modes.some(
-        (mode) =>
-          mode.width === video.width &&
-          mode.height === video.height &&
-          isFrameRateSupported(mode, video.framesPerSecond),
-      ) === true
-    );
-  });
   const canStartPreview = computed(() => {
     if (
       isPreviewPending.value ||
       isInitializing.value ||
-      isLoadingVideoCapabilities.value ||
       runtimeStatus.value.sourceStatus === MediaSourceStatus.Previewing
     ) {
       return false;
     }
-    if (draftConfig.value.source.type === MediaSourceType.Mp4) {
-      return draftConfig.value.source.mp4.filePath.trim().length > 0;
-    }
-    return hasValidCameraMode.value;
+    return draftConfig.value.source.mp4.filePath.trim().length > 0;
   });
 
   async function initialize(): Promise<MediaOperationResult> {
@@ -224,11 +138,6 @@ export const useMediaStore = defineStore('media', () => {
       savedConfig.value = clone(config);
       draftConfig.value = clone(config);
       runtimeStatus.value = nextRuntimeStatus;
-      await capabilities.loadForInitialization();
-      await capabilities.refreshVideoEncoderCapabilities();
-      if (config.source.type === MediaSourceType.Camera) {
-        await capabilities.refreshVideoCapabilities(draftConfig.value.source.camera.video.deviceId);
-      }
       if (config.source.type === MediaSourceType.Mp4 && config.source.mp4.filePath.length > 0) {
         await probeCurrentMp4();
       }
@@ -240,24 +149,6 @@ export const useMediaStore = defineStore('media', () => {
       return { ok: false, message };
     } finally {
       isInitializing.value = false;
-    }
-  }
-
-  async function setSourceType(sourceType: MediaSourceType): Promise<void> {
-    draftConfig.value.source.type = sourceType;
-    fieldErrors.value = {};
-    serviceError.value = null;
-    capabilities.clearCapabilityError();
-    if (sourceType === MediaSourceType.Camera) {
-      probeResult.value = null;
-      await Promise.all([
-        capabilities.refreshVideoCapabilities(draftConfig.value.source.camera.video.deviceId),
-        capabilities.refreshVideoEncoderCapabilities(),
-      ]);
-      return;
-    }
-    if (draftConfig.value.source.mp4.filePath.length > 0) {
-      await probeCurrentMp4();
     }
   }
 
@@ -303,15 +194,6 @@ export const useMediaStore = defineStore('media', () => {
       isProbing.value = false;
     }
   }
-
-  async function setVideoDevice(deviceId: string): Promise<MediaOperationResult> {
-    draftConfig.value.source.camera.video.deviceId = deviceId;
-    delete fieldErrors.value['source.camera.video.deviceId'];
-    return capabilities.refreshVideoCapabilities(deviceId);
-  }
-
-  const refreshCaptureDevices = capabilities.refreshCaptureDevices;
-  const setVideoResolution = capabilities.setVideoResolution;
 
   async function selectRecordingDirectory(): Promise<MediaOperationResult> {
     try {
@@ -374,11 +256,7 @@ export const useMediaStore = defineStore('media', () => {
       return probeCurrentMp4();
     }
     probeResult.value = null;
-    const [captureResult, encoderResult] = await Promise.all([
-      capabilities.refreshVideoCapabilities(draftConfig.value.source.camera.video.deviceId),
-      capabilities.refreshVideoEncoderCapabilities(),
-    ]);
-    return captureResult.ok ? encoderResult : captureResult;
+    return { ok: true };
   }
 
   async function startPreview(): Promise<MediaOperationResult> {
@@ -406,7 +284,7 @@ export const useMediaStore = defineStore('media', () => {
 
   async function stopPreview(): Promise<MediaOperationResult> {
     isPreviewPending.value = true;
-    // 先阻止后续读帧进入 IPC，再关闭后端会话，避免摄像头被预览循环重新占用。
+    // 先阻止后续读帧进入 IPC，再关闭后端会话。
     preview.stop();
     try {
       runtimeStatus.value = await service.stopPreview();
@@ -475,15 +353,6 @@ export const useMediaStore = defineStore('media', () => {
     }
   }
 
-  async function setAudioMonitoring(enabled: boolean): Promise<MediaOperationResult> {
-    try {
-      runtimeStatus.value = await service.setAudioMonitoring(enabled);
-      return { ok: true };
-    } catch (error) {
-      return handleServiceFailure(error, true);
-    }
-  }
-
   async function stepPreviewFrame(): Promise<MediaOperationResult> {
     try {
       await preview.step();
@@ -517,32 +386,19 @@ export const useMediaStore = defineStore('media', () => {
     draftConfig,
     runtimeStatus,
     probeResult,
-    videoDevices,
-    audioDevices,
-    videoCapabilities,
-    supportedVideoCodecs,
-    videoEncoderCapabilities,
     fieldErrors,
     serviceError,
-    capabilityError,
-    encoderCapabilityError,
     isInitializing,
     isProbing,
     isApplying,
     isSaving,
     isPreviewPending,
-    isRefreshingDevices,
-    isLoadingVideoCapabilities,
     hasUnsavedChanges,
     canStartPreview,
     previewFrame: preview.previewFrame,
     initialize,
-    setSourceType,
     selectMp4,
     probeCurrentMp4,
-    setVideoDevice,
-    refreshCaptureDevices,
-    setVideoResolution,
     selectRecordingDirectory,
     applyDraft,
     saveDraft,
@@ -554,7 +410,6 @@ export const useMediaStore = defineStore('media', () => {
     seekPreview,
     setPlaybackRate,
     setAudioControl,
-    setAudioMonitoring,
     stepPreviewFrame,
   };
 });

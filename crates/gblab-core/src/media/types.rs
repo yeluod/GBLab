@@ -5,10 +5,9 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{AudioCodec, MediaError, VideoCodec};
-use crate::configuration::EncoderBackend;
 
 /// 媒体操作结果。
 pub type MediaResult<T> = Result<T, MediaError>;
@@ -19,8 +18,6 @@ pub type MediaResult<T> = Result<T, MediaError>;
 pub enum MediaSourceKind {
     /// MP4 文件源。
     Mp4,
-    /// 摄像头与可选麦克风采集源。
-    Camera,
 }
 
 /// 视频流能力。
@@ -69,120 +66,6 @@ pub struct Mp4ProbeResult {
     pub duration_seconds: Option<f64>,
     /// 容器码率，单位 bit/s；未知时为 None。
     pub bitrate: Option<u64>,
-}
-
-/// 摄像头采集输入配置。
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CameraCaptureSettings {
-    /// Stable camera device identifier.
-    pub video_device_id: String,
-    /// Target encoded video codec.
-    pub video_codec: VideoCodec,
-    /// Target video bitrate in bit/s.
-    pub video_bitrate: u64,
-    /// Requested encoder backend.
-    pub encoder_backend: EncoderBackend,
-    /// 是否同时打开音频输入。
-    pub audio_enabled: bool,
-    /// 麦克风设备标识。
-    pub audio_device_id: String,
-    /// Target encoded audio codec.
-    pub audio_codec: AudioCodec,
-    /// Target audio sample rate.
-    pub audio_sample_rate: u32,
-    /// Target audio channel count.
-    pub audio_channels: u32,
-    /// Target audio bitrate in bit/s.
-    pub audio_bitrate: u64,
-    /// 采集宽度。
-    pub width: u32,
-    /// 采集高度。
-    pub height: u32,
-    /// 采集帧率。
-    pub frames_per_second: f64,
-}
-
-/// 原生采集设备的可选项。
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureDeviceInfo {
-    /// `FFmpeg` 输入设备标识。
-    pub id: String,
-    /// 用于界面展示的设备名称。
-    pub name: String,
-}
-
-/// 原生采集设备枚举结果。
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureDeviceLists {
-    /// 摄像头设备。
-    pub video: Vec<CaptureDeviceInfo>,
-    /// 麦克风设备。
-    pub audio: Vec<CaptureDeviceInfo>,
-}
-
-/// 摄像头支持的一组分辨率与帧率。
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoCaptureMode {
-    /// 采集宽度。
-    pub width: u32,
-    /// 采集高度。
-    pub height: u32,
-    /// Frame-rate capabilities reported by the native backend.
-    pub frame_rates: Vec<FrameRateCapability>,
-}
-
-/// An exact frame rate or a continuous native range.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum FrameRateCapability {
-    /// One exact supported frame rate.
-    Exact {
-        /// Exact frames per second.
-        value: f64,
-    },
-    /// Inclusive continuous range reported by the device.
-    Range {
-        /// Minimum frames per second.
-        minimum: f64,
-        /// Maximum frames per second.
-        maximum: f64,
-    },
-}
-
-/// 单个摄像头的原生采集能力。
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoCaptureCapabilities {
-    /// 摄像头设备标识。
-    pub device_id: String,
-    /// 原生支持的采集模式。
-    pub modes: Vec<VideoCaptureMode>,
-}
-
-/// 当前随应用链接的 `FFmpeg` 视频编码能力。
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoEncoderCapabilities {
-    /// Encoders actually present in the linked `FFmpeg` build.
-    pub encoders: Vec<VideoEncoderCapability>,
-}
-
-/// One concrete encoder implementation available to the media runtime.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoEncoderCapability {
-    /// Output codec.
-    pub codec: VideoCodec,
-    /// User-facing backend family.
-    pub backend: EncoderBackend,
-    /// Exact `FFmpeg` encoder name.
-    pub encoder_name: String,
-    /// Whether the implementation is hardware accelerated.
-    pub hardware: bool,
 }
 
 /// 播放状态。
@@ -253,14 +136,12 @@ pub struct MediaRuntimeStatus {
     pub playback_rate: f64,
     /// 已向界面输出的解码帧数。
     pub decoded_frames: u64,
-    /// Media pipeline counters and microphone levels.
+    /// Media pipeline counters and decoded audio levels.
     pub metrics: MediaRuntimeMetrics,
     /// 音频是否静音。音频输出管线接入后继续复用此状态。
     pub muted: bool,
     /// 音量，范围 0.0 到 1.0。
     pub volume: f64,
-    /// Whether camera microphone monitoring is enabled locally.
-    pub audio_monitoring: bool,
     /// Active encoded live-stream consumers.
     pub active_live_consumers: u64,
     /// Active encoded recorder consumers.
@@ -287,7 +168,6 @@ impl MediaRuntimeStatus {
             metrics: MediaRuntimeMetrics::new(),
             muted: false,
             volume: 1.0,
-            audio_monitoring: false,
             active_live_consumers: 0,
             active_recorder_consumers: 0,
             last_error: None,
@@ -314,7 +194,6 @@ impl MediaRuntimeStatus {
             metrics: MediaRuntimeMetrics::new(),
             muted: false,
             volume: 1.0,
-            audio_monitoring: false,
             active_live_consumers: 0,
             active_recorder_consumers: 0,
             last_error: None,
@@ -324,11 +203,11 @@ impl MediaRuntimeStatus {
     }
 }
 
-/// Lightweight counters used to diagnose each camera/media pipeline stage.
+/// Lightweight counters used to diagnose each MP4 media pipeline stage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaRuntimeMetrics {
-    /// Demuxed/captured video packets.
+    /// Demuxed video packets.
     pub video_packets_captured: u64,
     /// Successfully decoded raw video frames.
     pub video_frames_decoded: u64,
@@ -336,7 +215,7 @@ pub struct MediaRuntimeMetrics {
     pub video_preview_frames: u64,
     /// Video packets emitted by the encoded branch.
     pub video_packets_encoded: u64,
-    /// Demuxed/captured audio packets.
+    /// Demuxed audio packets.
     pub audio_packets_captured: u64,
     /// Successfully decoded PCM frames.
     pub audio_frames_decoded: u64,
@@ -418,8 +297,6 @@ pub trait MediaSource {
 pub enum MediaSourceSession {
     /// MP4 文件会话。
     Mp4(Box<super::mp4::Mp4Session>),
-    /// 摄像头输入会话。
-    Camera(Box<super::camera::CameraSession>),
 }
 
 /// One source read distributed by the single media worker.
@@ -453,14 +330,9 @@ impl SourceReadOutput {
 }
 
 impl MediaSourceSession {
-    pub(crate) const fn is_live_capture(&self) -> bool {
-        matches!(self, Self::Camera(_))
-    }
-
     pub(crate) const fn probe(&self) -> &Mp4ProbeResult {
         match self {
             Self::Mp4(session) => session.probe(),
-            Self::Camera(session) => session.probe(),
         }
     }
 
@@ -468,21 +340,18 @@ impl MediaSourceSession {
     pub(crate) const fn timestamp_origin(&self) -> Option<i64> {
         match self {
             Self::Mp4(session) => session.timestamp_origin(),
-            Self::Camera(_) => None,
         }
     }
 
     pub(crate) fn initial_pipeline_error(&self) -> Option<String> {
         match self {
             Self::Mp4(session) => session.initial_pipeline_error(),
-            Self::Camera(session) => session.initial_pipeline_error(),
         }
     }
 
     pub(crate) const fn audio_preview_available(&self) -> bool {
         match self {
             Self::Mp4(session) => session.audio_preview_available(),
-            Self::Camera(session) => session.audio_preview_available(),
         }
     }
 
@@ -491,23 +360,12 @@ impl MediaSourceSession {
             Self::Mp4(session) => {
                 session.play();
             }
-            Self::Camera(session) => {
-                session.play();
-            }
         }
     }
 
     pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
         match self {
             Self::Mp4(session) => session.set_preview_enabled(enabled),
-            Self::Camera(session) => session.set_preview_enabled(enabled),
-        }
-    }
-
-    pub(crate) fn set_encoded_enabled(&mut self, enabled: bool) -> MediaResult<()> {
-        match self {
-            Self::Mp4(_) => Ok(()),
-            Self::Camera(session) => session.set_encoded_enabled(enabled),
         }
     }
 
@@ -517,7 +375,6 @@ impl MediaSourceSession {
     ) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.set_audio_output_format(format),
-            Self::Camera(session) => session.set_audio_output_format(format),
         }
     }
 
@@ -526,23 +383,18 @@ impl MediaSourceSession {
             Self::Mp4(session) => {
                 session.pause();
             }
-            Self::Camera(session) => {
-                session.pause();
-            }
         }
     }
 
     pub(crate) fn stop(&mut self) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.stop(),
-            Self::Camera(session) => session.stop(),
         }
     }
 
     pub(crate) fn reset(&mut self) -> MediaResult<()> {
         match self {
             Self::Mp4(session) => session.reset(),
-            Self::Camera(session) => session.reset(),
         }
     }
 
@@ -552,32 +404,18 @@ impl MediaSourceSession {
     ) -> MediaResult<Option<MediaVideoFrame>> {
         match self {
             Self::Mp4(session) => session.seek_frame(position_seconds),
-            Self::Camera(_) => Err(MediaError::UnsupportedSource(
-                "实时摄像头不支持时间线跳转".to_owned(),
-            )),
         }
     }
 
     pub(crate) fn step_frame(&mut self) -> MediaResult<Option<MediaVideoFrame>> {
         match self {
             Self::Mp4(session) => session.step_frame(),
-            Self::Camera(_) => Err(MediaError::UnsupportedSource(
-                "实时摄像头不支持单帧步进".to_owned(),
-            )),
         }
     }
 
     pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
         match self {
             Self::Mp4(session) => session.read_source_output(),
-            Self::Camera(session) => session.read_source_output(),
-        }
-    }
-
-    pub(crate) fn finish_encoded_packets(&mut self) -> MediaResult<Vec<super::EncodedMediaPacket>> {
-        match self {
-            Self::Mp4(_) => Ok(Vec::new()),
-            Self::Camera(session) => session.finish_encoded_packets(),
         }
     }
 }

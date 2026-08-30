@@ -4,10 +4,10 @@ import { TauriCommandError, normalizeInvokeError } from './invoke-command';
 
 describe('Tauri Command 错误归一化', () => {
   it('保留序列化错误的错误码和消息', () => {
-    const error = normalizeInvokeError({ code: 'media_error', message: '摄像头不可用。' });
+    const error = normalizeInvokeError({ code: 'media_error', message: 'MP4 文件不可用。' });
 
     expect(error).toBeInstanceOf(TauriCommandError);
-    expect(error.message).toBe('摄像头不可用。');
+    expect(error.message).toBe('MP4 文件不可用。');
     expect((error as TauriCommandError).code).toBe('media_error');
   });
 

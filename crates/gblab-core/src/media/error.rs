@@ -23,18 +23,12 @@ pub enum MediaError {
     /// 文件中存在当前阶段不支持的视频编码。
     #[error("不支持的视频编码: {0}")]
     UnsupportedVideoCodec(String),
-    /// 当前阶段不支持的媒体源。
-    #[error("当前媒体源暂不支持: {0}")]
-    UnsupportedSource(String),
     /// 播放会话尚未打开。
     #[error("尚未打开媒体源")]
     NoSourceOpen,
     /// 播放会话操作失败。
     #[error("媒体播放操作失败: {0}")]
     Playback(String),
-    /// 摄像头设备输入不可用或配置无效。
-    #[error("摄像头输入不可用: {0}")]
-    Camera(String),
     /// Native speaker output or PCM preview conversion failed.
     #[error("本地音频预览失败: {0}")]
     AudioPreview(String),

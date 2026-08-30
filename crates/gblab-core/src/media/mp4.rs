@@ -103,7 +103,7 @@ impl MediaSource for Mp4MediaSource {
                 .ok_or(MediaError::MissingVideoStream)?;
             create_annex_b_filter(&video_stream.codecpar(), video_stream.time_base)?
         };
-        let video_codec_configuration = gblab_ffmpeg_device::copy_codec_extradata(
+        let video_codec_configuration = gblab_ffmpeg_support::copy_codec_extradata(
             &context
                 .streams()
                 .get(video_stream_index)
@@ -117,7 +117,7 @@ impl MediaSource for Mp4MediaSource {
             .position(|stream| stream.codecpar().codec_type().is_audio());
         let audio_codec_configuration = audio_stream_index
             .and_then(|index| context.streams().get(index))
-            .and_then(|stream| gblab_ffmpeg_device::copy_codec_extradata(&stream.codecpar()))
+            .and_then(|stream| gblab_ffmpeg_support::copy_codec_extradata(&stream.codecpar()))
             .map(Bytes::from);
         let (audio_decoder, audio_error) = audio_stream_index
             .and_then(|index| context.streams().get(index))
@@ -851,7 +851,7 @@ fn encoded_packet(
     EncodedMediaPacket {
         track,
         codec,
-        data: Bytes::from(gblab_ffmpeg_device::copy_packet_data(packet)),
+        data: Bytes::from(gblab_ffmpeg_support::copy_packet_data(packet)),
         pts: valid_timestamp(packet.pts),
         dts: valid_timestamp(packet.dts),
         duration: packet.duration,

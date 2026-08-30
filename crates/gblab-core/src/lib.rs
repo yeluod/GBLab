@@ -16,10 +16,9 @@ mod error;
 
 pub use application::{CoreInfo, CoreService, DevicePage};
 pub use configuration::{
-    AudioCaptureConfiguration, AudioCodec, CameraSourceConfiguration,
-    DeviceCollectionConfiguration, EncoderBackend, MediaConfiguration, MediaPreferences,
+    DeviceCollectionConfiguration, MediaConfiguration, MediaPreferences,
     MediaRecordingConfiguration, MediaSourceConfiguration, MediaSourceType, Mp4SourceConfiguration,
-    SignalCharset, SipServiceConfiguration, SipTransport, VideoCaptureConfiguration, VideoCodec,
+    SignalCharset, SipServiceConfiguration, SipTransport,
 };
 pub use domain::{
     BatchDeviceDraft, DeviceKind, DeviceSnapshot, DeviceUpdateDraft, SimulatedChannel,
@@ -27,9 +26,6 @@ pub use domain::{
 };
 pub use error::{CoreError, Result};
 pub use media::{
-    AudioSinkInfo, AudioSinkStatus, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    GlobalMediaHandle, GlobalMediaRuntime, MediaError, MediaResult, MediaRuntimeStatus,
-    MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode,
-    VideoEncoderCapabilities, list_capture_devices, probe_mp4, video_capture_capabilities,
-    video_encoder_capabilities,
+    AudioSinkInfo, AudioSinkStatus, GlobalMediaHandle, GlobalMediaRuntime, MediaError, MediaResult,
+    MediaRuntimeStatus, MediaVideoFrame, Mp4ProbeResult, probe_mp4,
 };

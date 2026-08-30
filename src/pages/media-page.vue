@@ -4,7 +4,7 @@
 
   import MediaSourceForm from '@/features/media/components/media-source-form.vue';
   import MediaStatusPanel from '@/features/media/components/media-status-panel.vue';
-  import { MediaSourceStatus, MediaSourceType, useMediaStore } from '@/features/media';
+  import { MediaSourceStatus, useMediaStore } from '@/features/media';
   import AppIcon from '@/shared/components/app-icon.vue';
 
   const store = useMediaStore();
@@ -54,41 +54,15 @@
     <NAlert v-if="store.serviceError !== null" type="error" class="media-service-alert">
       {{ store.serviceError }}
     </NAlert>
-    <NAlert
-      v-else-if="
-        store.draftConfig.source.type === MediaSourceType.Camera &&
-        !store.isInitializing &&
-        !store.isRefreshingDevices &&
-        store.videoDevices.length === 0 &&
-        store.audioDevices.length === 0
-      "
-      type="warning"
-      class="media-service-alert"
-    >
-      系统未发现可用的摄像头或麦克风，请检查设备连接和系统隐私权限。
-    </NAlert>
 
     <NCard class="media-workbench" content-style="padding: 0;">
       <div class="media-workbench-body">
         <MediaSourceForm
           v-model:config="store.draftConfig"
-          :video-devices="store.videoDevices"
-          :audio-devices="store.audioDevices"
-          :capabilities="store.videoCapabilities"
-          :supported-video-codecs="store.supportedVideoCodecs"
-          :video-encoder-capabilities="store.videoEncoderCapabilities"
           :field-errors="store.fieldErrors"
-          :capability-error="store.capabilityError"
-          :encoder-capability-error="store.encoderCapabilityError"
           :is-probing="store.isProbing"
-          :is-refreshing-devices="store.isRefreshingDevices"
-          :is-loading-video-capabilities="store.isLoadingVideoCapabilities"
-          @source-type-change="store.setSourceType"
           @select-mp4="runOperation(store.selectMp4)"
           @probe-mp4="runOperation(store.probeCurrentMp4, '媒体信息检测完成。')"
-          @refresh-devices="runOperation(store.refreshCaptureDevices, '设备列表已刷新。')"
-          @video-device-change="store.setVideoDevice"
-          @video-resolution-change="store.setVideoResolution"
           @select-recording-directory="runOperation(store.selectRecordingDirectory)"
         />
         <MediaStatusPanel
@@ -96,7 +70,6 @@
           :probe-result="store.probeResult"
           :is-preview-pending="store.isPreviewPending"
           :can-start-preview="store.canStartPreview"
-          :source-type="store.draftConfig.source.type"
           :preview-frame="store.previewFrame"
           @start-preview="runOperation(store.startPreview, '预览已启动。')"
           @stop-preview="runOperation(store.stopPreview, '预览已停止。')"
@@ -107,9 +80,6 @@
           @playback-rate-change="runOperation(() => store.setPlaybackRate($event))"
           @audio-control-change="
             (muted, volume) => runOperation(() => store.setAudioControl(muted, volume))
-          "
-          @audio-monitoring-change="
-            (enabled) => runOperation(() => store.setAudioMonitoring(enabled))
           "
         />
       </div>

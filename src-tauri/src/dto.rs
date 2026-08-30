@@ -1,7 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
     MediaRuntimeStatus, Mp4ProbeResult, SignalCharset, SimulatedChannel, SimulatedDevice,
-    SipServiceConfiguration, SipTransport, VideoCaptureCapabilities, VideoEncoderCapabilities,
+    SipServiceConfiguration, SipTransport,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -409,76 +409,11 @@ pub struct MediaRuntimeStatusDto {
     metrics: gblab_core::media::MediaRuntimeMetrics,
     muted: bool,
     volume: f64,
-    audio_monitoring: bool,
     active_live_consumers: u64,
     active_recorder_consumers: u64,
     last_error: Option<String>,
     last_pipeline_error: Option<String>,
     audio_sink: Option<gblab_core::media::AudioSinkInfo>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureDeviceInfoDto {
-    id: String,
-    name: String,
-    status: &'static str,
-}
-
-impl From<gblab_core::CaptureDeviceInfo> for CaptureDeviceInfoDto {
-    fn from(value: gblab_core::CaptureDeviceInfo) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-            status: "available",
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureDeviceListsDto {
-    video: Vec<CaptureDeviceInfoDto>,
-    audio: Vec<CaptureDeviceInfoDto>,
-}
-
-impl From<gblab_core::CaptureDeviceLists> for CaptureDeviceListsDto {
-    fn from(value: gblab_core::CaptureDeviceLists) -> Self {
-        Self {
-            video: value.video.into_iter().map(Into::into).collect(),
-            audio: value.audio.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoCaptureCapabilitiesDto {
-    device_id: String,
-    modes: Vec<gblab_core::VideoCaptureMode>,
-}
-
-impl From<VideoCaptureCapabilities> for VideoCaptureCapabilitiesDto {
-    fn from(value: VideoCaptureCapabilities) -> Self {
-        Self {
-            device_id: value.device_id,
-            modes: value.modes,
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoEncoderCapabilitiesDto {
-    encoders: Vec<gblab_core::media::VideoEncoderCapability>,
-}
-
-impl From<VideoEncoderCapabilities> for VideoEncoderCapabilitiesDto {
-    fn from(value: VideoEncoderCapabilities) -> Self {
-        Self {
-            encoders: value.encoders,
-        }
-    }
 }
 
 impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
@@ -495,7 +430,6 @@ impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
             metrics: value.metrics,
             muted: value.muted,
             volume: value.volume,
-            audio_monitoring: value.audio_monitoring,
             active_live_consumers: value.active_live_consumers,
             active_recorder_consumers: value.active_recorder_consumers,
             last_error: value.last_error,

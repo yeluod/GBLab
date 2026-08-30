@@ -24,8 +24,6 @@ pub(super) struct AudioOutputFormat {
 #[derive(Debug)]
 pub(super) struct AudioPcmFrame {
     pub(crate) samples: Vec<f32>,
-    pub(crate) sample_rate: u32,
-    pub(crate) channels: u16,
     pub(crate) pts: Option<i64>,
     /// PCM timestamp units are explicit: one unit is one sample at `sample_rate`.
     pub(crate) time_base: MediaTimeBase,
@@ -160,7 +158,7 @@ impl AudioPreviewDecoder {
         if output.nb_samples <= 0 {
             return Ok(None);
         }
-        let samples = gblab_ffmpeg_device::copy_interleaved_f32(&output)
+        let samples = gblab_ffmpeg_support::copy_interleaved_f32(&output)
             .ok_or_else(|| MediaError::AudioPreview("读取预览 PCM 失败".to_owned()))?;
         let output_sample_rate = i32::try_from(self.output_format.sample_rate)
             .map_err(|_| MediaError::AudioPreview("输出采样率超出范围".to_owned()))?;
@@ -174,8 +172,6 @@ impl AudioPreviewDecoder {
         self.next_output_pts = pts.saturating_add(i64::from(output.nb_samples));
         Ok(Some(AudioPcmFrame {
             samples,
-            sample_rate: self.output_format.sample_rate,
-            channels: self.output_format.channels,
             pts: Some(pts),
             time_base: output_time_base,
         }))
@@ -211,14 +207,12 @@ impl AudioPreviewDecoder {
             if output.nb_samples <= 0 {
                 break;
             }
-            let samples = gblab_ffmpeg_device::copy_interleaved_f32(&output)
+            let samples = gblab_ffmpeg_support::copy_interleaved_f32(&output)
                 .ok_or_else(|| MediaError::AudioPreview("读取排空 PCM 失败".to_owned()))?;
             let pts = self.next_output_pts;
             self.next_output_pts = pts.saturating_add(i64::from(output.nb_samples));
             frames.push(AudioPcmFrame {
                 samples,
-                sample_rate: self.output_format.sample_rate,
-                channels: self.output_format.channels,
                 pts: Some(pts),
                 time_base: output_time_base,
             });

@@ -66,11 +66,10 @@ pub struct MediaConfiguration {
 #[serde(default, rename_all = "camelCase")]
 pub struct MediaSourceConfiguration {
     /// 媒体源类型。
+    #[serde(deserialize_with = "deserialize_mp4_source_type")]
     pub r#type: MediaSourceType,
     /// MP4 文件配置。
     pub mp4: Mp4SourceConfiguration,
-    /// 摄像头配置，为下一阶段采集能力保留设置结构。
-    pub camera: CameraSourceConfiguration,
 }
 
 impl Default for MediaSourceConfiguration {
@@ -78,7 +77,6 @@ impl Default for MediaSourceConfiguration {
         Self {
             r#type: MediaSourceType::Mp4,
             mp4: Mp4SourceConfiguration::default(),
-            camera: CameraSourceConfiguration::default(),
         }
     }
 }
@@ -90,8 +88,19 @@ pub enum MediaSourceType {
     /// MP4 文件。
     #[default]
     Mp4,
-    /// 本地摄像头。
-    Camera,
+}
+
+fn deserialize_mp4_source_type<'de, D>(deserializer: D) -> Result<MediaSourceType, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    match value.as_str() {
+        "mp4" | "camera" => Ok(MediaSourceType::Mp4),
+        _ => Err(<D::Error as serde::de::Error>::custom(format!(
+            "不支持的媒体源类型: {value}"
+        ))),
+    }
 }
 
 /// MP4 文件配置。
@@ -111,124 +120,6 @@ impl Default for Mp4SourceConfiguration {
             is_looping: true,
         }
     }
-}
-
-/// 摄像头源配置。
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct CameraSourceConfiguration {
-    /// 视频采集配置。
-    pub video: VideoCaptureConfiguration,
-    /// 音频采集配置。
-    pub audio: AudioCaptureConfiguration,
-}
-
-/// 视频采集配置。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct VideoCaptureConfiguration {
-    /// 设备标识。
-    pub device_id: String,
-    /// 宽度。
-    pub width: u32,
-    /// 高度。
-    pub height: u32,
-    /// 帧率。
-    pub frames_per_second: u32,
-    /// 视频编码。
-    pub codec: VideoCodec,
-    /// 码率，单位为 Kbps。
-    pub bitrate_kbps: u32,
-    /// 编码后端。
-    pub encoder_backend: EncoderBackend,
-}
-
-impl Default for VideoCaptureConfiguration {
-    fn default() -> Self {
-        Self {
-            device_id: String::new(),
-            width: 1_920,
-            height: 1_080,
-            frames_per_second: 25,
-            codec: VideoCodec::H264,
-            bitrate_kbps: 4_096,
-            encoder_backend: EncoderBackend::Auto,
-        }
-    }
-}
-
-/// 音频采集配置。
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct AudioCaptureConfiguration {
-    /// 是否启用音频。
-    pub is_enabled: bool,
-    /// 设备标识。
-    pub device_id: String,
-    /// 音频编码。
-    pub codec: AudioCodec,
-    /// 采样率。
-    pub sample_rate: u32,
-    /// 声道数。
-    pub channels: u32,
-    /// 码率，单位为 Kbps。
-    pub bitrate_kbps: u32,
-}
-
-impl Default for AudioCaptureConfiguration {
-    fn default() -> Self {
-        Self {
-            is_enabled: false,
-            device_id: String::new(),
-            codec: AudioCodec::Aac,
-            sample_rate: 48_000,
-            channels: 2,
-            bitrate_kbps: 128,
-        }
-    }
-}
-
-/// 视频编码。
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum VideoCodec {
-    /// H.264。
-    #[default]
-    H264,
-    /// H.265/HEVC。
-    H265,
-}
-
-/// 音频编码。
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AudioCodec {
-    /// G.711 A-law。
-    G711a,
-    /// G.711 mu-law。
-    G711u,
-    /// AAC。
-    #[default]
-    Aac,
-}
-
-/// 编码后端。
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EncoderBackend {
-    /// 自动选择。
-    #[default]
-    Auto,
-    /// Apple `VideoToolbox`。
-    Videotoolbox,
-    /// Windows Media Foundation。
-    MediaFoundation,
-    /// NVIDIA NVENC。
-    Nvenc,
-    /// Intel Quick Sync。
-    Qsv,
-    /// AMD AMF。
-    Amf,
 }
 
 /// 本地录像配置。
@@ -572,18 +463,6 @@ impl MediaConfiguration {
                 "录像分片时长必须为 5、10、30 或 60 分钟",
             ));
         }
-        if self.source.camera.video.width == 0 || self.source.camera.video.height == 0 {
-            return Err(ConfigurationError::invalid_field(
-                "source.camera.video",
-                "摄像头分辨率必须大于 0",
-            ));
-        }
-        if self.source.camera.video.frames_per_second == 0 {
-            return Err(ConfigurationError::invalid_field(
-                "source.camera.video.framesPerSecond",
-                "摄像头帧率必须大于 0",
-            ));
-        }
         Ok(self)
     }
 }
@@ -751,7 +630,8 @@ mod tests {
 
     use super::{
         AppConfiguration, ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration,
-        SignalCharset, SipServiceConfiguration, SipTransport,
+        MediaSourceConfiguration, MediaSourceType, SignalCharset, SipServiceConfiguration,
+        SipTransport,
     };
 
     fn valid_sip_service() -> SipServiceConfiguration {
@@ -846,6 +726,25 @@ mod tests {
         assert_eq!(store.sip_service().signal_charset, SignalCharset::Gb2312);
         assert!(store.device_collection().devices.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn media_source_should_accept_mp4_and_legacy_camera_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mp4: MediaSourceConfiguration =
+            serde_json::from_str(r#"{"type":"mp4","mp4":{"filePath":"","isLooping":true}}"#)?;
+        let legacy: MediaSourceConfiguration =
+            serde_json::from_str(r#"{"type":"camera","mp4":{"filePath":"","isLooping":true}}"#)?;
+        assert_eq!(mp4.r#type, MediaSourceType::Mp4);
+        assert_eq!(legacy.r#type, MediaSourceType::Mp4);
+        Ok(())
+    }
+
+    #[test]
+    fn media_source_should_reject_unknown_type() {
+        let result: Result<MediaSourceConfiguration, _> =
+            serde_json::from_str(r#"{"type":"unknown","mp4":{"filePath":"","isLooping":true}}"#);
+        assert!(result.is_err());
     }
 
     #[test]

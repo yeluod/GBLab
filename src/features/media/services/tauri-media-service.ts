@@ -1,7 +1,7 @@
 import { invokeCommand } from '@/infrastructure/tauri';
 import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 
-import { CaptureDeviceStatus, MediaSourceType } from '../types/media-config';
+import { MediaSourceType } from '../types/media-config';
 import {
   MediaSourceStatus,
   type DetectedAudioCodec,
@@ -10,12 +10,7 @@ import {
   type MediaRuntimeStatus,
   normalizeDetectedAudioCodec,
 } from '../types/media-runtime';
-import type {
-  CaptureDeviceCapabilities,
-  CaptureDeviceInfo,
-  GlobalMediaConfig,
-  VideoEncoderCapabilities,
-} from '../types/media-config';
+import type { GlobalMediaConfig } from '../types/media-config';
 import { MediaServiceError, type MediaService, type MediaVideoFrame } from './media-service';
 
 interface BackendStreamInfo {
@@ -37,20 +32,9 @@ interface BackendProbeResult {
   bitrate: number | null;
 }
 
-interface BackendCaptureDevice {
-  id: string;
-  name: string;
-  status: 'available' | 'unavailable' | 'permission-denied' | 'busy';
-}
-
-interface BackendCaptureDeviceLists {
-  video: BackendCaptureDevice[];
-  audio: BackendCaptureDevice[];
-}
-
 interface BackendRuntimeStatus {
   sourceStatus: 'unconfigured' | 'ready' | 'playing' | 'paused' | 'stopped';
-  sourceKind: MediaSourceType | null;
+  sourceKind: 'mp4' | null;
   video: BackendStreamInfo | null;
   audio: BackendStreamInfo | null;
   durationSeconds: number | null;
@@ -60,7 +44,6 @@ interface BackendRuntimeStatus {
   metrics: MediaRuntimeStatus['metrics'];
   muted: boolean;
   volume: number;
-  audioMonitoring: boolean;
   activeLiveConsumers: number;
   activeRecorderConsumers: number;
   lastError: string | null;
@@ -70,27 +53,8 @@ interface BackendRuntimeStatus {
 
 type BackendMediaConfig = {
   source: {
-    type: 'mp4' | 'camera';
+    type: 'mp4';
     mp4: { filePath: string; isLooping: boolean };
-    camera: {
-      video: {
-        deviceId: string;
-        width: number;
-        height: number;
-        framesPerSecond: number;
-        codec: string;
-        bitrateKbps: number;
-        encoderBackend: string;
-      };
-      audio: {
-        isEnabled: boolean;
-        deviceId: string;
-        codec: string;
-        sampleRate: number;
-        channels: number;
-        bitrateKbps: number;
-      };
-    };
   };
   recording: {
     isEnabled: boolean;
@@ -100,34 +64,11 @@ type BackendMediaConfig = {
   preferences: { shouldProbeAfterSelection: boolean };
 };
 
-const encoderToBackend: Record<string, string> = {
-  auto: 'auto',
-  videotoolbox: 'videotoolbox',
-  'media-foundation': 'media-foundation',
-  nvenc: 'nvenc',
-  qsv: 'qsv',
-  amf: 'amf',
-};
-
 function fromBackendConfig(value: BackendMediaConfig): GlobalMediaConfig {
   return {
     source: {
-      type: value.source.type as MediaSourceType,
+      type: MediaSourceType.Mp4,
       mp4: { ...value.source.mp4 },
-      camera: {
-        video: {
-          ...value.source.camera.video,
-          codec: value.source.camera.video
-            .codec as GlobalMediaConfig['source']['camera']['video']['codec'],
-          encoderBackend: value.source.camera.video
-            .encoderBackend as GlobalMediaConfig['source']['camera']['video']['encoderBackend'],
-        },
-        audio: {
-          ...value.source.camera.audio,
-          codec: value.source.camera.audio
-            .codec as GlobalMediaConfig['source']['camera']['audio']['codec'],
-        },
-      },
     },
     recording: { ...value.recording },
     preferences: { ...value.preferences },
@@ -137,15 +78,8 @@ function fromBackendConfig(value: BackendMediaConfig): GlobalMediaConfig {
 function toBackendConfig(value: GlobalMediaConfig): BackendMediaConfig {
   return {
     source: {
-      type: value.source.type,
+      type: 'mp4',
       mp4: { ...value.source.mp4 },
-      camera: {
-        video: {
-          ...value.source.camera.video,
-          encoderBackend: encoderToBackend[value.source.camera.video.encoderBackend] ?? 'auto',
-        },
-        audio: { ...value.source.camera.audio },
-      },
     },
     recording: { ...value.recording },
     preferences: { ...value.preferences },
@@ -199,12 +133,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
             : MediaSourceStatus.Ready;
   return {
     sourceStatus,
-    sourceLabel:
-      value.sourceKind === MediaSourceType.Mp4
-        ? 'MP4 文件'
-        : value.sourceKind === MediaSourceType.Camera
-          ? '摄像头'
-          : '未配置',
+    sourceLabel: value.sourceKind === MediaSourceType.Mp4 ? 'MP4 文件' : '未配置',
     video: value.video ? frontendVideo(value.video) : null,
     audio: value.audio ? frontendAudio(value.audio) : null,
     // Live/Playback managers are not implemented yet; never expose source
@@ -218,7 +147,6 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     metrics: value.metrics,
     muted: value.muted,
     volume: value.volume,
-    audioMonitoring: value.audioMonitoring,
     errorMessage: value.lastError,
     pipelineErrorMessage: value.lastPipelineError,
     audioSink: value.audioSink,
@@ -227,8 +155,6 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
 
 /** Tauri 媒体适配器；MP4 的探测和播放在 Rust/rsmpeg 内完成。 */
 export class TauriMediaService implements MediaService {
-  private captureDevicesRequest: Promise<BackendCaptureDeviceLists> | null = null;
-
   async loadConfig(): Promise<GlobalMediaConfig> {
     return fromBackendConfig(await invokeCommand<BackendMediaConfig>('get_media_configuration'));
   }
@@ -267,22 +193,6 @@ export class TauriMediaService implements MediaService {
   async probeMp4(filePath: string): Promise<MediaProbeResult> {
     return toProbe(await invokeCommand<BackendProbeResult>('probe_mp4', { filePath }));
   }
-  async listVideoDevices(): Promise<CaptureDeviceInfo[]> {
-    const devices = await this.listCaptureDevices();
-    return devices.video.map(toCaptureDevice);
-  }
-  async listAudioDevices(): Promise<CaptureDeviceInfo[]> {
-    const devices = await this.listCaptureDevices();
-    return devices.audio.map(toCaptureDevice);
-  }
-  async getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities> {
-    return invokeCommand<CaptureDeviceCapabilities>('get_video_capture_capabilities', {
-      deviceId,
-    });
-  }
-  getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities> {
-    return invokeCommand<VideoEncoderCapabilities>('get_video_encoder_capabilities');
-  }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     const current = await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status');
     if (current.activeLiveConsumers > 0 || current.activeRecorderConsumers > 0) {
@@ -314,11 +224,6 @@ export class TauriMediaService implements MediaService {
       await invokeCommand<BackendRuntimeStatus>('set_media_audio_control', { muted, volume }),
     );
   }
-  async setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus> {
-    return toRuntime(
-      await invokeCommand<BackendRuntimeStatus>('set_media_audio_monitoring', { enabled }),
-    );
-  }
   async stepFrame(): Promise<MediaVideoFrame | null> {
     return decodePreviewFrame(await invokeCommand<Uint8Array>('step_media_frame'));
   }
@@ -331,27 +236,6 @@ export class TauriMediaService implements MediaService {
   }
 
   private async open(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
-    if (config.source.type === MediaSourceType.Camera) {
-      return toRuntime(
-        await invokeCommand<BackendRuntimeStatus>('open_camera', {
-          configuration: {
-            videoDeviceId: config.source.camera.video.deviceId,
-            videoCodec: config.source.camera.video.codec,
-            videoBitrate: config.source.camera.video.bitrateKbps * 1000,
-            encoderBackend: config.source.camera.video.encoderBackend,
-            audioEnabled: config.source.camera.audio.isEnabled,
-            audioDeviceId: config.source.camera.audio.deviceId,
-            audioCodec: config.source.camera.audio.codec,
-            audioSampleRate: config.source.camera.audio.sampleRate,
-            audioChannels: config.source.camera.audio.channels,
-            audioBitrate: config.source.camera.audio.bitrateKbps * 1000,
-            width: config.source.camera.video.width,
-            height: config.source.camera.video.height,
-            framesPerSecond: config.source.camera.video.framesPerSecond,
-          },
-        }),
-      );
-    }
     return toRuntime(
       await invokeCommand<BackendRuntimeStatus>('open_mp4', {
         filePath: config.source.mp4.filePath,
@@ -359,22 +243,6 @@ export class TauriMediaService implements MediaService {
       }),
     );
   }
-
-  private async listCaptureDevices(): Promise<BackendCaptureDeviceLists> {
-    this.captureDevicesRequest ??= invokeCommand<BackendCaptureDeviceLists>(
-      'list_capture_devices',
-    ).finally(() => {
-      this.captureDevicesRequest = null;
-    });
-    return this.captureDevicesRequest;
-  }
-}
-function toCaptureDevice(device: BackendCaptureDevice): CaptureDeviceInfo {
-  return {
-    id: device.id,
-    name: device.name,
-    status: device.status as CaptureDeviceStatus,
-  };
 }
 
 function decodePreviewFrame(payload: Uint8Array): MediaVideoFrame | null {

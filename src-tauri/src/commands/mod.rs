@@ -13,8 +13,7 @@ use crate::{
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
         DeviceSnapshotDto, DeviceUpdateDraftDto, MediaRuntimeStatusDto, Mp4ProbeResultDto,
-        SimulatedChannelDto, SipServiceConfigurationDto, VideoCaptureCapabilitiesDto,
-        VideoEncoderCapabilitiesDto,
+        SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
 
@@ -80,43 +79,6 @@ pub fn open_mp4(
         .open_mp4(std::path::PathBuf::from(file_path), looping)
         .map(Into::into)
         .map_err(|error| CommandErrorDto::media(&error))
-}
-
-#[tauri::command]
-pub fn open_camera(
-    configuration: gblab_core::CameraCaptureSettings,
-    state: State<'_, AppState>,
-) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    state
-        .media
-        .handle()
-        .open_camera(configuration)
-        .map(Into::into)
-        .map_err(|error| CommandErrorDto::media(&error))
-}
-
-/// 返回当前平台由 `FFmpeg` 原生设备层枚举出的摄像头和麦克风。
-#[tauri::command]
-pub fn list_capture_devices() -> Result<crate::dto::CaptureDeviceListsDto, CommandErrorDto> {
-    gblab_core::list_capture_devices()
-        .map(Into::into)
-        .map_err(|error| CommandErrorDto::media(&error))
-}
-
-/// 返回指定摄像头的原生分辨率和帧率，不打开采集会话。
-#[tauri::command]
-pub fn get_video_capture_capabilities(
-    device_id: String,
-) -> Result<VideoCaptureCapabilitiesDto, CommandErrorDto> {
-    gblab_core::video_capture_capabilities(&device_id)
-        .map(Into::into)
-        .map_err(|error| CommandErrorDto::media(&error))
-}
-
-/// 返回当前 `FFmpeg` Native Libraries 实际提供的视频编码器。
-#[tauri::command]
-pub fn get_video_encoder_capabilities() -> VideoEncoderCapabilitiesDto {
-    gblab_core::video_encoder_capabilities().into()
 }
 
 #[tauri::command]
@@ -236,19 +198,6 @@ pub fn step_media_frame(state: State<'_, AppState>) -> Result<Response, CommandE
 #[tauri::command]
 pub fn get_media_runtime_status(state: State<'_, AppState>) -> MediaRuntimeStatusDto {
     state.media.handle().status().into()
-}
-
-#[tauri::command]
-pub fn set_media_audio_monitoring(
-    enabled: bool,
-    state: State<'_, AppState>,
-) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
-    state
-        .media
-        .handle()
-        .set_audio_monitoring(enabled)
-        .map(Into::into)
-        .map_err(|error| CommandErrorDto::media(&error))
 }
 
 /// Reads one bounded preview frame as raw binary, never as a JSON number array.

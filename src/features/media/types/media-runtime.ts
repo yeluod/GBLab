@@ -1,7 +1,7 @@
 import { AudioCodec } from './media-config';
 import type { VideoCodec } from './media-config';
 
-/** Codec detected in a source stream; it may be outside the capture target set. */
+/** Codec detected in an MP4 source stream. */
 export type DetectedAudioCodec = AudioCodec | 'other';
 
 export function normalizeDetectedAudioCodec(value: string): DetectedAudioCodec {
@@ -58,7 +58,6 @@ export interface MediaRuntimeStatus {
   metrics: MediaRuntimeMetrics;
   muted: boolean;
   volume: number;
-  audioMonitoring: boolean;
   errorMessage: string | null;
   pipelineErrorMessage: string | null;
   audioSink: AudioSinkInfo | null;

@@ -1,9 +1,4 @@
-import type {
-  CaptureDeviceCapabilities,
-  CaptureDeviceInfo,
-  GlobalMediaConfig,
-  VideoEncoderCapabilities,
-} from '../types/media-config';
+import type { GlobalMediaConfig } from '../types/media-config';
 import type { MediaProbeResult, MediaRuntimeStatus } from '../types/media-runtime';
 
 export interface MediaVideoFrame {
@@ -21,10 +16,6 @@ export interface MediaService {
   selectMp4(currentPath: string): Promise<string | null>;
   selectRecordingDirectory(currentDirectory: string): Promise<string | null>;
   probeMp4(filePath: string): Promise<MediaProbeResult>;
-  listVideoDevices(): Promise<CaptureDeviceInfo[]>;
-  listAudioDevices(): Promise<CaptureDeviceInfo[]>;
-  getVideoCapabilities(deviceId: string): Promise<CaptureDeviceCapabilities>;
-  getVideoEncoderCapabilities(): Promise<VideoEncoderCapabilities>;
   startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus>;
   stopPreview(): Promise<MediaRuntimeStatus>;
   pausePreview(): Promise<MediaRuntimeStatus>;
@@ -32,7 +23,6 @@ export interface MediaService {
   seek(positionSeconds: number): Promise<MediaRuntimeStatus>;
   setPlaybackRate(rate: number): Promise<MediaRuntimeStatus>;
   setAudioControl(muted: boolean, volume: number): Promise<MediaRuntimeStatus>;
-  setAudioMonitoring(enabled: boolean): Promise<MediaRuntimeStatus>;
   stepFrame(): Promise<MediaVideoFrame | null>;
   getRuntimeStatus(): Promise<MediaRuntimeStatus>;
   readFrame(): Promise<MediaVideoFrame | null>;
