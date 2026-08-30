@@ -490,7 +490,7 @@ impl MediaWorker {
                     .ensure_source_replacement_allowed()
                     .and_then(|()| Mp4MediaSource::new(path).open(looping))
                     .map(|session| self.replace_session(session));
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::Play(reply) => {
                 let result = self.with_session(MediaSourceSession::play);
@@ -512,7 +512,7 @@ impl MediaWorker {
                     ));
                     self.sync_audio_sink_playback(true);
                 }
-                Self::reply_status(&reply, result.map(|()| self.status.clone()));
+                self.reply_status(&reply, result.map(|()| self.status.clone()));
             }
             MediaCommand::AttachPreview(reply) => {
                 self.preview_attached = true;
@@ -520,7 +520,7 @@ impl MediaWorker {
                     session.set_preview_enabled(true);
                 }
                 self.ensure_audio_sink();
-                Self::reply_status(&reply, Ok(self.status.clone()));
+                self.reply_status(&reply, Ok(self.status.clone()));
             }
             MediaCommand::DetachPreview(reply) => {
                 self.preview_attached = false;
@@ -529,7 +529,7 @@ impl MediaWorker {
                 }
                 self.status.audio_sink = None;
                 let result = self.reconcile_runtime_demand();
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::Pause(reply) => {
                 let result = if self.has_stream_consumers() {
@@ -546,19 +546,19 @@ impl MediaWorker {
                     self.status.metrics.audio_peak = 0.0;
                     self.last_audio_activity = None;
                 }
-                Self::reply_status(&reply, result.map(|()| self.status.clone()));
+                self.reply_status(&reply, result.map(|()| self.status.clone()));
             }
             MediaCommand::Stop(reply) => {
                 let result = self.stop_source();
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::Close(reply) => {
                 let result = self.close_source();
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::Reset(reply) => {
                 let result = self.reset_source();
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::Seek {
                 position_seconds,
@@ -571,7 +571,7 @@ impl MediaWorker {
                 } else {
                     self.seek_source(position_seconds)
                 };
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::SetPlaybackRate { rate, reply } => {
                 let result = if self.has_stream_consumers() {
@@ -587,8 +587,7 @@ impl MediaWorker {
                     {
                         Ok(error) => error,
                         Err(error) => {
-                            Self::reply_status(&reply, Err(error));
-                            self.publish_status();
+                            self.reply_status(&reply, Err(error));
                             return true;
                         }
                     };
@@ -620,7 +619,7 @@ impl MediaWorker {
                         "播放倍速必须介于 0.25 和 4.0".to_owned(),
                     ))
                 };
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::SetAudioControl {
                 muted,
@@ -637,10 +636,11 @@ impl MediaWorker {
                 } else {
                     Err(MediaError::Playback("音量必须介于 0.0 和 1.0".to_owned()))
                 };
-                Self::reply_status(&reply, result);
+                self.reply_status(&reply, result);
             }
             MediaCommand::StepFrame(reply) => {
                 let result = self.step_frame();
+                self.publish_status();
                 let _ = reply.try_send(result);
             }
             MediaCommand::Subscribe {
@@ -653,10 +653,12 @@ impl MediaWorker {
                 let id = subscription.id;
                 match self.reconcile_runtime_demand() {
                     Ok(_) => {
+                        self.publish_status();
                         let _ = reply.try_send(Ok(subscription));
                     }
                     Err(error) => {
                         let _ = self.hub.unsubscribe(id);
+                        self.publish_status();
                         let _ = reply.try_send(Err(error));
                     }
                 }
@@ -961,7 +963,10 @@ impl MediaWorker {
         Ok(())
     }
 
-    fn reply_status(reply: &StatusReply, result: MediaResult<MediaRuntimeStatus>) {
+    fn reply_status(&self, reply: &StatusReply, result: MediaResult<MediaRuntimeStatus>) {
+        // Publish before acknowledging the command so a subsequent status read
+        // observes the same state that was returned to the caller.
+        self.publish_status();
         let _ = reply.try_send(result);
     }
 
