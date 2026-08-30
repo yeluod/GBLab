@@ -75,8 +75,8 @@ cat > "$output_root/manifest.json" <<EOF
   "ffmpegVersion": "$ffmpeg_version",
   "platform": "macos",
   "architecture": "$architecture",
-  "linkMode": $(jq -er '.linkMode' "$lockfile"),
-  "license": $(jq -er '.license' "$lockfile"),
+  "linkMode": "$(jq -er '.linkMode' "$lockfile")",
+  "license": "$(jq -er '.license' "$lockfile")",
   "requiredLibraries": $(jq -c '.requiredLibraries' "$lockfile"),
   "source": "$source_url",
   "archiveSha256": "$actual_sha256"
