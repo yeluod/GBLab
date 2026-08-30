@@ -266,9 +266,10 @@ pub fn read_media_frame(state: State<'_, AppState>) -> Result<Response, CommandE
         gblab_core::media::MediaSourceStatus::Stopped
             | gblab_core::media::MediaSourceStatus::Unconfigured
     ) {
-        return Err(CommandErrorDto::media(&gblab_core::MediaError::Playback(
-            "媒体源已停止，无法继续读取预览帧".to_owned(),
-        )));
+        // Natural MP4 EOF is a normal lifecycle state.  Return an empty
+        // payload so the frontend can observe the stopped status without
+        // converting it into a synthetic playback error.
+        return Ok(Response::new(Vec::new()));
     }
     handle
         .try_preview_frame()

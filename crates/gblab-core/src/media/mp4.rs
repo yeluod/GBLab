@@ -119,7 +119,7 @@ impl MediaSource for Mp4MediaSource {
             .and_then(|index| context.streams().get(index))
             .and_then(|stream| gblab_ffmpeg_device::copy_codec_extradata(&stream.codecpar()))
             .map(Bytes::from);
-        let audio_decoder = audio_stream_index
+        let (audio_decoder, audio_error) = audio_stream_index
             .and_then(|index| context.streams().get(index))
             .map(|stream| {
                 let time_base = MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
@@ -133,7 +133,10 @@ impl MediaSource for Mp4MediaSource {
                     },
                 )
             })
-            .transpose()?;
+            .map_or((None, None), |result| match result {
+                Ok(decoder) => (Some(decoder), None),
+                Err(error) => (None, Some(format!("AudioDecode: {error}"))),
+            });
         let timestamp_origin =
             source_timestamp_origin(&context, video_stream_index, audio_stream_index);
         Ok(MediaSourceSession::Mp4(Box::new(Mp4Session {
@@ -148,14 +151,23 @@ impl MediaSource for Mp4MediaSource {
             video_codec_configuration,
             audio_codec_configuration,
             audio_decoder,
+            audio_error,
             video_config_sent: false,
             audio_config_sent: false,
             pending_packets: VecDeque::new(),
             preview_enabled: true,
             loop_pending: false,
             timestamp_origin,
+            bsf_state: BsfState::Reading,
         })))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BsfState {
+    Reading,
+    Draining,
+    Finished,
 }
 
 /// 已打开的 MP4 解封装会话。
@@ -175,12 +187,15 @@ pub struct Mp4Session {
     video_codec_configuration: Option<Bytes>,
     audio_codec_configuration: Option<Bytes>,
     audio_decoder: Option<AudioPreviewDecoder>,
+    audio_error: Option<String>,
     video_config_sent: bool,
     audio_config_sent: bool,
     pending_packets: VecDeque<EncodedMediaPacket>,
     preview_enabled: bool,
     loop_pending: bool,
     timestamp_origin: Option<i64>,
+    /// Explicit Annex-B filter lifecycle for EOF and loop handling.
+    bsf_state: BsfState,
 }
 
 impl Mp4Session {
@@ -192,6 +207,14 @@ impl Mp4Session {
         self.timestamp_origin
     }
 
+    pub(crate) fn initial_pipeline_error(&self) -> Option<String> {
+        self.audio_error.clone()
+    }
+
+    pub(crate) const fn audio_preview_available(&self) -> bool {
+        self.audio_decoder.is_some()
+    }
+
     pub(crate) const fn set_preview_enabled(&mut self, enabled: bool) {
         self.preview_enabled = enabled;
     }
@@ -200,7 +223,7 @@ impl Mp4Session {
         &mut self,
         output_format: AudioOutputFormat,
     ) -> MediaResult<()> {
-        self.audio_decoder = self
+        let decoder = self
             .audio_stream_index
             .and_then(|index| self.context.streams().get(index))
             .map(|stream| {
@@ -209,6 +232,8 @@ impl Mp4Session {
                 AudioPreviewDecoder::new(&stream.codecpar(), time_base, output_format)
             })
             .transpose()?;
+        self.audio_decoder = decoder;
+        self.audio_error = None;
         Ok(())
     }
 }
@@ -270,6 +295,7 @@ impl Mp4Session {
             decoder.flush();
         }
         self.video_bsf.flush();
+        self.bsf_state = BsfState::Reading;
         if clear_pending {
             self.pending_packets.clear();
         }
@@ -285,6 +311,10 @@ impl Mp4Session {
     pub(crate) fn read_source_output(&mut self) -> MediaResult<SourceReadOutput> {
         if let Some(packet) = self.pending_packets.pop_front() {
             return Ok(SourceReadOutput {
+                pacing_timestamp: packet
+                    .dts
+                    .or(packet.pts)
+                    .map(|value| packet.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK)),
                 packet: Some(packet),
                 preview_frames: Vec::new(),
                 audio_frames: Vec::new(),
@@ -294,6 +324,9 @@ impl Mp4Session {
                 looped: false,
                 end_of_stream: false,
             });
+        }
+        if self.bsf_state == BsfState::Finished {
+            return Ok(SourceReadOutput::end_of_stream());
         }
         let mut packet = match self.context.read_packet() {
             Ok(Some(packet)) => packet,
@@ -321,8 +354,25 @@ impl Mp4Session {
                 if let Some(frame) = audio_frames.last() {
                     (metrics.audio_rms, metrics.audio_peak) = audio_levels(&frame.samples);
                 }
+                let packet = self.pending_packets.pop_front();
+                let pacing_timestamp = packet
+                    .as_ref()
+                    .and_then(|packet| packet.dts.or(packet.pts))
+                    .map(|value| {
+                        packet.as_ref().map_or(value, |packet| {
+                            packet.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK)
+                        })
+                    })
+                    .or_else(|| {
+                        audio_frames.first().and_then(|frame| {
+                            frame.pts.map(|value| {
+                                frame.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK)
+                            })
+                        })
+                    });
                 return Ok(SourceReadOutput {
-                    packet: self.pending_packets.pop_front(),
+                    pacing_timestamp,
+                    packet,
                     preview_frames,
                     audio_frames,
                     metrics,
@@ -364,6 +414,7 @@ impl Mp4Session {
                         MediaTimeBase::new(stream.time_base.num, stream.time_base.den)
                     })
                     .ok_or_else(|| MediaError::Playback("视频流时间基无效".to_owned()))?;
+                self.bsf_state = BsfState::Draining;
                 self.video_bsf.send_packet(None).map_err(|error| {
                     MediaError::Playback(format!("结束 Annex-B 过滤器失败：{error}"))
                 })?;
@@ -395,8 +446,15 @@ impl Mp4Session {
                         }
                     }
                 }
+                self.bsf_state = BsfState::Finished;
                 let packet = self.pending_packets.pop_front();
                 return Ok(SourceReadOutput {
+                    pacing_timestamp: packet.as_ref().and_then(|packet| {
+                        packet
+                            .dts
+                            .or(packet.pts)
+                            .map(|value| packet.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK))
+                    }),
                     end_of_stream: packet.is_none(),
                     packet,
                     preview_frames,
@@ -422,6 +480,13 @@ impl Mp4Session {
         if stream_index == self.video_stream_index {
             let mut metrics = MediaRuntimeMetrics::new();
             metrics.video_packets_captured = 1;
+            // BSF output may be delayed or empty for an input packet. Keep the
+            // source packet timestamp as a pacing fallback so preview playback
+            // never turns into a tight demux loop just because no encoded packet
+            // was emitted on this read.
+            let source_pacing_timestamp = valid_timestamp(packet.dts)
+                .or_else(|| valid_timestamp(packet.pts))
+                .map(|value| time_base.rescale(value, MediaTimeBase::MPEG_CLOCK));
             let mut preview_frames = Vec::new();
             if self.preview_enabled {
                 if let Some(frame) = self.decoder.decode_packet(&packet)? {
@@ -471,6 +536,16 @@ impl Mp4Session {
             let looped = self.loop_pending;
             self.loop_pending = false;
             return Ok(SourceReadOutput {
+                pacing_timestamp: self
+                    .pending_packets
+                    .front()
+                    .and_then(|packet| {
+                        packet
+                            .dts
+                            .or(packet.pts)
+                            .map(|value| packet.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK))
+                    })
+                    .or(source_pacing_timestamp),
                 packet: self.pending_packets.pop_front(),
                 preview_frames,
                 audio_frames: Vec::new(),
@@ -528,6 +603,26 @@ impl Mp4Session {
             let looped = self.loop_pending;
             self.loop_pending = false;
             return Ok(SourceReadOutput {
+                pacing_timestamp: encoded
+                    .as_ref()
+                    .and_then(|packet| {
+                        packet
+                            .dts
+                            .or(packet.pts)
+                            .map(|value| packet.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK))
+                    })
+                    .or_else(|| {
+                        valid_timestamp(packet.dts)
+                            .or_else(|| valid_timestamp(packet.pts))
+                            .map(|value| time_base.rescale(value, MediaTimeBase::MPEG_CLOCK))
+                    })
+                    .or_else(|| {
+                        audio_frames.first().and_then(|frame| {
+                            frame.pts.map(|value| {
+                                frame.time_base.rescale(value, MediaTimeBase::MPEG_CLOCK)
+                            })
+                        })
+                    }),
                 packet: encoded,
                 preview_frames: Vec::new(),
                 audio_frames,
@@ -540,6 +635,7 @@ impl Mp4Session {
         }
 
         Ok(SourceReadOutput {
+            pacing_timestamp: None,
             packet: None,
             preview_frames: Vec::new(),
             audio_frames: Vec::new(),
@@ -627,6 +723,7 @@ impl Mp4Session {
         } else {
             Vec::new()
         };
+        self.bsf_state = BsfState::Draining;
         self.video_bsf.send_packet(None).map_err(|error| {
             MediaError::Playback(format!("排空循环 Annex-B 过滤器失败：{error}"))
         })?;
@@ -761,6 +858,7 @@ fn encoded_packet(
         time_base,
         is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
         codec_configuration: None,
+        output_info: None,
     }
 }
 

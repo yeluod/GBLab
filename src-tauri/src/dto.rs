@@ -414,6 +414,7 @@ pub struct MediaRuntimeStatusDto {
     active_recorder_consumers: u64,
     last_error: Option<String>,
     last_pipeline_error: Option<String>,
+    audio_sink: Option<gblab_core::media::AudioSinkInfo>,
 }
 
 #[derive(Clone, Serialize)]
@@ -499,6 +500,7 @@ impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
             active_recorder_consumers: value.active_recorder_consumers,
             last_error: value.last_error,
             last_pipeline_error: value.last_pipeline_error,
+            audio_sink: value.audio_sink,
         }
     }
 }

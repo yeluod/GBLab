@@ -12,8 +12,8 @@ use rsmpeg::{
 };
 
 use super::{
-    AudioCodec, CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, MediaError,
-    MediaResult, MediaTimeBase, MediaTrackKind,
+    AudioCodec, CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, EncodedOutputInfo,
+    MediaError, MediaResult, MediaTimeBase, MediaTrackKind,
 };
 
 /// Resamples the single decoded microphone PCM branch into the target encoder.
@@ -144,9 +144,7 @@ impl CameraAudioEncoder {
         if !gblab_ffmpeg_device::write_interleaved_f32(&mut frame, &pcm.samples) {
             return Err(MediaError::Camera("写入麦克风 PCM 帧失败".to_owned()));
         }
-        let source_time_base = MediaTimeBase::new(1, sample_rate)
-            .ok_or_else(|| MediaError::Camera("麦克风 PCM 时间基无效".to_owned()))?;
-        self.encode_frame(&frame, source_time_base)
+        self.encode_frame(&frame, pcm.time_base)
     }
 
     pub(super) fn take_pending(&mut self) -> Option<EncodedMediaPacket> {
@@ -285,6 +283,14 @@ impl CameraAudioEncoder {
                         time_base: self.time_base,
                         is_keyframe: true,
                         codec_configuration,
+                        output_info: Some(EncodedOutputInfo {
+                            width: None,
+                            height: None,
+                            frame_rate: None,
+                            sample_rate: u32::try_from(self.sample_rate).ok(),
+                            channels: u32::try_from(self.output_layout.nb_channels).ok(),
+                            bitrate: u64::try_from(self.encoder.bit_rate).ok(),
+                        }),
                     });
                 }
                 Err(RsmpegError::EncoderDrainError | RsmpegError::EncoderFlushedError) => {
@@ -401,6 +407,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
             pts,
+            time_base: MediaTimeBase::new(1, 48_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
         };
         encoder.encode_pcm(&frame(Some(0)))?;
         encoder.encode_pcm(&frame(Some(48_000)))?;

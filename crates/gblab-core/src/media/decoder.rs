@@ -1,7 +1,7 @@
 use rsmpeg::{
     avcodec::{AVCodec, AVCodecContext, AVCodecParameters},
     avformat::AVStreamRef,
-    avutil::{AVFrame, AVFrameWithImage, AVImage},
+    avutil::{AVFrame, AVFrameWithImage, AVImage, AVRational},
     ffi,
     swscale::SwsContext,
 };
@@ -63,6 +63,10 @@ impl VideoDecoder {
         context
             .apply_codecpar(&owned)
             .map_err(|e| MediaError::Playback(format!("初始化视频解码器失败：{e}")))?;
+        context.set_pkt_timebase(AVRational {
+            num: stream.time_base.num,
+            den: stream.time_base.den,
+        });
         context
             .open(None)
             .map_err(|e| MediaError::Playback(format!("打开视频解码器失败：{e}")))?;

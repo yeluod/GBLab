@@ -202,3 +202,40 @@ fn third_loop_pause_resume_should_not_wait_for_the_accumulated_session_time() {
     assert!(handle.status().decoded_frames > decoded_before);
     assert!(runtime.shutdown().is_ok());
 }
+
+#[test]
+fn active_live_consumer_should_reject_source_mutations() {
+    let runtime = GlobalMediaRuntime::start();
+    let handle = runtime.handle();
+    assert!(handle.open_mp4(asset("h264-noaudio.mp4"), true).is_ok());
+    let subscription = handle.subscribe(MediaConsumerKind::Live, 8, BackpressurePolicy::Disconnect);
+    assert!(subscription.is_ok());
+
+    assert!(handle.pause().is_err());
+    assert!(handle.seek(0.1).is_err());
+    assert!(handle.set_playback_rate(2.0).is_err());
+    assert!(handle.close().is_err());
+    assert!(handle.open_mp4(asset("h265-noaudio.mp4"), true).is_err());
+    assert!(runtime.shutdown().is_ok());
+}
+
+#[test]
+fn unsupported_audio_should_not_block_mp4_video_preview() {
+    let runtime = GlobalMediaRuntime::start();
+    let handle = runtime.handle();
+    let opened = handle.open_mp4(asset("h264-unsupported-audio.mp4"), false);
+    assert!(opened.is_ok(), "open failed: {opened:?}");
+    assert!(handle.attach_preview().is_ok());
+    assert!(handle.play().is_ok());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && handle.status().decoded_frames == 0 {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let status = handle.status();
+    assert!(status.decoded_frames > 0);
+    assert_eq!(
+        status.audio.as_ref().map(|audio| audio.codec),
+        Some(AudioCodec::Other)
+    );
+    assert!(runtime.shutdown().is_ok());
+}

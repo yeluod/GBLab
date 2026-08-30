@@ -4,8 +4,11 @@ import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
 import { CaptureDeviceStatus, MediaSourceType } from '../types/media-config';
 import {
   MediaSourceStatus,
+  type DetectedAudioCodec,
+  type AudioSinkInfo,
   type MediaProbeResult,
   type MediaRuntimeStatus,
+  normalizeDetectedAudioCodec,
 } from '../types/media-runtime';
 import type {
   CaptureDeviceCapabilities,
@@ -62,6 +65,7 @@ interface BackendRuntimeStatus {
   activeRecorderConsumers: number;
   lastError: string | null;
   lastPipelineError: string | null;
+  audioSink: AudioSinkInfo | null;
 }
 
 type BackendMediaConfig = {
@@ -164,8 +168,9 @@ function frontendVideo(value: BackendStreamInfo): MediaProbeResult['video'] {
 }
 
 function frontendAudio(value: BackendStreamInfo): NonNullable<MediaProbeResult['audio']> {
+  const codec: DetectedAudioCodec = normalizeDetectedAudioCodec(value.codec);
   return {
-    codec: value.codec as unknown as NonNullable<MediaProbeResult['audio']>['codec'],
+    codec,
     sampleRate: value.sampleRate ?? 0,
     channels: value.channels ?? 0,
     bitrateKbps: bitrateKbps(value.bitrate),
@@ -216,6 +221,7 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     audioMonitoring: value.audioMonitoring,
     errorMessage: value.lastError,
     pipelineErrorMessage: value.lastPipelineError,
+    audioSink: value.audioSink,
   };
 }
 

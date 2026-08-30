@@ -1,4 +1,15 @@
-import type { AudioCodec, VideoCodec } from './media-config';
+import { AudioCodec } from './media-config';
+import type { VideoCodec } from './media-config';
+
+/** Codec detected in a source stream; it may be outside the capture target set. */
+export type DetectedAudioCodec = AudioCodec | 'other';
+
+export function normalizeDetectedAudioCodec(value: string): DetectedAudioCodec {
+  if (value === AudioCodec.Aac) return AudioCodec.Aac;
+  if (value === AudioCodec.G711A) return AudioCodec.G711A;
+  if (value === AudioCodec.G711U) return AudioCodec.G711U;
+  return 'other';
+}
 
 export enum MediaSourceStatus {
   Unconfigured = 'unconfigured',
@@ -21,7 +32,7 @@ export interface VideoStreamInfo {
 }
 
 export interface AudioStreamInfo {
-  codec: AudioCodec;
+  codec: DetectedAudioCodec;
   sampleRate: number;
   channels: number;
   bitrateKbps: number;
@@ -50,6 +61,18 @@ export interface MediaRuntimeStatus {
   audioMonitoring: boolean;
   errorMessage: string | null;
   pipelineErrorMessage: string | null;
+  audioSink: AudioSinkInfo | null;
+}
+
+export type AudioSinkStatus = 'unavailable' | 'paused' | 'playing' | 'error';
+
+export interface AudioSinkInfo {
+  status: AudioSinkStatus;
+  queuedSamples: number;
+  playedSamples: number;
+  underruns: number;
+  droppedSamples: number;
+  lastError: string | null;
 }
 
 export interface MediaRuntimeMetrics {

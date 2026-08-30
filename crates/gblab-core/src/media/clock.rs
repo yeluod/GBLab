@@ -100,6 +100,21 @@ impl MediaClock {
         packet.time_base = MediaTimeBase::MPEG_CLOCK;
     }
 
+    /// Normalizes a source timestamp used only for worker pacing.
+    ///
+    /// Pacing-only outputs (for example a non-AAC audio packet) do not carry an
+    /// encoded packet through [`Self::normalize`], but they must still share the
+    /// same source epoch and loop offset as encoded packets.
+    #[must_use]
+    pub fn normalize_timestamp(&mut self, timestamp: i64) -> i64 {
+        let origin = *self
+            .iteration_origin
+            .get_or_insert_with(|| self.source_epoch.unwrap_or(timestamp));
+        timestamp
+            .saturating_sub(origin)
+            .saturating_add(self.loop_offset)
+    }
+
     /// Converts a normalized MPEG-clock timestamp to seconds for wall-clock pacing.
     #[must_use]
     pub fn timestamp_seconds(timestamp: i64) -> f64 {
@@ -127,6 +142,7 @@ mod tests {
             time_base: MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
             is_keyframe: true,
             codec_configuration: None,
+            output_info: None,
         }
     }
 
@@ -159,6 +175,7 @@ mod tests {
             time_base: MediaTimeBase::new(1, 1_000).unwrap_or(MediaTimeBase::MPEG_CLOCK),
             is_keyframe: false,
             codec_configuration: None,
+            output_info: None,
         };
         clock.normalize(&mut packet);
 
@@ -179,6 +196,18 @@ mod tests {
 
         assert_eq!(video.pts, Some(7_200));
         assert_eq!(audio.pts, Some(0));
+    }
+
+    #[test]
+    fn pacing_timestamp_should_use_the_same_source_epoch_as_packets() {
+        let mut clock = MediaClock::new();
+        clock.set_source_epoch(Some(-7_200));
+
+        assert_eq!(clock.normalize_timestamp(-80), 7_120);
+
+        let mut packet = packet(0);
+        clock.normalize(&mut packet);
+        assert_eq!(packet.pts, Some(7_200));
     }
 
     #[test]

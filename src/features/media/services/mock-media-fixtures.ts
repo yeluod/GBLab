@@ -172,5 +172,6 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     audioMonitoring: false,
     errorMessage: null,
     pipelineErrorMessage: null,
+    audioSink: null,
   };
 }

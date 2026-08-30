@@ -229,6 +229,7 @@ export class MockMediaService implements MediaService {
         audioMonitoring: false,
         errorMessage: null,
         pipelineErrorMessage: null,
+        audioSink: null,
       };
     }
 
@@ -265,6 +266,7 @@ export class MockMediaService implements MediaService {
       audioMonitoring: false,
       errorMessage: null,
       pipelineErrorMessage: null,
+      audioSink: null,
     };
   }
 }

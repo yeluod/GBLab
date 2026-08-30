@@ -26,16 +26,16 @@ pub use hub::{
 };
 use mp4::Mp4MediaSource;
 pub use packet::{
-    AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket,
+    AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket, EncodedOutputInfo,
     EncodedStreamDescriptor, FrameRate, MediaTimeBase, MediaTrackKind, RawAudioFrame,
     RawVideoFrame, VideoCodec,
 };
 pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{
-    AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo, CaptureDeviceLists,
-    FrameRateCapability, MediaResult, MediaRuntimeMetrics, MediaRuntimeStatus, MediaSourceKind,
-    MediaSourceStatus, MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities, VideoCaptureMode,
-    VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
+    AudioSinkInfo, AudioSinkStatus, AudioStreamInfo, CameraCaptureSettings, CaptureDeviceInfo,
+    CaptureDeviceLists, FrameRateCapability, MediaResult, MediaRuntimeMetrics, MediaRuntimeStatus,
+    MediaSourceKind, MediaSourceStatus, MediaVideoFrame, Mp4ProbeResult, VideoCaptureCapabilities,
+    VideoCaptureMode, VideoEncoderCapabilities, VideoEncoderCapability, VideoStreamInfo,
 };
 
 /// Probes an MP4 file without opening the global runtime source.

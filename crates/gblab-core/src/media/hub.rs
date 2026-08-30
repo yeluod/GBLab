@@ -133,6 +133,18 @@ impl MediaStreamHub {
         self.consumers.remove(&id).is_some()
     }
 
+    /// Disconnects encoded consumers after an encoder branch becomes unavailable.
+    pub fn disconnect_encoded_consumers(&mut self) -> usize {
+        let before = self.consumers.len();
+        self.consumers.retain(|_, consumer| {
+            !matches!(
+                consumer.kind,
+                MediaConsumerKind::Live | MediaConsumerKind::Recorder
+            )
+        });
+        before.saturating_sub(self.consumers.len())
+    }
+
     /// Broadcasts without waiting for any consumer.
     pub fn broadcast(&mut self, packet: &Arc<EncodedMediaPacket>) -> BroadcastReport {
         self.update_descriptor(packet);
@@ -212,35 +224,61 @@ impl MediaStreamHub {
         let configuration_format = configuration
             .as_deref()
             .and_then(|bytes| configuration_format(packet.codec, bytes));
+        let output_info = packet.output_info;
         let (width, height, frame_rate, sample_rate, channels, bitrate) = match packet.track {
-            MediaTrackKind::Video => {
-                self.probe
-                    .as_ref()
-                    .map_or((None, None, None, None, None, None), |probe| {
-                        (
-                            Some(probe.video.width),
-                            Some(probe.video.height),
-                            super::FrameRate::from_f64(probe.video.frames_per_second),
-                            None,
-                            None,
-                            probe.video.bitrate,
-                        )
-                    })
-            }
-            MediaTrackKind::Audio => self
-                .probe
-                .as_ref()
-                .and_then(|probe| probe.audio.as_ref())
-                .map_or((None, None, None, None, None, None), |audio| {
+            MediaTrackKind::Video => output_info.map_or_else(
+                || {
+                    self.probe
+                        .as_ref()
+                        .map_or((None, None, None, None, None, None), |probe| {
+                            (
+                                Some(probe.video.width),
+                                Some(probe.video.height),
+                                super::FrameRate::from_f64(probe.video.frames_per_second),
+                                None,
+                                None,
+                                probe.video.bitrate,
+                            )
+                        })
+                },
+                |info| {
+                    (
+                        info.width,
+                        info.height,
+                        info.frame_rate,
+                        None,
+                        None,
+                        info.bitrate,
+                    )
+                },
+            ),
+            MediaTrackKind::Audio => output_info.map_or_else(
+                || {
+                    self.probe
+                        .as_ref()
+                        .and_then(|probe| probe.audio.as_ref())
+                        .map_or((None, None, None, None, None, None), |audio| {
+                            (
+                                None,
+                                None,
+                                None,
+                                Some(audio.sample_rate),
+                                Some(audio.channels),
+                                audio.bitrate,
+                            )
+                        })
+                },
+                |info| {
                     (
                         None,
                         None,
                         None,
-                        Some(audio.sample_rate),
-                        Some(audio.channels),
-                        audio.bitrate,
+                        info.sample_rate,
+                        info.channels,
+                        info.bitrate,
                     )
-                }),
+                },
+            ),
         };
         self.descriptors.insert(
             packet.track,
@@ -350,6 +388,7 @@ mod tests {
             time_base: MediaTimeBase::MPEG_CLOCK,
             is_keyframe: true,
             codec_configuration: None,
+            output_info: None,
         })
     }
 
@@ -465,6 +504,25 @@ mod tests {
                 .and_then(|descriptor| descriptor.configuration.as_deref()),
             Some([1, 2, 3].as_slice())
         );
+    }
+
+    #[test]
+    fn descriptor_should_prefer_final_encoder_output_parameters() {
+        let mut hub = MediaStreamHub::new();
+        let mut packet = packet();
+        Arc::make_mut(&mut packet).output_info = Some(crate::media::EncodedOutputInfo {
+            width: Some(640),
+            height: Some(360),
+            frame_rate: crate::media::FrameRate::new(30, 1),
+            sample_rate: None,
+            channels: None,
+            bitrate: Some(512_000),
+        });
+        let _ = hub.broadcast(&packet);
+        let descriptor = hub.descriptor(MediaTrackKind::Video);
+        assert_eq!(descriptor.and_then(|value| value.width), Some(640));
+        assert_eq!(descriptor.and_then(|value| value.height), Some(360));
+        assert_eq!(descriptor.and_then(|value| value.bitrate), Some(512_000));
     }
 
     #[test]

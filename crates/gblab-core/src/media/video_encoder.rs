@@ -12,8 +12,8 @@ use rsmpeg::{
 };
 
 use super::{
-    CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, FrameRate, MediaError,
-    MediaResult, MediaTimeBase, MediaTrackKind,
+    CameraCaptureSettings, EncodedMediaCodec, EncodedMediaPacket, EncodedOutputInfo, FrameRate,
+    MediaError, MediaResult, MediaTimeBase, MediaTrackKind,
 };
 
 /// `FFmpeg` camera video encoder owned by the source worker.
@@ -208,6 +208,17 @@ impl CameraVideoEncoder {
                         time_base: self.time_base,
                         is_keyframe: packet.flags & ffi::AV_PKT_FLAG_KEY.cast_signed() != 0,
                         codec_configuration,
+                        output_info: Some(EncodedOutputInfo {
+                            width: Some(u32::try_from(self.width).unwrap_or(0)),
+                            height: Some(u32::try_from(self.height).unwrap_or(0)),
+                            frame_rate: FrameRate::new(
+                                u32::try_from(self.context.framerate.num).unwrap_or(0),
+                                u32::try_from(self.context.framerate.den).unwrap_or(0),
+                            ),
+                            sample_rate: None,
+                            channels: None,
+                            bitrate: u64::try_from(self.context.bit_rate).ok(),
+                        }),
                     });
                 }
                 Err(RsmpegError::EncoderDrainError | RsmpegError::EncoderFlushedError) => break,

@@ -60,6 +60,7 @@ function unavailableRuntime(message: string): MediaRuntimeStatus {
     audioMonitoring: false,
     errorMessage: message,
     pipelineErrorMessage: null,
+    audioSink: null,
   };
 }
 
@@ -143,6 +144,7 @@ export const useMediaStore = defineStore('media', () => {
     audioMonitoring: false,
     errorMessage: null,
     pipelineErrorMessage: null,
+    audioSink: null,
   });
   const probeResult = ref<MediaProbeResult | null>(null);
   const fieldErrors = ref<MediaFieldErrors>({});

@@ -7,6 +7,7 @@
     MediaSourceStatus,
     MediaSourceType,
     VideoCodec,
+    type DetectedAudioCodec,
     type MediaProbeResult,
     type MediaRuntimeStatus,
   } from '@/features/media';
@@ -48,6 +49,15 @@
     if (props.runtimeStatus.sourceStatus === MediaSourceStatus.Loading) return 'warning';
     return 'info';
   });
+  const audioSinkStatusText: Record<
+    NonNullable<MediaRuntimeStatus['audioSink']>['status'],
+    string
+  > = {
+    unavailable: '不可用',
+    paused: '已暂停',
+    playing: '播放中',
+    error: '错误',
+  };
   const displayedVideo = computed(() => props.probeResult?.video ?? props.runtimeStatus.video);
   const displayedAudio = computed(() =>
     props.probeResult === null ? props.runtimeStatus.audio : props.probeResult.audio,
@@ -99,15 +109,16 @@
   );
   watch(previewCanvas, () => drawFrame(props.previewFrame), { flush: 'post' });
 
-  function codecLabel(codec: VideoCodec | AudioCodec): string {
-    const labels: Record<VideoCodec | AudioCodec, string> = {
+  function codecLabel(codec: VideoCodec | AudioCodec | DetectedAudioCodec): string {
+    const labels: Record<VideoCodec | AudioCodec | DetectedAudioCodec, string> = {
       [VideoCodec.H264]: 'H.264',
       [VideoCodec.H265]: 'H.265',
       [AudioCodec.G711A]: 'G.711 A-law',
       [AudioCodec.G711U]: 'G.711 μ-law',
       [AudioCodec.Aac]: 'AAC',
+      other: '其它音频',
     };
-    return labels[codec];
+    return labels[codec] ?? '未知编码';
   }
 
   function durationLabel(durationSeconds: number | null): string {
@@ -342,6 +353,20 @@
             {{ runtimeStatus.metrics.audioRms.toFixed(3) }} /
             {{ runtimeStatus.metrics.audioPeak.toFixed(3) }}
           </dd>
+          <template v-if="runtimeStatus.audioSink !== null">
+            <dt>Audio Sink</dt>
+            <dd>
+              {{ audioSinkStatusText[runtimeStatus.audioSink.status] }} · 队列
+              {{ runtimeStatus.audioSink.queuedSamples }} · 已播放
+              {{ runtimeStatus.audioSink.playedSamples }} · 欠载
+              {{ runtimeStatus.audioSink.underruns }} · 丢弃
+              {{ runtimeStatus.audioSink.droppedSamples }}
+            </dd>
+            <template v-if="runtimeStatus.audioSink.lastError !== null">
+              <dt>Audio Sink Error</dt>
+              <dd class="runtime-error">{{ runtimeStatus.audioSink.lastError }}</dd>
+            </template>
+          </template>
           <template v-if="sourceType === MediaSourceType.Camera && displayedAudio !== null">
             <dt>音频监听</dt>
             <dd>

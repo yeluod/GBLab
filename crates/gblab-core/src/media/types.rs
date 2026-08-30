@@ -201,6 +201,38 @@ pub enum MediaSourceStatus {
     Stopped,
 }
 
+/// Local audio sink lifecycle reported by the runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioSinkStatus {
+    /// No sink has been opened for the current source.
+    Unavailable,
+    /// Sink is open but not currently consuming samples.
+    Paused,
+    /// Sink is open and accepting samples from the media worker.
+    Playing,
+    /// The native sink reported an unrecoverable stream error.
+    Error,
+}
+
+/// Bounded local audio output diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSinkInfo {
+    /// Current native sink lifecycle.
+    pub status: AudioSinkStatus,
+    /// Number of PCM samples currently queued for playback.
+    pub queued_samples: u64,
+    /// Number of samples consumed by the native output callback.
+    pub played_samples: u64,
+    /// Number of output callbacks which had to synthesize silence.
+    pub underruns: u64,
+    /// Samples rejected because the bounded queue was full.
+    pub dropped_samples: u64,
+    /// Last native stream error, if any.
+    pub last_error: Option<String>,
+}
+
 /// 全局媒体运行状态。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -237,6 +269,8 @@ pub struct MediaRuntimeStatus {
     pub last_error: Option<String>,
     /// Latest non-fatal preview/encoder branch failure with an explicit stage prefix.
     pub last_pipeline_error: Option<String>,
+    /// Local speaker sink diagnostics; `None` when no sink is configured.
+    pub audio_sink: Option<AudioSinkInfo>,
 }
 
 impl MediaRuntimeStatus {
@@ -258,6 +292,7 @@ impl MediaRuntimeStatus {
             active_recorder_consumers: 0,
             last_error: None,
             last_pipeline_error: None,
+            audio_sink: None,
         }
     }
 
@@ -284,6 +319,7 @@ impl MediaRuntimeStatus {
             active_recorder_consumers: 0,
             last_error: None,
             last_pipeline_error: None,
+            audio_sink: None,
         }
     }
 }
@@ -389,6 +425,8 @@ pub enum MediaSourceSession {
 /// One source read distributed by the single media worker.
 pub struct SourceReadOutput {
     pub(crate) packet: Option<super::EncodedMediaPacket>,
+    /// Source timestamp used for pacing even when no encoded packet exists.
+    pub(crate) pacing_timestamp: Option<i64>,
     pub(crate) preview_frames: Vec<MediaVideoFrame>,
     pub(crate) audio_frames: Vec<super::audio_preview::AudioPcmFrame>,
     pub(crate) metrics: MediaRuntimeMetrics,
@@ -402,6 +440,7 @@ impl SourceReadOutput {
     pub(crate) const fn end_of_stream() -> Self {
         Self {
             packet: None,
+            pacing_timestamp: None,
             preview_frames: Vec::new(),
             audio_frames: Vec::new(),
             metrics: MediaRuntimeMetrics::new(),
@@ -430,6 +469,20 @@ impl MediaSourceSession {
         match self {
             Self::Mp4(session) => session.timestamp_origin(),
             Self::Camera(_) => None,
+        }
+    }
+
+    pub(crate) fn initial_pipeline_error(&self) -> Option<String> {
+        match self {
+            Self::Mp4(session) => session.initial_pipeline_error(),
+            Self::Camera(session) => session.initial_pipeline_error(),
+        }
+    }
+
+    pub(crate) const fn audio_preview_available(&self) -> bool {
+        match self {
+            Self::Mp4(session) => session.audio_preview_available(),
+            Self::Camera(session) => session.audio_preview_available(),
         }
     }
 

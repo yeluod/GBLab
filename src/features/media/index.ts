@@ -49,9 +49,12 @@ export type {
   VideoEncoderCapabilities,
   VideoEncoderCapability,
 } from './types/media-config';
-export { MediaSourceStatus } from './types/media-runtime';
+export { MediaSourceStatus, normalizeDetectedAudioCodec } from './types/media-runtime';
 export type {
+  AudioSinkInfo,
+  AudioSinkStatus,
   AudioStreamInfo,
+  DetectedAudioCodec,
   MediaProbeResult,
   MediaRuntimeStatus,
   VideoStreamInfo,

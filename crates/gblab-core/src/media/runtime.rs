@@ -13,7 +13,7 @@ use super::{
     BackpressurePolicy, CameraCaptureSettings, CameraMediaSource, MediaClock, MediaConsumerKind,
     MediaError, MediaResult, MediaRuntimeStatus, MediaSourceKind, MediaSourceStatus,
     MediaStreamHub, MediaSubscription, MediaVideoFrame, Mp4MediaSource,
-    types::{MediaSource, MediaSourceSession},
+    types::{AudioSinkInfo, AudioSinkStatus, MediaSource, MediaSourceSession},
 };
 use gblab_ffmpeg_device::InterruptReason;
 
@@ -373,6 +373,7 @@ struct MediaWorker {
     interrupt: Arc<AtomicU8>,
     preview_attached: bool,
     audio_sink: Option<AudioPreviewSink>,
+    last_audio_activity: Option<Instant>,
 }
 
 impl MediaWorker {
@@ -396,6 +397,7 @@ impl MediaWorker {
             interrupt,
             preview_attached: false,
             audio_sink: None,
+            last_audio_activity: None,
         }
     }
 
@@ -466,22 +468,24 @@ impl MediaWorker {
         if output.looped {
             self.clock.begin_loop();
             self.hub.begin_timeline();
-            if let Some(sink) = self.audio_sink.as_ref() {
-                sink.clear();
-            }
         }
+        let pacing_timestamp = output
+            .pacing_timestamp
+            .map(|timestamp| self.clock.normalize_timestamp(timestamp));
         if output.end_of_stream {
             self.status.source_status = MediaSourceStatus::Stopped;
         }
         if let Some(mut packet) = output.packet.take() {
             self.clock.normalize(&mut packet);
             self.status.position_seconds = packet.position_seconds();
-            self.schedule_next_read(packet.dts.or(packet.pts));
+            self.schedule_next_read(packet.dts.or(packet.pts).or(pacing_timestamp));
             let packet = Arc::new(packet);
             let report = self.hub.broadcast(&packet);
             if report.disconnected > 0 {
                 let _ = self.reconcile_runtime_demand();
             }
+        } else if pacing_timestamp.is_some() {
+            self.schedule_next_read(pacing_timestamp);
         }
         for frame in output.preview_frames {
             self.status.position_seconds = frame.position_seconds;
@@ -489,8 +493,33 @@ impl MediaWorker {
             let _ = self.preview.try_send(frame);
         }
         self.status.metrics.merge(output.metrics);
-        if let Some(error) = output.branch_errors.into_iter().last() {
+        if output.metrics.audio_frames_decoded > 0 {
+            self.last_audio_activity = Some(Instant::now());
+        } else if self
+            .last_audio_activity
+            .is_some_and(|last| last.elapsed() >= Duration::from_millis(500))
+        {
+            self.status.metrics.audio_rms = 0.0;
+            self.status.metrics.audio_peak = 0.0;
+        }
+        let encoded_branch_failed = output
+            .branch_errors
+            .iter()
+            .any(|error| error.starts_with("VideoEncode:") || error.starts_with("AudioEncode:"));
+        if encoded_branch_failed {
+            self.hub.disconnect_encoded_consumers();
+            let _ = self.reconcile_runtime_demand();
+        }
+        let branch_errors = output.branch_errors;
+        if let Some(error) = branch_errors.iter().next_back().cloned() {
             self.status.last_pipeline_error = Some(error);
+        } else if self
+            .status
+            .last_pipeline_error
+            .as_deref()
+            .is_some_and(|error| pipeline_error_recovered(error, output.metrics))
+        {
+            self.status.last_pipeline_error = None;
         }
         if self.preview_attached
             && (self.status.source_kind == Some(MediaSourceKind::Mp4)
@@ -498,9 +527,10 @@ impl MediaWorker {
             && let Some(sink) = self.audio_sink.as_ref()
         {
             for frame in output.audio_frames {
-                sink.push(frame.samples);
+                sink.push(&frame.samples);
             }
         }
+        self.refresh_audio_sink_status();
         if let Some(delay) = retry_after {
             self.next_read_at = Instant::now() + delay;
         }
@@ -551,14 +581,14 @@ impl MediaWorker {
                 reply,
             } => {
                 let result = self
-                    .release_current_source()
+                    .ensure_source_replacement_allowed()
                     .and_then(|()| Mp4MediaSource::new(path).open(looping))
                     .and_then(|session| self.replace_session(session, MediaSourceKind::Mp4));
                 Self::reply_status(&reply, result);
             }
             MediaCommand::OpenCamera { settings, reply } => {
                 let result = self
-                    .release_current_source()
+                    .ensure_source_replacement_allowed()
                     .and_then(|()| {
                         CameraMediaSource::new(settings, Arc::clone(&self.interrupt)).open(false)
                     })
@@ -583,12 +613,10 @@ impl MediaWorker {
                     self.pacing_anchor = Instant::now().checked_sub(Duration::from_secs_f64(
                         position / self.status.playback_rate.max(0.01),
                     ));
-                    if let Some(sink) = self.audio_sink.as_ref()
-                        && (self.status.source_kind == Some(MediaSourceKind::Mp4)
-                            || self.status.audio_monitoring)
-                    {
-                        let _ = sink.resume();
-                    }
+                    self.sync_audio_sink_playback(
+                        self.status.source_kind == Some(MediaSourceKind::Mp4)
+                            || self.status.audio_monitoring,
+                    );
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
@@ -597,31 +625,7 @@ impl MediaWorker {
                 if let Some(session) = self.session.as_mut() {
                     session.set_preview_enabled(true);
                 }
-                if self.status.audio.is_some() && self.audio_sink.is_none() {
-                    match AudioPreviewSink::open() {
-                        Ok(sink) => {
-                            let configure_result = self
-                                .session
-                                .as_mut()
-                                .ok_or(MediaError::NoSourceOpen)
-                                .and_then(|session| session.set_audio_output_format(sink.format()));
-                            if let Err(error) = configure_result {
-                                self.status.last_pipeline_error =
-                                    Some(format!("AudioDecode: {error}"));
-                            }
-                            sink.set_control(self.status.muted, self.status.volume);
-                            if self.status.source_kind == Some(MediaSourceKind::Camera)
-                                && !self.status.audio_monitoring
-                            {
-                                let _ = sink.pause();
-                            }
-                            self.audio_sink = Some(sink);
-                        }
-                        Err(error) => {
-                            self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
-                        }
-                    }
-                }
+                self.ensure_audio_sink();
                 Self::reply_status(&reply, Ok(self.status.clone()));
             }
             MediaCommand::DetachPreview(reply) => {
@@ -629,11 +633,12 @@ impl MediaWorker {
                 if let Some(sink) = self.audio_sink.take() {
                     sink.clear();
                 }
+                self.status.audio_sink = None;
                 let result = self.reconcile_runtime_demand();
                 Self::reply_status(&reply, result);
             }
             MediaCommand::Pause(reply) => {
-                let result = if self.hub.consumer_count() > 0 {
+                let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
                         "存在 Live/Recorder 消费者时不能暂停全局源".to_owned(),
                     ))
@@ -642,9 +647,10 @@ impl MediaWorker {
                 };
                 if result.is_ok() {
                     self.status.source_status = MediaSourceStatus::Paused;
-                    if let Some(sink) = self.audio_sink.as_ref() {
-                        let _ = sink.pause();
-                    }
+                    self.sync_audio_sink_playback(false);
+                    self.status.metrics.audio_rms = 0.0;
+                    self.status.metrics.audio_peak = 0.0;
+                    self.last_audio_activity = None;
                 }
                 Self::reply_status(&reply, result.map(|()| self.status.clone()));
             }
@@ -664,7 +670,7 @@ impl MediaWorker {
                 position_seconds,
                 reply,
             } => {
-                let result = if self.hub.consumer_count() > 0 {
+                let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
                         "存在 Live/Recorder 消费者时不能跳转全局源".to_owned(),
                     ))
@@ -674,7 +680,7 @@ impl MediaWorker {
                 Self::reply_status(&reply, result);
             }
             MediaCommand::SetPlaybackRate { rate, reply } => {
-                let result = if self.hub.consumer_count() > 0 {
+                let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
                         "存在 Live/Recorder 消费者时不能修改全局播放倍速".to_owned(),
                     ))
@@ -728,9 +734,31 @@ impl MediaWorker {
                     Err(MediaError::UnsupportedSource(
                         "当前摄像头未启用麦克风".to_owned(),
                     ))
+                } else if self
+                    .session
+                    .as_ref()
+                    .is_none_or(|session| !session.audio_preview_available())
+                {
+                    Err(MediaError::UnsupportedSource(
+                        "当前摄像头音频不可用".to_owned(),
+                    ))
                 } else if let Some(sink) = self.audio_sink.as_ref() {
-                    self.status.audio_monitoring = enabled;
-                    if enabled { sink.resume() } else { sink.pause() }.map(|()| self.status.clone())
+                    let sink_result =
+                        if enabled && self.status.source_status == MediaSourceStatus::Playing {
+                            sink.resume()
+                        } else {
+                            sink.pause()
+                        };
+                    match sink_result {
+                        Ok(()) => {
+                            self.status.audio_monitoring = enabled;
+                            Ok(self.status.clone())
+                        }
+                        Err(error) => {
+                            self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
+                            Err(error)
+                        }
+                    }
                 } else {
                     self.status.audio_monitoring = enabled;
                     Ok(self.status.clone())
@@ -780,62 +808,87 @@ impl MediaWorker {
         source_kind: MediaSourceKind,
     ) -> MediaResult<MediaRuntimeStatus> {
         self.finalize_current_session()?;
+        if let Some(sink) = self.audio_sink.take() {
+            sink.clear();
+        }
+        self.last_audio_activity = None;
         let probe = session.probe().clone();
         self.session = Some(session);
         self.hub.replace_source(probe.clone());
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
         self.reset_or_continue_clock();
-        self.pacing_anchor = None;
-        self.last_media_timestamp = None;
         self.status = MediaRuntimeStatus::ready(
             source_kind,
             probe.video,
             probe.audio,
             probe.duration_seconds,
         );
+        self.status.last_pipeline_error = self
+            .session
+            .as_ref()
+            .and_then(MediaSourceSession::initial_pipeline_error);
         self.status.active_live_consumers =
             u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
                 .unwrap_or(u64::MAX);
         self.status.active_recorder_consumers =
             u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Recorder))
                 .unwrap_or(u64::MAX);
+        let has_stream_consumers = self.has_stream_consumers();
         if let Some(session) = self.session.as_mut() {
             session.set_preview_enabled(self.preview_attached);
-            session.set_encoded_enabled(self.hub.consumer_count() > 0)?;
+            session.set_encoded_enabled(has_stream_consumers)?;
+        }
+        if self.preview_attached {
+            self.ensure_audio_sink();
         }
         Ok(self.status.clone())
     }
 
-    fn release_current_source(&mut self) -> MediaResult<()> {
-        self.finalize_current_session()?;
-        self.session = None;
-        self.audio_sink = None;
-        self.clock.reset();
-        self.pacing_anchor = None;
-        self.last_media_timestamp = None;
-        self.status = MediaRuntimeStatus::unconfigured();
+    fn ensure_source_replacement_allowed(&self) -> MediaResult<()> {
+        if self.hub.has_consumer(MediaConsumerKind::Live)
+            || self.hub.has_consumer(MediaConsumerKind::Recorder)
+        {
+            return Err(MediaError::Playback(
+                "存在 Live/Recorder 消费者时不能替换或关闭全局源".to_owned(),
+            ));
+        }
         Ok(())
     }
 
     fn stop_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
+        if self.has_stream_consumers() {
+            return Err(MediaError::Playback(
+                "存在 Live/Recorder 消费者时不能停止全局源".to_owned(),
+            ));
+        }
         let source_kind = self.status.source_kind;
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         session.stop()?;
         if source_kind == Some(MediaSourceKind::Camera) {
             self.finalize_current_session()?;
             self.session = None;
+            self.audio_sink = None;
+            self.status.audio_sink = None;
+        } else if let Some(sink) = self.audio_sink.as_ref() {
+            sink.clear();
         }
         self.reset_or_continue_clock();
         self.status.source_status = MediaSourceStatus::Stopped;
         self.status.position_seconds = 0.0;
+        self.status.metrics.audio_rms = 0.0;
+        self.status.metrics.audio_peak = 0.0;
+        self.last_audio_activity = None;
+        self.sync_audio_sink_playback(false);
         Ok(self.status.clone())
     }
 
     fn close_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
+        self.ensure_source_replacement_allowed()?;
         self.finalize_current_session()?;
         self.session = None;
         self.audio_sink = None;
+        self.last_audio_activity = None;
         self.clock.reset();
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
@@ -857,13 +910,25 @@ impl MediaWorker {
     }
 
     fn reset_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
+        if self.has_stream_consumers() {
+            return Err(MediaError::Playback(
+                "存在 Live/Recorder 消费者时不能重置全局源".to_owned(),
+            ));
+        }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         session.reset()?;
+        if let Some(sink) = self.audio_sink.as_ref() {
+            sink.clear();
+        }
         self.reset_or_continue_clock();
         self.pacing_anchor = None;
         self.last_media_timestamp = None;
         self.status.source_status = MediaSourceStatus::Ready;
         self.status.position_seconds = 0.0;
+        self.status.metrics.audio_rms = 0.0;
+        self.status.metrics.audio_peak = 0.0;
+        self.last_audio_activity = None;
+        self.sync_audio_sink_playback(false);
         Ok(self.status.clone())
     }
 
@@ -874,7 +939,11 @@ impl MediaWorker {
             return Err(MediaError::Playback("跳转位置超过媒体总时长".to_owned()));
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
+        let was_playing = self.status.source_status == MediaSourceStatus::Playing;
         let frame = session.seek_frame(position_seconds)?;
+        if let Some(sink) = self.audio_sink.as_ref() {
+            sink.clear();
+        }
         self.hub.begin_timeline();
         self.clock.begin_seek();
         self.reset_or_continue_clock();
@@ -885,6 +954,14 @@ impl MediaWorker {
         self.status.position_seconds = frame
             .as_ref()
             .map_or(position_seconds, |frame| frame.position_seconds);
+        self.status.metrics.audio_rms = 0.0;
+        self.status.metrics.audio_peak = 0.0;
+        self.last_audio_activity = None;
+        self.sync_audio_sink_playback(
+            was_playing
+                && (self.status.source_kind == Some(MediaSourceKind::Mp4)
+                    || self.status.audio_monitoring),
+        );
         if let Some(frame) = frame {
             let _ = self.preview.try_send(frame);
         }
@@ -922,7 +999,7 @@ impl MediaWorker {
     }
 
     fn reconcile_runtime_demand(&mut self) -> MediaResult<MediaRuntimeStatus> {
-        let has_encoded_consumer = self.hub.consumer_count() > 0;
+        let has_encoded_consumer = self.has_stream_consumers();
         self.status.active_live_consumers =
             u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
                 .unwrap_or(u64::MAX);
@@ -943,6 +1020,102 @@ impl MediaWorker {
         Ok(self.status.clone())
     }
 
+    fn has_stream_consumers(&self) -> bool {
+        self.hub.has_consumer(MediaConsumerKind::Live)
+            || self.hub.has_consumer(MediaConsumerKind::Recorder)
+    }
+
+    fn refresh_audio_sink_status(&mut self) {
+        let Some(sink) = self.audio_sink.as_ref() else {
+            // Keep an unavailable diagnostic produced by sink setup failure.  There is
+            // no native sink to poll in this state, so replacing it with `None` would
+            // erase the actionable error on the next media tick.
+            return;
+        };
+        let Some(diagnostics) = sink.diagnostics() else {
+            return;
+        };
+        let sink_error = diagnostics.last_error.clone();
+        self.status.audio_sink = Some(diagnostics);
+        if let Some(error) = sink_error {
+            self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
+        } else if self
+            .status
+            .last_pipeline_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("AudioSink:"))
+        {
+            self.status.last_pipeline_error = None;
+        }
+    }
+
+    /// Lazily creates the local sink for the currently attached preview.
+    ///
+    /// Sink setup is deliberately non-fatal for the source: a missing speaker or an
+    /// unsupported output format must leave video preview and encoded consumers usable.
+    fn ensure_audio_sink(&mut self) {
+        let audio_preview_available = self
+            .session
+            .as_ref()
+            .is_some_and(MediaSourceSession::audio_preview_available);
+        if self.status.audio.is_none() || !audio_preview_available {
+            if self.status.audio.is_some() && !audio_preview_available {
+                let error = self
+                    .session
+                    .as_ref()
+                    .and_then(MediaSourceSession::initial_pipeline_error)
+                    .unwrap_or_else(|| "音频预览不可用".to_owned());
+                self.status.audio_sink = Some(unavailable_audio_sink(error));
+            }
+            return;
+        }
+        if self.audio_sink.is_some() {
+            return;
+        }
+        match AudioPreviewSink::open() {
+            Ok(sink) => {
+                let configure_result = self
+                    .session
+                    .as_mut()
+                    .ok_or(MediaError::NoSourceOpen)
+                    .and_then(|session| session.set_audio_output_format(sink.format()));
+                match configure_result {
+                    Ok(()) => {
+                        sink.set_control(self.status.muted, self.status.volume);
+                        self.audio_sink = Some(sink);
+                        self.sync_audio_sink_playback(
+                            self.status.source_status == MediaSourceStatus::Playing
+                                && (self.status.source_kind == Some(MediaSourceKind::Mp4)
+                                    || self.status.audio_monitoring),
+                        );
+                    }
+                    Err(error) => {
+                        self.status.last_pipeline_error = Some(format!("AudioDecode: {error}"));
+                        self.status.audio_sink = Some(unavailable_audio_sink(error.to_string()));
+                    }
+                }
+            }
+            Err(error) => {
+                self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
+                self.status.audio_sink = Some(unavailable_audio_sink(error.to_string()));
+            }
+        }
+    }
+
+    fn sync_audio_sink_playback(&mut self, should_play: bool) {
+        let result = self.audio_sink.as_ref().map(|sink| {
+            if should_play {
+                sink.resume()
+            } else {
+                sink.pause()
+            }
+        });
+        if let Some(Err(error)) = result {
+            self.status.last_pipeline_error = Some(format!("AudioSink: {error}"));
+        }
+        self.refresh_audio_sink_status();
+    }
+
     fn with_session(&mut self, operation: impl FnOnce(&mut MediaSourceSession)) -> MediaResult<()> {
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
         operation(session);
@@ -960,6 +1133,34 @@ impl MediaWorker {
     }
 }
 
+const fn unavailable_audio_sink(error: String) -> AudioSinkInfo {
+    AudioSinkInfo {
+        status: AudioSinkStatus::Unavailable,
+        queued_samples: 0,
+        played_samples: 0,
+        underruns: 0,
+        dropped_samples: 0,
+        last_error: Some(error),
+    }
+}
+
+fn pipeline_error_recovered(error: &str, metrics: super::MediaRuntimeMetrics) -> bool {
+    if error.starts_with("PreviewConversion:") {
+        return metrics.video_preview_frames > 0;
+    }
+    if error.starts_with("VideoEncode:") {
+        return metrics.video_packets_encoded > 0;
+    }
+    if error.starts_with("AudioEncode:") {
+        return metrics.audio_packets_encoded > 0;
+    }
+    (error.starts_with("AudioDecode:")
+        || error.starts_with("AudioPreview:")
+        || error.starts_with("AudioDrain:")
+        || error.starts_with("AudioCapture:"))
+        && metrics.audio_frames_decoded > 0
+}
+
 fn pacing_deadline(anchor: Instant, media_seconds: f64, rate: f64) -> Instant {
     let elapsed = Duration::from_secs_f64((media_seconds / rate.max(0.01)).max(0.0));
     anchor.checked_add(elapsed).unwrap_or_else(Instant::now)
@@ -969,11 +1170,16 @@ fn pacing_deadline(anchor: Instant, media_seconds: f64, rate: f64) -> Instant {
 mod tests {
     use std::{
         path::PathBuf,
+        sync::{Arc, atomic::AtomicU8, mpsc},
         time::{Duration, Instant},
     };
 
-    use super::{GlobalMediaRuntime, pacing_deadline};
-    use crate::media::{MediaError, MediaSourceStatus};
+    use super::{
+        GlobalMediaRuntime, MediaWorker, pacing_deadline, pipeline_error_recovered,
+        unavailable_audio_sink,
+    };
+    use crate::media::MediaRuntimeMetrics;
+    use crate::media::{AudioSinkStatus, MediaError, MediaSourceStatus};
 
     #[test]
     fn runtime_should_start_and_shutdown_without_a_source() {
@@ -984,6 +1190,46 @@ mod tests {
             MediaSourceStatus::Unconfigured
         );
         assert!(runtime.shutdown().is_ok());
+    }
+
+    #[test]
+    fn pipeline_error_should_clear_only_after_the_same_branch_recovers() {
+        let mut metrics = MediaRuntimeMetrics::default();
+        assert!(!pipeline_error_recovered("VideoEncode: failed", metrics));
+        metrics.video_packets_encoded = 1;
+        assert!(pipeline_error_recovered("VideoEncode: failed", metrics));
+        assert!(!pipeline_error_recovered("AudioDecode: failed", metrics));
+        metrics.audio_frames_decoded = 1;
+        assert!(pipeline_error_recovered("AudioDecode: failed", metrics));
+    }
+
+    #[test]
+    fn refresh_should_preserve_unavailable_sink_diagnostics_without_a_native_sink() {
+        let (_command_sender, command_receiver) = mpsc::sync_channel(1);
+        let (preview_sender, _preview_receiver) = mpsc::sync_channel(1);
+        let shared_status = Arc::new(std::sync::RwLock::new(
+            crate::media::MediaRuntimeStatus::unconfigured(),
+        ));
+        let interrupt = Arc::new(AtomicU8::new(0));
+        let mut worker =
+            MediaWorker::new(command_receiver, preview_sender, shared_status, interrupt);
+        worker.status.audio_sink = Some(unavailable_audio_sink("speaker unavailable".to_owned()));
+        worker.status.last_pipeline_error = Some("AudioSink: speaker unavailable".to_owned());
+
+        worker.refresh_audio_sink_status();
+
+        assert_eq!(
+            worker
+                .status
+                .audio_sink
+                .as_ref()
+                .and_then(|sink| sink.last_error.as_deref()),
+            Some("speaker unavailable")
+        );
+        assert_eq!(
+            worker.status.last_pipeline_error.as_deref(),
+            Some("AudioSink: speaker unavailable")
+        );
     }
 
     #[test]
@@ -1086,7 +1332,14 @@ mod tests {
         assert_eq!(status.active_live_consumers, 0);
         assert!(!status.muted);
         assert!((status.volume - 0.75).abs() < f64::EPSILON);
-        assert!(status.last_pipeline_error.is_none());
+        // Audio output is optional on headless/Linux test runners. A sink
+        // failure must remain observable without turning into a source error.
+        assert!(status.last_error.is_none());
+        if let Some(sink) = status.audio_sink
+            && sink.status == AudioSinkStatus::Playing
+        {
+            assert!(sink.played_samples > 0);
+        }
         assert!(runtime.shutdown().is_ok());
     }
 }

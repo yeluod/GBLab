@@ -219,6 +219,23 @@ pub struct EncodedStreamDescriptor {
     pub configuration_format: Option<CodecConfigurationFormat>,
 }
 
+/// Final encoder output parameters carried with a packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EncodedOutputInfo {
+    /// Encoded video width, when applicable.
+    pub width: Option<u32>,
+    /// Encoded video height, when applicable.
+    pub height: Option<u32>,
+    /// Encoded video frame rate, when known.
+    pub frame_rate: Option<FrameRate>,
+    /// Encoded audio sample rate, when applicable.
+    pub sample_rate: Option<u32>,
+    /// Encoded audio channels, when applicable.
+    pub channels: Option<u32>,
+    /// Encoded bitrate, when known.
+    pub bitrate: Option<u64>,
+}
+
 /// Packet ready for recorder, live-session and preview consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedMediaPacket {
@@ -240,6 +257,8 @@ pub struct EncodedMediaPacket {
     pub is_keyframe: bool,
     /// Optional codec initialization data required by a downstream muxer.
     pub codec_configuration: Option<Bytes>,
+    /// Final output parameters from the encoder, if this packet was encoded locally.
+    pub output_info: Option<EncodedOutputInfo>,
 }
 
 impl EncodedMediaPacket {

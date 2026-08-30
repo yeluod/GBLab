@@ -1,7 +1,7 @@
 import { shallowRef, type Ref } from 'vue';
 
 import type { MediaService, MediaVideoFrame } from '../services/media-service';
-import type { MediaRuntimeStatus } from '../types/media-runtime';
+import { MediaSourceStatus, type MediaRuntimeStatus } from '../types/media-runtime';
 
 /** Owns the bounded preview transport loop independently from media configuration state. */
 export function createPreviewController(
@@ -39,6 +39,14 @@ export function createPreviewController(
       } catch (error) {
         stop();
         onFailure(error);
+        return;
+      }
+      if (
+        runtimeStatus.value.sourceStatus === MediaSourceStatus.Stopped ||
+        runtimeStatus.value.sourceStatus === MediaSourceStatus.Unconfigured ||
+        runtimeStatus.value.sourceStatus === MediaSourceStatus.Error
+      ) {
+        stop();
         return;
       }
       if (frameLoopActive) statusTimer = setTimeout(() => void refreshStatus(), 400);
