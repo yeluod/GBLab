@@ -6,6 +6,7 @@ README.md
 coverage/
 dist/
 node_modules/
+.ffmpeg-sdk/
 src-tauri/icons/
 src-tauri/gen/
 src-tauri/target/

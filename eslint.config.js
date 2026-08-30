@@ -11,6 +11,7 @@ export default tseslint.config(
       'coverage/**',
       'dist/**',
       'node_modules/**',
+      '.ffmpeg-sdk/**',
       'src-tauri/target/**',
       'target/**',
       '**/*.d.ts',
