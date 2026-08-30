@@ -48,7 +48,7 @@ just verify
 
 macOS 与 Windows 应用分别在对应原生平台构建和验证。
 
-桌面构建统一由 .github/workflows/build-desktop.yml 提供；FFmpeg SDK 的版本、来源、架构、许可证和 SHA-256 统一记录在 toolchains/ffmpeg-sdk.lock.json。CI 使用内容寻址缓存并在缓存恢复后重新校验 SDK，正常构建不依赖 rolling asset ID。
+桌面构建统一由 .github/workflows/build-desktop.yml 提供；FFmpeg SDK 的版本、来源策略、架构和许可证统一记录在 toolchains/ffmpeg-sdk.lock.json。Windows 构建按锁定的 FFmpeg 8.1、win64、LGPL shared 资产名解析 BtbN 当前发布，并使用 GitHub 提供的 SHA-256 做内容寻址缓存；实际 Release、资产 ID、下载地址和摘要写入 SDK manifest。CI 在缓存恢复后重新校验 SDK，不依赖会被清理的日期型 autobuild URL。
 
 ## 发布
 

@@ -1,5 +1,5 @@
 name: Prepare FFmpeg native SDK
-description: Prepare and verify the pinned platform FFmpeg SDK
+description: Resolve, prepare and verify the locked platform FFmpeg SDK
 
 inputs:
   platform:
@@ -13,11 +13,18 @@ runs:
       id: metadata
       shell: bash
       run: node -e "const m = require('./toolchains/ffmpeg-sdk.lock.json'); process.stdout.write('version=' + m.ffmpegVersion + String.fromCharCode(10) + 'revision=' + m.sdkRevision + String.fromCharCode(10))" >> "$GITHUB_OUTPUT"
+    - name: Resolve Windows FFmpeg SDK source
+      id: windows-source
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: ./scripts/resolve-ffmpeg-windows.ps1 -OutputFile .ffmpeg-sdk/windows-source.json
     - name: Restore FFmpeg SDK cache
       uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
       with:
         path: .ffmpeg-sdk/${{ inputs.platform }}
-        key: gblab-ffmpeg-${{ inputs.platform }}-${{ runner.arch }}-v${{ steps.metadata.outputs.version }}-r${{ steps.metadata.outputs.revision }}-${{ hashFiles('toolchains/ffmpeg-sdk.lock.json') }}
+        key: gblab-ffmpeg-${{ inputs.platform }}-${{ runner.arch }}-v${{ steps.metadata.outputs.version }}-r${{ steps.metadata.outputs.revision }}-${{ steps.windows-source.outputs.fingerprint || hashFiles('toolchains/ffmpeg-sdk.lock.json') }}
     - name: Prepare macOS FFmpeg SDK
       if: ${{ inputs.platform == 'macos' }}
       shell: bash

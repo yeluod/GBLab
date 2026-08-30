@@ -1,6 +1,7 @@
 param(
   [string]$OutputRoot = '.ffmpeg-sdk\\windows',
-  [string]$LockFile = 'toolchains/ffmpeg-sdk.lock.json'
+  [string]$LockFile = 'toolchains/ffmpeg-sdk.lock.json',
+  [string]$SourceMetadataFile = '.ffmpeg-sdk\\windows-source.json'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,8 +9,12 @@ $architecture = 'x86_64'
 $lock = Get-Content -Raw -Path $LockFile | ConvertFrom-Json
 $platform = $lock.platforms.'windows-x86_64'
 $source = $platform.source
+$resolvedSource = Get-Content -Raw -Path $SourceMetadataFile | ConvertFrom-Json
+if ($resolvedSource.sourceKind -ne $source.kind) { throw "Windows FFmpeg source kind mismatch: expected=$($source.kind) actual=$($resolvedSource.sourceKind)" }
+if ($resolvedSource.assetName -ne $source.assetName) { throw "Windows FFmpeg asset mismatch: expected=$($source.assetName) actual=$($resolvedSource.assetName)" }
+if ($resolvedSource.archiveSha256 -notmatch '^[0-9a-f]{64}$') { throw "Invalid resolved Windows FFmpeg SHA-256: $($resolvedSource.archiveSha256)" }
 $root = (New-Item -ItemType Directory -Force -Path $OutputRoot).FullName
-$archive = Join-Path $root $source.filename
+$archive = Join-Path $root $resolvedSource.assetName
 $extractRoot = Join-Path $root 'extract'
 
 function Get-Sha256([string]$Path) {
@@ -17,17 +22,17 @@ function Get-Sha256([string]$Path) {
 }
 
 function Download-Archive {
-  Write-Host "Downloading FFmpeg SDK: platform=windows architecture=$architecture version=$($lock.ffmpegVersion) url=$($source.url)"
+  Write-Host "Downloading FFmpeg SDK: platform=windows architecture=$architecture version=$($lock.ffmpegVersion) url=$($resolvedSource.downloadUrl)"
   try {
-    Invoke-WebRequest -MaximumRedirection 5 -Uri $source.url -OutFile $archive
+    Invoke-WebRequest -MaximumRedirection 5 -Uri $resolvedSource.downloadUrl -OutFile $archive
   } catch {
-    throw "FFmpeg SDK download failed: platform=windows architecture=$architecture filename=$($source.filename) url=$($source.url). $($_.Exception.Message)"
+    throw "FFmpeg SDK download failed: platform=windows architecture=$architecture filename=$($resolvedSource.assetName) url=$($resolvedSource.downloadUrl). $($_.Exception.Message)"
   }
 }
 
 if (Test-Path $archive) {
   $actual = Get-Sha256 $archive
-  if ($actual -ne $source.sha256) {
+  if ($actual -ne $resolvedSource.archiveSha256) {
     Remove-Item -Force $archive
     Download-Archive
   }
@@ -35,7 +40,7 @@ if (Test-Path $archive) {
   Download-Archive
 }
 $actual = Get-Sha256 $archive
-if ($actual -ne $source.sha256) { throw "FFmpeg SDK checksum mismatch after download: expected=$($source.sha256) actual=$actual" }
+if ($actual -ne $resolvedSource.archiveSha256) { throw "FFmpeg SDK checksum mismatch after download: expected=$($resolvedSource.archiveSha256) actual=$actual" }
 
 if (Test-Path $extractRoot) { Remove-Item -Recurse -Force $extractRoot }
 Expand-Archive -Path $archive -DestinationPath $extractRoot
@@ -65,7 +70,12 @@ $manifest = [ordered]@{
   linkMode = $lock.linkMode
   license = $lock.license
   requiredLibraries = @($lock.requiredLibraries)
-  source = $source.url
+  sourceKind = $resolvedSource.sourceKind
+  sourceReleaseId = $resolvedSource.releaseId
+  sourceReleaseTag = $resolvedSource.releaseTag
+  sourceAssetId = $resolvedSource.assetId
+  sourceAsset = $resolvedSource.assetName
+  source = $resolvedSource.downloadUrl
   archiveSha256 = $actual
 }
 $manifest | ConvertTo-Json | Set-Content -Path (Join-Path $root 'manifest.json') -Encoding UTF8

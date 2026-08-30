@@ -16,8 +16,21 @@ if ($manifest.license -ne $lock.license) { throw "FFmpeg license mismatch: expec
 if ($manifest.linkMode -ne $lock.linkMode) { throw "FFmpeg link mode mismatch: expected $($lock.linkMode), got $($manifest.linkMode)" }
 if ($manifest.platform -ne 'windows' -or $manifest.architecture -ne 'x86_64') { throw "Unexpected FFmpeg SDK platform or architecture: $($manifest.platform)/$($manifest.architecture)" }
 $expectedPlatform = $lock.platforms.'windows-x86_64'
-if ($manifest.source -ne $expectedPlatform.source.url) { throw "FFmpeg source mismatch: expected $($expectedPlatform.source.url), got $($manifest.source)" }
-if ($manifest.archiveSha256 -ne $expectedPlatform.source.sha256) { throw "FFmpeg archive checksum mismatch: expected $($expectedPlatform.source.sha256), got $($manifest.archiveSha256)" }
+if ($manifest.sourceKind -ne $expectedPlatform.source.kind) { throw "FFmpeg source kind mismatch: expected $($expectedPlatform.source.kind), got $($manifest.sourceKind)" }
+if ($manifest.sourceAsset -ne $expectedPlatform.source.assetName) { throw "FFmpeg source asset mismatch: expected $($expectedPlatform.source.assetName), got $($manifest.sourceAsset)" }
+if ($manifest.archiveSha256 -notmatch '^[0-9a-f]{64}$') { throw "FFmpeg archive checksum is invalid: $($manifest.archiveSha256)" }
+foreach ($field in @('sourceReleaseId', 'sourceReleaseTag', 'sourceAssetId')) {
+  if ([string]::IsNullOrWhiteSpace([string]$manifest.$field)) { throw "FFmpeg provenance field is missing: $field" }
+}
+$sourceUri = [Uri]$manifest.source
+$expectedSourcePrefix = '/BtbN/FFmpeg-Builds/releases/download/'
+if ($sourceUri.Scheme -ne 'https' -or $sourceUri.Host -ne 'github.com' -or -not $sourceUri.AbsolutePath.StartsWith($expectedSourcePrefix) -or -not $sourceUri.AbsolutePath.EndsWith("/$($expectedPlatform.source.assetName)")) {
+  throw "FFmpeg source URL is outside the locked GitHub asset: $($manifest.source)"
+}
+$archivePath = Join-Path $sdkPath $manifest.sourceAsset
+if (-not (Test-Path $archivePath)) { throw "FFmpeg source archive not found in SDK: $archivePath" }
+$actualArchiveSha256 = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
+if ($actualArchiveSha256 -ne $manifest.archiveSha256) { throw "FFmpeg archive checksum mismatch: expected $($manifest.archiveSha256), got $actualArchiveSha256" }
 $expectedLibraries = @($lock.requiredLibraries | Sort-Object)
 $actualLibraries = @($manifest.requiredLibraries | Sort-Object)
 if (($expectedLibraries -join ',') -ne ($actualLibraries -join ',')) { throw 'FFmpeg required library set mismatch' }

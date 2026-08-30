@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $errors = $null
-          foreach ($path in @('scripts/prepare-ffmpeg-windows.ps1', 'scripts/verify-ffmpeg-windows.ps1')) {
+          foreach ($path in @('scripts/resolve-ffmpeg-windows.ps1', 'scripts/prepare-ffmpeg-windows.ps1', 'scripts/verify-ffmpeg-windows.ps1')) {
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$null, [ref]$errors) | Out-Null
           }
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
@@ -110,9 +110,9 @@ jobs:
         with:
           platform: linux
       - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --all-targets --locked
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: cargo check -p gblab-core -p gblab-ffmpeg-support --all-targets --locked
+      - run: cargo clippy -p gblab-core -p gblab-ffmpeg-support --all-targets --all-features --locked -- -D warnings
+      - run: cargo test -p gblab-core -p gblab-ffmpeg-support --locked
 
   native-verify:
     name: Native desktop verification

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sdkRevision": 3,
+  "sdkRevision": 4,
   "ffmpegVersion": "8.1",
   "license": "LGPL-2.1-or-later",
   "linkMode": "dynamic",
@@ -39,10 +39,9 @@
       "platform": "windows",
       "architecture": "x86_64",
       "source": {
-        "kind": "btbn-release",
-        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-29-13-36/ffmpeg-n8.1.2-44-g7c533d0f86-win64-lgpl-shared-8.1.zip",
-        "filename": "ffmpeg-n8.1.2-44-g7c533d0f86-win64-lgpl-shared-8.1.zip",
-        "sha256": "275af181313d58a0bfc46b4b2b178634a97daa08981838642440e767f18ccab0"
+        "kind": "btbn-latest-release",
+        "releaseApiUrl": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+        "assetName": "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
       }
     }
   }
