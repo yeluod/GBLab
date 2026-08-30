@@ -1,6 +1,6 @@
 //! Decoded PCM preview, level metering and bounded native speaker output.
 
-use std::{collections::VecDeque, ffi::CString};
+use std::ffi::CString;
 
 use rsmpeg::{
     avcodec::{AVCodec, AVCodecContext, AVCodecParameters, AVPacket},
@@ -431,6 +431,7 @@ pub(super) fn audio_levels(samples: &[f32]) -> (f64, f64) {
     ((square_sum / samples.len() as f64).sqrt(), peak)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn controlled_sample(sample: f32, muted: bool, volume: f32) -> f32 {
     if muted {
         0.0
@@ -441,17 +442,18 @@ fn controlled_sample(sample: f32, muted: bool, volume: f32) -> f32 {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        },
     };
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     use super::super::types::AudioSinkStatus;
-    use super::{
-        AudioOutputFormat, AudioSinkInfo, MediaError, MediaResult, VecDeque, controlled_sample,
-    };
+    use super::{AudioOutputFormat, AudioSinkInfo, MediaError, MediaResult, controlled_sample};
 
     const MAX_BUFFER_SECONDS: usize = 2;
     pub(super) const STATUS_PAUSED: u8 = 0;
@@ -713,6 +715,12 @@ pub(super) use native::AudioPreviewSink;
 pub(super) struct AudioPreviewSink;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[expect(
+    clippy::unused_self,
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    reason = "the unsupported-target facade preserves the native sink API used by MediaWorker"
+)]
 impl AudioPreviewSink {
     pub(crate) fn open() -> MediaResult<Self> {
         Err(MediaError::AudioPreview(
@@ -720,10 +728,6 @@ impl AudioPreviewSink {
         ))
     }
     pub(crate) fn push(&self, _samples: &[f32]) {}
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "A non-native platform has no sink diagnostics"
-    )]
     pub(crate) fn diagnostics(&self) -> Option<AudioSinkInfo> {
         None
     }
@@ -749,9 +753,10 @@ mod tests {
         clippy::panic,
         reason = "explicit panic messages preserve FFmpeg failures in unit-test diagnostics"
     )]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    use super::controlled_sample;
     use super::{
         AudioOutputFormat, AudioPcmFrame, AudioTempoProcessor, atempo_factors, audio_levels,
-        controlled_sample,
     };
     use crate::media::MediaTimeBase;
 
@@ -768,6 +773,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn mute_and_volume_should_change_native_output_samples() {
         assert!(controlled_sample(0.8, true, 1.0).abs() < f32::EPSILON);
         assert!((controlled_sample(0.8, false, 0.25) - 0.2).abs() < f32::EPSILON);
