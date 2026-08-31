@@ -655,6 +655,44 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_refresh_should_preserve_existing_uas_to_tag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = "SUBSCRIBE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
+                       Via: SIP/2.0/UDP 192.168.10.91:5060;branch=z9hG4bK-refresh\r\n\
+                       From: <sip:34020000002000000001@3402000000>;tag=platform-tag\r\n\
+                       To: <sip:34020000002000000100@192.168.10.94:5060>;tag=existing-device-tag\r\n\
+                       Call-ID: alarm-subscription\r\n\
+                       CSeq: 10 SUBSCRIBE\r\n\
+                       Event: Alarm\r\n\
+                       Expires: 3599\r\n\
+                       Content-Length: 0\r\n\r\n";
+
+        let payload = build_request_response(
+            request,
+            200,
+            "OK",
+            Some("newly-generated-tag"),
+            "34020000002000000100",
+            "192.168.10.94".parse::<IpAddr>()?,
+            5060,
+        );
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(payload.as_bytes())?;
+        let SipMessage::Response(response) = parsed else {
+            return Err("应构造 SIP Response".into());
+        };
+        let Some(siprs::siprs_message::HeaderValue::FromTo(to)) =
+            response.headers.get(&HeaderName::To)
+        else {
+            return Err("响应缺少结构化 To 头".into());
+        };
+        assert_eq!(
+            to.tag.as_ref().map(|tag| tag.0.as_str()),
+            Some("existing-device-tag")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invite_final_response_should_add_the_generated_uas_to_tag()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = "INVITE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
