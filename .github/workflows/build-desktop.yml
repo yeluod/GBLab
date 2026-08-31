@@ -75,7 +75,10 @@ jobs:
       - name: Prepare macOS framework output directory
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
-        run: mkdir -p target/release/Frameworks
+        run: |
+          set -euo pipefail
+          mkdir -p target/release/Frameworks
+          cp -Lf .ffmpeg-sdk/macos/frameworks/*.dylib target/release/Frameworks/
       - name: Generate release Tauri configuration
         shell: bash
         run: >-
