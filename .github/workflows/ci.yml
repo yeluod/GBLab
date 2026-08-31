@@ -35,6 +35,8 @@ jobs:
       - name: Validate JSON manifests
         run: node -e "JSON.parse(require('fs').readFileSync('toolchains/ffmpeg-sdk.lock.json', 'utf8')); JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'))"
       - name: Validate pinned workflow actions
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/verify-action-pins.sh
       - name: Parse PowerShell scripts
         shell: pwsh
