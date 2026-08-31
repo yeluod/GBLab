@@ -20,10 +20,10 @@ GBLab 是面向开发联调与压测的 GB28181 多设备模拟器桌面应用�
 打开、播放、暂停、停止、关闭、Seek 和单帧操作，不直接持有 FFmpeg context。
 
 - MP4 只解封装一次；H.264/H.265 通过 FFmpeg bitstream filter 输出 Annex-B，AAC 直接透传。
-- 编码音视频统一归一化到 90 kHz 单调时间线，再通过有界 fan-out 独立提供给 Recorder 和 Live consumer。
-- Preview 使用独立的有界可丢帧队列和二进制 Tauri IPC，不以 JSON 数组传输 RGBA，也不会阻塞 Recorder 或 Live consumer。
+- 编码音视频统一归一化到 90 kHz 单调时间线，再通过有界 fan-out 提供给后续 GB28181 Live consumer。
+- Preview 使用独立的有界可丢帧队列和二进制 Tauri IPC，不以 JSON 数组传输 RGBA，也不会阻塞 Live consumer。
 
-当前媒体核心不包含 MPEG-PS、RTP、SIP `INVITE` 媒体会话、实际录像文件写入和历史回放；这些能力应直接消费现有 `EncodedMediaPacket`，不得重复打开全局 MP4 源。
+当前媒体核心只提供 MP4 播放、预览和编码 Live consumer，不提供本地录制、录像文件写入、历史回放或上级平台 `RecordInfo` 录像查询。后续 MPEG-PS、RTP 和 SIP `INVITE` 媒体会话应直接消费现有 `EncodedMediaPacket`，不得重复打开全局 MP4 源。
 
 ## 开发环境
 

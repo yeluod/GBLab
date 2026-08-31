@@ -534,7 +534,7 @@ impl MediaWorker {
             MediaCommand::Pause(reply) => {
                 let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
-                        "存在 Live/Recorder 消费者时不能暂停全局源".to_owned(),
+                        "存在 Live 消费者时不能暂停全局源".to_owned(),
                     ))
                 } else {
                     self.with_session(MediaSourceSession::pause)
@@ -566,7 +566,7 @@ impl MediaWorker {
             } => {
                 let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
-                        "存在 Live/Recorder 消费者时不能跳转全局源".to_owned(),
+                        "存在 Live 消费者时不能跳转全局源".to_owned(),
                     ))
                 } else {
                     self.seek_source(position_seconds)
@@ -576,7 +576,7 @@ impl MediaWorker {
             MediaCommand::SetPlaybackRate { rate, reply } => {
                 let result = if self.has_stream_consumers() {
                     Err(MediaError::Playback(
-                        "存在 Live/Recorder 消费者时不能修改全局播放倍速".to_owned(),
+                        "存在 Live 消费者时不能修改全局播放倍速".to_owned(),
                     ))
                 } else if rate.is_finite() && (0.25..=4.0).contains(&rate) {
                     let audio_error = match self
@@ -701,9 +701,6 @@ impl MediaWorker {
         self.status.active_live_consumers =
             u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
                 .unwrap_or(u64::MAX);
-        self.status.active_recorder_consumers =
-            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Recorder))
-                .unwrap_or(u64::MAX);
         if let Some(session) = self.session.as_mut() {
             session.set_preview_enabled(self.preview_attached);
         }
@@ -714,11 +711,9 @@ impl MediaWorker {
     }
 
     fn ensure_source_replacement_allowed(&self) -> MediaResult<()> {
-        if self.hub.has_consumer(MediaConsumerKind::Live)
-            || self.hub.has_consumer(MediaConsumerKind::Recorder)
-        {
+        if self.hub.has_consumer(MediaConsumerKind::Live) {
             return Err(MediaError::Playback(
-                "存在 Live/Recorder 消费者时不能替换或关闭全局源".to_owned(),
+                "存在 Live 消费者时不能替换或关闭全局源".to_owned(),
             ));
         }
         Ok(())
@@ -727,7 +722,7 @@ impl MediaWorker {
     fn stop_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
         if self.has_stream_consumers() {
             return Err(MediaError::Playback(
-                "存在 Live/Recorder 消费者时不能停止全局源".to_owned(),
+                "存在 Live 消费者时不能停止全局源".to_owned(),
             ));
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
@@ -760,7 +755,7 @@ impl MediaWorker {
     fn reset_source(&mut self) -> MediaResult<MediaRuntimeStatus> {
         if self.has_stream_consumers() {
             return Err(MediaError::Playback(
-                "存在 Live/Recorder 消费者时不能重置全局源".to_owned(),
+                "存在 Live 消费者时不能重置全局源".to_owned(),
             ));
         }
         let session = self.session.as_mut().ok_or(MediaError::NoSourceOpen)?;
@@ -828,9 +823,7 @@ impl MediaWorker {
     }
 
     fn reset_or_continue_clock(&mut self) {
-        if self.hub.has_consumer(MediaConsumerKind::Live)
-            || self.hub.has_consumer(MediaConsumerKind::Recorder)
-        {
+        if self.hub.has_consumer(MediaConsumerKind::Live) {
             self.clock.begin_loop();
         } else {
             self.clock.reset();
@@ -847,9 +840,6 @@ impl MediaWorker {
         self.status.active_live_consumers =
             u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Live))
                 .unwrap_or(u64::MAX);
-        self.status.active_recorder_consumers =
-            u64::try_from(self.hub.consumer_count_by_kind(MediaConsumerKind::Recorder))
-                .unwrap_or(u64::MAX);
         let has_demand = self.preview_attached || has_encoded_consumer;
         if has_demand && self.session.is_none() {
             return Err(MediaError::NoSourceOpen);
@@ -865,7 +855,6 @@ impl MediaWorker {
 
     fn has_stream_consumers(&self) -> bool {
         self.hub.has_consumer(MediaConsumerKind::Live)
-            || self.hub.has_consumer(MediaConsumerKind::Recorder)
     }
 
     fn refresh_audio_sink_status(&mut self) {

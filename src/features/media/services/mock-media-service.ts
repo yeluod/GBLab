@@ -172,7 +172,6 @@ export class MockMediaService implements MediaService {
         video: clone(probeResult.video),
         audio: clone(probeResult.audio),
         activeLiveConsumers: 0,
-        activeRecorderConsumers: 0,
         durationSeconds: probeResult.video.durationSeconds,
         positionSeconds: 0,
         playbackRate: 1,

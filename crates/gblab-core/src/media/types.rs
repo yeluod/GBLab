@@ -144,8 +144,6 @@ pub struct MediaRuntimeStatus {
     pub volume: f64,
     /// Active encoded live-stream consumers.
     pub active_live_consumers: u64,
-    /// Active encoded recorder consumers.
-    pub active_recorder_consumers: u64,
     /// 最近一次 source worker 错误；正常打开新源后清除。
     pub last_error: Option<String>,
     /// Latest non-fatal local audio/preview branch failure with an explicit stage prefix.
@@ -169,7 +167,6 @@ impl MediaRuntimeStatus {
             muted: false,
             volume: 1.0,
             active_live_consumers: 0,
-            active_recorder_consumers: 0,
             last_error: None,
             last_pipeline_error: None,
             audio_sink: None,
@@ -195,7 +192,6 @@ impl MediaRuntimeStatus {
             muted: false,
             volume: 1.0,
             active_live_consumers: 0,
-            active_recorder_consumers: 0,
             last_error: None,
             last_pipeline_error: None,
             audio_sink: None,

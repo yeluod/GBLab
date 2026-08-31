@@ -406,14 +406,6 @@ pub(super) fn dispatch_platform_request(
             CmdType::DeviceStatus => {
                 Some(build_device_status_body(query.device_id.as_str(), query.sn))
             }
-            CmdType::RecordQuery => Some(build_record_info_body(
-                query.device_id.as_str(),
-                &query.sn.to_string(),
-            )),
-            CmdType::Other(value) if value == "RecordInfo" => Some(build_record_info_body(
-                query.device_id.as_str(),
-                &query.sn.to_string(),
-            )),
             _ => None,
         },
         GbMessage::Control(control) if control.cmd_type == CmdType::DeviceControl => Some(
@@ -454,12 +446,6 @@ pub(super) fn build_device_status_body(device_id: &str, sn: u32) -> String {
 pub(super) fn build_device_control_body(device_id: &str, sn: &str) -> String {
     format!(
         "<Response><CmdType>DeviceControl</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><Result>OK</Result></Response>"
-    )
-}
-
-pub(super) fn build_record_info_body(device_id: &str, sn: &str) -> String {
-    format!(
-        "<Response><CmdType>RecordInfo</CmdType><SN>{sn}</SN><DeviceID>{device_id}</DeviceID><SumNum>0</SumNum><RecordList Num=\"0\"></RecordList></Response>"
     )
 }
 

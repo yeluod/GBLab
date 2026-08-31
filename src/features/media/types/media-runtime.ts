@@ -51,7 +51,6 @@ export interface MediaRuntimeStatus {
   video: VideoStreamInfo | null;
   audio: AudioStreamInfo | null;
   activeLiveConsumers: number;
-  activeRecorderConsumers: number;
   durationSeconds: number | null;
   positionSeconds: number;
   playbackRate: number;

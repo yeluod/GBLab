@@ -2,19 +2,11 @@
   import { computed, ref, watch } from 'vue';
   import { NButton, NEmpty, NSelect, NSlider, NSpin, NSwitch, NTag } from 'naive-ui';
 
-  import {
-    AudioCodec,
-    MediaSourceStatus,
-    VideoCodec,
-    type DetectedAudioCodec,
-    type MediaProbeResult,
-    type MediaRuntimeStatus,
-  } from '@/features/media';
+  import { MediaSourceStatus, type MediaRuntimeStatus } from '@/features/media';
   import AppIcon from '@/shared/components/app-icon.vue';
 
   const props = defineProps<{
     runtimeStatus: MediaRuntimeStatus;
-    probeResult: MediaProbeResult | null;
     isPreviewPending: boolean;
     canStartPreview: boolean;
     previewFrame?: { width: number; height: number; rgba: Uint8Array } | null;
@@ -55,10 +47,6 @@
     playing: '播放中',
     error: '错误',
   };
-  const displayedVideo = computed(() => props.probeResult?.video ?? props.runtimeStatus.video);
-  const displayedAudio = computed(() =>
-    props.probeResult === null ? props.runtimeStatus.audio : props.probeResult.audio,
-  );
   const previewTitle = 'MP4 预览';
   const previewEmptyDescription = '选择并检测 MP4 后可开始预览';
   const previewCanvas = ref<HTMLCanvasElement | null>(null);
@@ -100,19 +88,6 @@
   );
   watch(previewCanvas, () => drawFrame(props.previewFrame), { flush: 'post' });
 
-  function codecLabel(codec: VideoCodec | AudioCodec | DetectedAudioCodec): string {
-    const labels: Record<VideoCodec | AudioCodec | DetectedAudioCodec, string> = {
-      [VideoCodec.H264]: 'H.264',
-      [VideoCodec.H265]: 'H.265',
-      [AudioCodec.G711A]: 'G.711 A-law',
-      [AudioCodec.G711U]: 'G.711 μ-law',
-      [AudioCodec.Aac]: 'AAC',
-      mp3: 'MP3',
-      other: '其它音频',
-    };
-    return labels[codec] ?? '未知编码';
-  }
-
   function durationLabel(durationSeconds: number | null): string {
     if (durationSeconds === null) return '实时';
     const totalSeconds = Math.max(0, Math.floor(durationSeconds));
@@ -135,182 +110,143 @@
         </NTag>
       </div>
 
-      <div class="mock-preview-surface" :class="`status-${runtimeStatus.sourceStatus}`">
-        <NSpin
-          v-if="isPreviewPending || runtimeStatus.sourceStatus === MediaSourceStatus.Loading"
-        />
-        <template
-          v-else-if="
-            runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
-            runtimeStatus.sourceStatus === MediaSourceStatus.Paused
-          "
-        >
-          <canvas ref="previewCanvas" class="preview-canvas" aria-label="视频预览画面"></canvas>
-          <div class="preview-caption">
-            <strong>{{ previewTitle }}</strong>
-            <span>{{ runtimeStatus.sourceLabel }}</span>
-          </div>
-        </template>
-        <NEmpty v-else :description="previewEmptyDescription" />
-      </div>
-
-      <div class="preview-actions">
-        <NButton
-          v-if="
-            runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing &&
-            runtimeStatus.sourceStatus !== MediaSourceStatus.Paused
-          "
-          type="primary"
-          :disabled="!canStartPreview"
-          :loading="isPreviewPending"
-          data-testid="start-preview"
-          @click="emit('startPreview')"
-        >
-          <template #icon><AppIcon icon="play" /></template>
-          开始预览
-        </NButton>
-        <NButton
-          v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing"
-          :loading="isPreviewPending"
-          @click="emit('pausePreview')"
-        >
-          暂停
-        </NButton>
-        <NButton
-          v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Paused"
-          type="primary"
-          :loading="isPreviewPending"
-          @click="emit('resumePreview')"
-        >
-          继续
-        </NButton>
-        <NButton
-          v-if="
-            runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
-            runtimeStatus.sourceStatus === MediaSourceStatus.Paused
-          "
-          type="warning"
-          :loading="isPreviewPending"
-          data-testid="stop-preview"
-          @click="emit('stopPreview')"
-        >
-          <template #icon><AppIcon icon="stop" /></template>
-          停止预览
-        </NButton>
-      </div>
-
-      <div
-        v-if="
-          runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
-          runtimeStatus.sourceStatus === MediaSourceStatus.Paused
-        "
-        class="playback-controls"
-      >
-        <div class="playback-seek-row">
-          <NSlider
-            v-model:value="seekPosition"
-            :min="0"
-            :max="runtimeStatus.durationSeconds ?? 0"
-            :step="0.1"
-            @dragstart="isSeekEditing = true"
-            @dragend="commitSeek"
+      <div class="player-shell">
+        <div class="mock-preview-surface" :class="`status-${runtimeStatus.sourceStatus}`">
+          <NSpin
+            v-if="isPreviewPending || runtimeStatus.sourceStatus === MediaSourceStatus.Loading"
           />
-          <span
-            >{{ durationLabel(seekPosition) }} /
-            {{ durationLabel(runtimeStatus.durationSeconds) }}</span
-          >
-        </div>
-        <div class="playback-action-row">
-          <NButton size="small" @click="emit('seek', Math.max(0, seekPosition - 10))"
-            >-10 秒</NButton
-          >
-          <NButton size="small" type="primary" @click="emit('seek', seekPosition)">跳转</NButton>
-          <NButton
-            size="small"
-            @click="
-              emit(
-                'seek',
-                Math.min(runtimeStatus.durationSeconds ?? seekPosition, seekPosition + 10),
-              )
+          <template
+            v-else-if="
+              runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+              runtimeStatus.sourceStatus === MediaSourceStatus.Paused
             "
           >
-            +10 秒
+            <canvas ref="previewCanvas" class="preview-canvas" aria-label="视频预览画面"></canvas>
+            <div class="preview-caption">
+              <strong>{{ previewTitle }}</strong>
+              <span>{{ runtimeStatus.sourceLabel }}</span>
+            </div>
+          </template>
+          <NEmpty v-else :description="previewEmptyDescription" />
+        </div>
+
+        <div class="preview-actions">
+          <NButton
+            v-if="
+              runtimeStatus.sourceStatus !== MediaSourceStatus.Previewing &&
+              runtimeStatus.sourceStatus !== MediaSourceStatus.Paused
+            "
+            type="primary"
+            :disabled="!canStartPreview"
+            :loading="isPreviewPending"
+            data-testid="start-preview"
+            @click="emit('startPreview')"
+          >
+            <template #icon><AppIcon icon="play" /></template>
+            开始预览
           </NButton>
           <NButton
-            size="small"
-            :disabled="runtimeStatus.sourceStatus !== MediaSourceStatus.Paused"
-            @click="emit('stepFrame')"
+            v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Previewing"
+            :loading="isPreviewPending"
+            @click="emit('pausePreview')"
           >
-            单帧
+            暂停
           </NButton>
-          <NSelect
-            :value="runtimeStatus.playbackRate"
-            :options="rateOptions"
-            size="small"
-            @update:value="emit('playbackRateChange', $event)"
-          />
+          <NButton
+            v-if="runtimeStatus.sourceStatus === MediaSourceStatus.Paused"
+            type="primary"
+            :loading="isPreviewPending"
+            @click="emit('resumePreview')"
+          >
+            继续
+          </NButton>
+          <NButton
+            v-if="
+              runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+              runtimeStatus.sourceStatus === MediaSourceStatus.Paused
+            "
+            type="warning"
+            :loading="isPreviewPending"
+            data-testid="stop-preview"
+            @click="emit('stopPreview')"
+          >
+            <template #icon><AppIcon icon="stop" /></template>
+            停止预览
+          </NButton>
         </div>
-      </div>
 
-      <div v-if="runtimeStatus.audio !== null" class="audio-controls">
-        <span title="控制本地音频监听输出">静音状态</span>
-        <NSwitch
-          :value="runtimeStatus.muted"
-          @update:value="emit('audioControlChange', $event, runtimeStatus.volume)"
-        />
-        <span>音量</span>
-        <NSlider
-          :value="runtimeStatus.volume"
-          :min="0"
-          :max="1"
-          :step="0.05"
-          @update:value="emit('audioControlChange', runtimeStatus.muted, $event)"
-        />
+        <div
+          v-if="
+            runtimeStatus.sourceStatus === MediaSourceStatus.Previewing ||
+            runtimeStatus.sourceStatus === MediaSourceStatus.Paused
+          "
+          class="playback-controls"
+        >
+          <div class="playback-seek-row">
+            <NSlider
+              v-model:value="seekPosition"
+              :min="0"
+              :max="runtimeStatus.durationSeconds ?? 0"
+              :step="0.1"
+              @dragstart="isSeekEditing = true"
+              @dragend="commitSeek"
+            />
+            <span
+              >{{ durationLabel(seekPosition) }} /
+              {{ durationLabel(runtimeStatus.durationSeconds) }}</span
+            >
+          </div>
+          <div class="playback-action-row">
+            <NButton size="small" @click="emit('seek', Math.max(0, seekPosition - 10))"
+              >-10 秒</NButton
+            >
+            <NButton size="small" type="primary" @click="emit('seek', seekPosition)">跳转</NButton>
+            <NButton
+              size="small"
+              @click="
+                emit(
+                  'seek',
+                  Math.min(runtimeStatus.durationSeconds ?? seekPosition, seekPosition + 10),
+                )
+              "
+            >
+              +10 秒
+            </NButton>
+            <NButton
+              size="small"
+              :disabled="runtimeStatus.sourceStatus !== MediaSourceStatus.Paused"
+              @click="emit('stepFrame')"
+            >
+              单帧
+            </NButton>
+            <NSelect
+              :value="runtimeStatus.playbackRate"
+              :options="rateOptions"
+              size="small"
+              @update:value="emit('playbackRateChange', $event)"
+            />
+            <template v-if="runtimeStatus.audio !== null">
+              <span class="audio-control-label" title="控制本地音频监听输出">静音</span>
+              <NSwitch
+                :value="runtimeStatus.muted"
+                @update:value="emit('audioControlChange', $event, runtimeStatus.volume)"
+              />
+              <span class="audio-control-label">音量</span>
+              <NSlider
+                class="audio-volume-slider"
+                :value="runtimeStatus.volume"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                @update:value="emit('audioControlChange', runtimeStatus.muted, $event)"
+              />
+            </template>
+          </div>
+        </div>
       </div>
     </section>
 
     <div class="media-detail-grid">
-      <section class="media-information-section media-detail-card">
-        <div class="media-section-heading compact">
-          <div>
-            <span class="section-kicker">MEDIA INFORMATION</span>
-            <h2>媒体信息</h2>
-          </div>
-        </div>
-        <dl class="media-info-list">
-          <template v-if="displayedVideo !== null">
-            <dt>Video</dt>
-            <dd>
-              {{ codecLabel(displayedVideo.codec) }} · {{ displayedVideo.width }}×{{
-                displayedVideo.height
-              }}
-              · {{ displayedVideo.framesPerSecond }} FPS
-            </dd>
-            <dt>Video Bitrate</dt>
-            <dd>{{ displayedVideo.bitrateKbps }} Kbps</dd>
-            <dt>Duration</dt>
-            <dd>{{ durationLabel(displayedVideo.durationSeconds) }}</dd>
-          </template>
-          <template v-else>
-            <dt>Video</dt>
-            <dd>尚未检测</dd>
-          </template>
-          <template v-if="displayedAudio !== null">
-            <dt>Audio</dt>
-            <dd>
-              {{ codecLabel(displayedAudio.codec) }} · {{ displayedAudio.sampleRate / 1000 }} kHz ·
-              {{ displayedAudio.channels === 1 ? 'Mono' : 'Stereo' }}
-            </dd>
-            <dt>Audio Bitrate</dt>
-            <dd>{{ displayedAudio.bitrateKbps }} Kbps</dd>
-          </template>
-          <template v-else>
-            <dt>Audio</dt>
-            <dd class="normal-empty-value">None（正常）</dd>
-          </template>
-        </dl>
-      </section>
-
       <section class="runtime-section media-detail-card">
         <div class="media-section-heading compact">
           <div>
@@ -323,8 +259,6 @@
           <dd>{{ sourceStatusText[runtimeStatus.sourceStatus] }}</dd>
           <dt>Live</dt>
           <dd>{{ runtimeStatus.activeLiveConsumers }}</dd>
-          <dt>Recorder consumers</dt>
-          <dd>{{ runtimeStatus.activeRecorderConsumers }}</dd>
           <dt>Decoded Frames</dt>
           <dd>{{ runtimeStatus.decodedFrames }}</dd>
           <dt>Read / Preview</dt>
@@ -378,6 +312,7 @@
   .playback-seek-row,
   .playback-action-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
@@ -399,12 +334,16 @@
     width: 78px;
   }
 
-  .audio-controls {
-    display: grid;
-    grid-template-columns: auto auto auto minmax(100px, 1fr);
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
+  .audio-control-label {
+    flex: 0 0 auto;
+    color: #64748b;
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+
+  .audio-volume-slider {
+    min-width: 100px;
+    flex: 1 1 160px;
   }
 
   @media (max-width: 920px) {

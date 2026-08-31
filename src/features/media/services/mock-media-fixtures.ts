@@ -84,7 +84,6 @@ export function createInitialRuntimeStatus(): MediaRuntimeStatus {
     video: structuredClone(defaultProbeResult.video),
     audio: structuredClone(defaultProbeResult.audio),
     activeLiveConsumers: 0,
-    activeRecorderConsumers: 0,
     durationSeconds: defaultProbeResult.video.durationSeconds,
     positionSeconds: 0,
     playbackRate: 1,

@@ -302,7 +302,9 @@ select {
 }
 
 .media-page {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .device-workspace {
@@ -415,6 +417,71 @@ select {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.interaction-message-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.interaction-message-view-switch {
+  display: flex;
+  gap: 6px;
+}
+
+.interaction-message-hint {
+  margin: 0 0 10px;
+  color: #a16207;
+  font-size: 0.78rem;
+}
+
+.interaction-message-formatted {
+  padding: 0;
+  white-space: normal;
+}
+
+.interaction-message-headers,
+.interaction-message-xml {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  font: inherit;
+  white-space: pre;
+}
+
+.interaction-message-headers {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.interaction-message-xml {
+  color: #334155;
+}
+
+.interaction-message-xml .__code__ {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  background: transparent;
+  font: inherit;
+  white-space: pre;
+}
+
+.interaction-message-xml .hljs-tag,
+.interaction-message-xml .hljs-name,
+.interaction-message-xml .hljs-attr {
+  color: #0369a1;
+}
+
+.interaction-message-xml .hljs-string {
+  color: #15803d;
+}
+
+.interaction-message-xml .hljs-comment {
+  color: #64748b;
 }
 
 .table-actions {
@@ -563,6 +630,7 @@ select {
 }
 
 .media-workbench {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -584,6 +652,18 @@ select {
   overflow: hidden;
 }
 
+.media-config-column {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-width: thin;
+}
+
 .media-config-panel,
 .media-monitor-panel {
   min-width: 0;
@@ -599,9 +679,18 @@ select {
   border-right: 1px solid #e2e8f0;
 }
 
+.media-config-column .media-config-panel,
+.media-config-column .media-information-section {
+  border-right: 0;
+}
+
 .media-monitor-panel {
   background: #f8fafc;
   overflow-y: auto;
+}
+
+.media-monitor-panel .preview-section {
+  min-width: 0;
 }
 
 .media-section-heading {
@@ -656,10 +745,6 @@ select {
   margin-top: 8px;
 }
 
-.recording-grid {
-  grid-template-columns: minmax(0, 1.6fr) minmax(150px, 0.4fr);
-}
-
 .media-config-panel .n-input-number,
 .media-config-panel .n-select,
 .media-config-panel .n-input-group {
@@ -670,6 +755,7 @@ select {
   position: relative;
   display: flex;
   min-height: 0;
+  width: 100%;
   aspect-ratio: 16 / 9;
   align-items: center;
   justify-content: center;
@@ -681,6 +767,21 @@ select {
     linear-gradient(#dceaf0 1px, transparent 1px),
     linear-gradient(90deg, #dceaf0 1px, transparent 1px), #eef5f7;
   background-size: 26px 26px;
+}
+
+.player-shell {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d9e3ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.player-shell .mock-preview-surface {
+  border: 0;
+  border-radius: 4px;
 }
 
 .mock-preview-surface strong,
@@ -733,9 +834,9 @@ select {
 
 .preview-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
-  margin-top: 12px;
 }
 
 .preview-actions span {
@@ -764,6 +865,10 @@ select {
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #fff;
+}
+
+.media-detail-grid .runtime-section {
+  grid-column: 1 / -1;
 }
 
 .media-info-list dt,
@@ -842,5 +947,20 @@ select {
 
   .media-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .media-workbench-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .media-config-column,
+  .media-monitor-panel {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .media-monitor-panel {
+    border-top: 1px solid #e2e8f0;
   }
 }

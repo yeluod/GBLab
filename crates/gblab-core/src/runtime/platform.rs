@@ -30,8 +30,6 @@ pub enum PlatformCommandType {
     DeviceStatus,
     /// 设备控制。
     DeviceControl,
-    /// 录像信息查询。
-    RecordInfo,
     /// 报警业务。
     Alarm,
     /// 移动位置业务。

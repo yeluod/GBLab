@@ -5,6 +5,7 @@
     NCard,
     NCheckbox,
     NDataTable,
+    NCode,
     NInput,
     NModal,
     NSelect,
@@ -18,8 +19,10 @@
   import {
     classifyInteractionMessage,
     directionLabel,
+    formatInteractionMessage,
     formatLogsAsTsv,
     formatTimestamp,
+    xmlHighlighter,
     useSimulatorStore,
     type InteractionLog,
   } from '@/features/simulator';
@@ -36,6 +39,7 @@
   const selectedLogIds = ref<Set<string>>(new Set());
   const activeLog = ref<InteractionLog | null>(null);
   const isMessageModalVisible = ref(false);
+  const messageViewMode = ref<'raw' | 'formatted'>('raw');
 
   const directionOptions = [
     { label: '全部方向', value: 'all' },
@@ -211,12 +215,29 @@
 
   function openMessage(log: InteractionLog): void {
     activeLog.value = log;
+    messageViewMode.value = formatInteractionMessage(log.message).formatted ? 'formatted' : 'raw';
     isMessageModalVisible.value = true;
   }
 
   function closeMessage(): void {
     isMessageModalVisible.value = false;
     activeLog.value = null;
+  }
+
+  const formattedActiveMessage = computed(() =>
+    activeLog.value === null ? null : formatInteractionMessage(activeLog.value.message),
+  );
+
+  async function copyActiveMessage(): Promise<void> {
+    if (activeLog.value === null) {
+      return;
+    }
+    try {
+      await copyText(activeLog.value.message);
+      message.success('完整消息已复制。');
+    } catch {
+      message.error('系统剪贴板不可用，复制失败。');
+    }
   }
 
   const columns: DataTableColumns<InteractionLog> = [
@@ -380,7 +401,52 @@
           <span>设备 {{ activeLog.deviceId }}</span>
           <span>通道 {{ activeLog.channelId ?? '—' }}</span>
         </div>
-        <pre class="interaction-message-content">{{ activeLog.message }}</pre>
+        <div class="interaction-message-toolbar">
+          <div class="interaction-message-view-switch" role="tablist" aria-label="消息展示模式">
+            <NButton
+              size="small"
+              :type="messageViewMode === 'raw' ? 'primary' : 'default'"
+              :secondary="messageViewMode !== 'raw'"
+              role="tab"
+              :aria-selected="messageViewMode === 'raw'"
+              @click="messageViewMode = 'raw'"
+            >
+              原始
+            </NButton>
+            <NButton
+              size="small"
+              :type="messageViewMode === 'formatted' ? 'primary' : 'default'"
+              :secondary="messageViewMode !== 'formatted'"
+              :disabled="formattedActiveMessage?.formatted !== true"
+              role="tab"
+              :aria-selected="messageViewMode === 'formatted'"
+              @click="messageViewMode = 'formatted'"
+            >
+              XML 格式化
+            </NButton>
+          </div>
+          <NButton size="small" secondary @click="copyActiveMessage">
+            <template #icon><AppIcon icon="copy" :size="14" /></template>
+            复制完整消息
+          </NButton>
+        </div>
+        <p v-if="formattedActiveMessage?.error !== undefined" class="interaction-message-hint">
+          {{ formattedActiveMessage.error }}
+        </p>
+        <pre
+          v-if="messageViewMode === 'raw' || formattedActiveMessage?.formatted !== true"
+          class="interaction-message-content"
+          >{{ activeLog.message }}</pre>
+        <div v-else class="interaction-message-content interaction-message-formatted">
+          <pre class="interaction-message-headers">{{ formattedActiveMessage.headers }}</pre>
+          <NCode
+            class="interaction-message-xml"
+            language="xml"
+            :code="formattedActiveMessage.formattedBody ?? ''"
+            :hljs="xmlHighlighter"
+            :trim="false"
+          />
+        </div>
       </template>
     </NModal>
   </section>

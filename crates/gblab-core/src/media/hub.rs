@@ -12,8 +12,6 @@ use super::{
 /// Downstream role consuming the single global encoded stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MediaConsumerKind {
-    /// Future local recorder.
-    Recorder,
     /// Future GB28181 live media session.
     Live,
 }
@@ -352,13 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn slow_recorder_should_not_block_live_consumer() {
+    fn slow_live_consumer_should_not_block_other_live_consumer() {
         let mut hub = MediaStreamHub::new();
-        let _recorder = hub.subscribe(
-            MediaConsumerKind::Recorder,
-            1,
-            BackpressurePolicy::DropNewest,
-        );
+        let _slow_live = hub.subscribe(MediaConsumerKind::Live, 1, BackpressurePolicy::DropNewest);
         let mut live = hub.subscribe(MediaConsumerKind::Live, 4, BackpressurePolicy::Disconnect);
         let first_packet = packet();
         let first = hub.broadcast(&first_packet);
@@ -385,14 +379,10 @@ mod tests {
     }
 
     #[test]
-    fn overloaded_live_consumer_should_disconnect_without_affecting_recorder() {
+    fn overloaded_live_consumer_should_disconnect_without_affecting_other_live_consumer() {
         let mut hub = MediaStreamHub::new();
-        let mut recorder = hub.subscribe(
-            MediaConsumerKind::Recorder,
-            4,
-            BackpressurePolicy::DropNewest,
-        );
-        let _live = hub.subscribe(MediaConsumerKind::Live, 1, BackpressurePolicy::Disconnect);
+        let mut live = hub.subscribe(MediaConsumerKind::Live, 4, BackpressurePolicy::DropNewest);
+        let _overloaded = hub.subscribe(MediaConsumerKind::Live, 1, BackpressurePolicy::Disconnect);
         let first_packet = packet();
         let first = hub.broadcast(&first_packet);
         let second_packet = packet();
@@ -401,24 +391,20 @@ mod tests {
         assert_eq!(first.delivered, 2);
         assert_eq!(second.disconnected, 1);
         assert_eq!(hub.consumer_count(), 1);
-        assert!(recorder.try_recv().is_ok());
-        assert!(recorder.try_recv().is_ok());
+        assert!(live.try_recv().is_ok());
+        assert!(live.try_recv().is_ok());
     }
 
     #[test]
     fn unsubscribe_should_remove_only_the_requested_consumer() {
         let mut hub = MediaStreamHub::new();
         let live = hub.subscribe(MediaConsumerKind::Live, 1, BackpressurePolicy::DropNewest);
-        let recorder = hub.subscribe(
-            MediaConsumerKind::Recorder,
-            1,
-            BackpressurePolicy::Disconnect,
-        );
+        let live_2 = hub.subscribe(MediaConsumerKind::Live, 1, BackpressurePolicy::Disconnect);
 
         assert!(hub.unsubscribe(live.id));
         assert!(!hub.unsubscribe(live.id));
         assert_eq!(hub.consumer_count(), 1);
-        drop(recorder);
+        drop(live_2);
     }
 
     #[test]

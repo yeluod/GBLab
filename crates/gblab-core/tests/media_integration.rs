@@ -132,11 +132,8 @@ fn encoded_video_should_contain_real_annex_b_bytes() {
         let handle = runtime.handle();
         let opened = handle.open_mp4(asset(name), false);
         assert!(opened.is_ok(), "open failed for {name}: {opened:?}");
-        let subscription = handle.subscribe(
-            MediaConsumerKind::Recorder,
-            32,
-            BackpressurePolicy::Disconnect,
-        );
+        let subscription =
+            handle.subscribe(MediaConsumerKind::Live, 32, BackpressurePolicy::Disconnect);
         assert!(subscription.is_ok());
         let Ok(mut subscription) = subscription else {
             let _ = runtime.shutdown();
@@ -174,11 +171,8 @@ fn aac_priming_timestamp_should_define_a_non_negative_shared_epoch() {
     let runtime = start_runtime();
     let handle = runtime.handle();
     assert!(handle.open_mp4(asset("h264-aac.mp4"), false).is_ok());
-    let subscription = handle.subscribe(
-        MediaConsumerKind::Recorder,
-        64,
-        BackpressurePolicy::Disconnect,
-    );
+    let subscription =
+        handle.subscribe(MediaConsumerKind::Live, 64, BackpressurePolicy::Disconnect);
     let Ok(mut subscription) = subscription else {
         let _ = runtime.shutdown();
         panic!("failed to subscribe to encoded MP4 packets");
@@ -220,11 +214,8 @@ fn h265_b_frames_and_aac_priming_should_share_a_non_negative_epoch() {
     let runtime = start_runtime();
     let handle = runtime.handle();
     assert!(handle.open_mp4(asset("h265-aac.mp4"), false).is_ok());
-    let subscription = handle.subscribe(
-        MediaConsumerKind::Recorder,
-        128,
-        BackpressurePolicy::Disconnect,
-    );
+    let subscription =
+        handle.subscribe(MediaConsumerKind::Live, 128, BackpressurePolicy::Disconnect);
     let Ok(mut subscription) = subscription else {
         let _ = runtime.shutdown();
         panic!("failed to subscribe to H.265 fixture");
@@ -262,11 +253,8 @@ fn late_subscriber_should_receive_real_mp4_track_descriptors() {
         let runtime = start_runtime();
         let handle = runtime.handle();
         assert!(handle.open_mp4(asset(name), false).is_ok());
-        let subscription = handle.subscribe(
-            MediaConsumerKind::Recorder,
-            128,
-            BackpressurePolicy::Disconnect,
-        );
+        let subscription =
+            handle.subscribe(MediaConsumerKind::Live, 128, BackpressurePolicy::Disconnect);
         let Ok(mut first) = subscription else {
             let _ = runtime.shutdown();
             panic!("failed to subscribe to {name}");

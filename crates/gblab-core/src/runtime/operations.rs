@@ -222,13 +222,17 @@ pub(super) async fn run_registration_operation(
     }
     while unregister_tasks.join_next().await.is_some() {}
 
+    // Release every task holding the client before waiting for the event forwarder.
+    // Otherwise the forwarder keeps waiting on its channel forever and the supervisor
+    // never receives OperationFinished, leaving the UI in the stopping state.
+    business_task.abort();
+    let _ = business_task.await;
     transport_cancellation.cancel();
     let _ = receiver_task.await;
     client.clear_server_transactions().await;
     drop(client);
     let _ = transport_forward_task.await;
     scheduler.join().await;
-    business_task.abort();
     let _ = internal_tx.send(InternalEvent::OperationFinished).await;
 }
 

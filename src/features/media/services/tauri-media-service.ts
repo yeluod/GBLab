@@ -45,7 +45,6 @@ interface BackendRuntimeStatus {
   muted: boolean;
   volume: number;
   activeLiveConsumers: number;
-  activeRecorderConsumers: number;
   lastError: string | null;
   lastPipelineError: string | null;
   audioSink: AudioSinkInfo | null;
@@ -132,7 +131,6 @@ function toRuntime(value: BackendRuntimeStatus): MediaRuntimeStatus {
     // Live/Playback managers are not implemented yet; never expose source
     // type as a fabricated business-session count.
     activeLiveConsumers: value.activeLiveConsumers,
-    activeRecorderConsumers: value.activeRecorderConsumers,
     durationSeconds: value.durationSeconds,
     positionSeconds: value.positionSeconds,
     playbackRate: value.playbackRate,
@@ -178,7 +176,7 @@ export class TauriMediaService implements MediaService {
   }
   async startPreview(config: GlobalMediaConfig): Promise<MediaRuntimeStatus> {
     const current = await invokeCommand<BackendRuntimeStatus>('get_media_runtime_status');
-    if (current.activeLiveConsumers > 0 || current.activeRecorderConsumers > 0) {
+    if (current.activeLiveConsumers > 0) {
       return toRuntime(await invokeCommand<BackendRuntimeStatus>('attach_media_preview'));
     }
     await this.open(config);

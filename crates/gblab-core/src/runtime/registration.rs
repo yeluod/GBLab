@@ -412,7 +412,6 @@ fn handle_internal_event(event: InternalEvent, state: &mut SupervisorState) {
                         Some("DeviceInfo") => PlatformCommandType::DeviceInfo,
                         Some("DeviceStatus") => PlatformCommandType::DeviceStatus,
                         Some("DeviceControl") => PlatformCommandType::DeviceControl,
-                        Some("RecordInfo") => PlatformCommandType::RecordInfo,
                         Some("Alarm" | "alarm") => PlatformCommandType::Alarm,
                         Some("MobilePosition" | "mobile-position") => {
                             PlatformCommandType::MobilePosition
