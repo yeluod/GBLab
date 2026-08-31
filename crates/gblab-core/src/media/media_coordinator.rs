@@ -55,6 +55,16 @@ impl MediaSessionCoordinator {
         remote: SocketAddr,
         ssrc: u32,
     ) -> MediaResult<SocketAddr> {
+        if matches!(
+            self.media.status().source_status,
+            super::MediaSourceStatus::Stopped
+        ) {
+            // A non-looping MP4 remains at EOF after the previous dialog.  All
+            // sessions are stale at that point, so release their subscriptions
+            // before rewinding the single global source for a new INVITE.
+            self.stop_all().await;
+            self.media.reset()?;
+        }
         let dialog_id = dialog_id.into();
         {
             let sessions = self.sessions.lock().await;
@@ -117,8 +127,16 @@ impl MediaSessionCoordinator {
 
     /// Releases the ACK gate for a negotiated dialog.
     pub async fn activate(&self, dialog_id: &str) -> bool {
-        let exists = self.sessions.lock().await.contains_key(dialog_id);
-        if !exists {
+        let activated = self
+            .sessions
+            .lock()
+            .await
+            .get(dialog_id)
+            .is_some_and(|session| {
+                session.activate();
+                true
+            });
+        if !activated {
             return false;
         }
         if !matches!(
@@ -126,16 +144,10 @@ impl MediaSessionCoordinator {
             super::MediaSourceStatus::Playing
         ) && self.media.play().is_err()
         {
+            let _ = self.stop(dialog_id).await;
             return false;
         }
-        self.sessions
-            .lock()
-            .await
-            .get(dialog_id)
-            .is_some_and(|session| {
-                session.activate();
-                true
-            })
+        true
     }
 
     /// Stops all active sessions during runtime shutdown.

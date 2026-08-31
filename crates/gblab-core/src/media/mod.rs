@@ -1,7 +1,7 @@
 //! Single-owner global media runtime, source adapters and encoded-stream fan-out.
 //!
-//! 本模块负责 MP4 容器、音视频解码、统一播放时钟和编码流分发，不负责 MPEG-PS、RTP
-//! 或 SIP 会话。后续媒体传输直接消费 [`EncodedMediaPacket`]。
+//! 本模块负责 MP4 容器、音视频解码、统一播放时钟、编码流分发，以及 MPEG-PS/RTP
+//! 媒体会话；SIP 协商仍由 `sip` 模块负责。
 
 #![expect(clippy::missing_errors_doc, reason = "媒体错误由 MediaError 统一表达")]
 
