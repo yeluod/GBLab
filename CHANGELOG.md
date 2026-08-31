@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/yeluod/GBLab/compare/v0.7.0...v0.8.0) (2026-08-31)
+
+
+### Features
+
+* **sip:** 添加SIP请求URI用户解析功能 ([ff28f8f](https://github.com/yeluod/GBLab/commit/ff28f8f203ca1980e0f173e79c92df735aaf5895))
+
+
+### Bug Fixes
+
+* **ci:** bundle relocated macOS frameworks ([6c7c1a8](https://github.com/yeluod/GBLab/commit/6c7c1a8199f64ddb21706ef0f7ef2c6d3a25adfc))
+* **ci:** stage macOS frameworks before build ([a4f7faa](https://github.com/yeluod/GBLab/commit/a4f7faadc165b8e5b88bf6297571e40a0a0395b1))
+
 ## [0.7.0](https://github.com/yeluod/GBLab/compare/v0.6.0...v0.7.0) (2026-08-31)
 
 
