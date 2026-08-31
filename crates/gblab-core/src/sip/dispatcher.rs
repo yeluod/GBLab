@@ -179,6 +179,16 @@ pub(super) fn request_method(payload: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Returns the user part of a SIP Request-URI, used by INVITE to target a channel.
+pub(super) fn request_uri_user(request: &SipRequest) -> Option<String> {
+    request
+        .request_line
+        .request_uri
+        .user_info
+        .as_ref()
+        .map(|user_info| user_info.user.clone())
+}
+
 pub(super) fn resolve_device_and_channel(
     requested_id: &str,
     devices: &HashMap<String, SimulatedDevice>,
@@ -548,7 +558,7 @@ mod tests {
         domain::{DeviceId, DeviceIdError},
     };
 
-    use super::{SIP_MESSAGE_LIMIT, build_catalog_body, build_request_response};
+    use super::{SIP_MESSAGE_LIMIT, build_catalog_body, build_request_response, request_uri_user};
 
     fn simulated_device(channel_count: u16) -> Result<SimulatedDevice, DeviceIdError> {
         Ok(SimulatedDevice {
@@ -608,6 +618,23 @@ mod tests {
     }
 
     #[test]
+    fn invite_request_uri_should_expose_channel_id() -> Result<(), Box<dyn std::error::Error>> {
+        let request = "INVITE sip:34020000002000999001@192.168.10.94:5060;transport=udp SIP/2.0\r\n\
+                       Call-ID: invite-call\r\n\
+                       CSeq: 41 INVITE\r\n\
+                       Content-Length: 0\r\n\r\n";
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(request.as_bytes())?;
+        let SipMessage::Request(request) = parsed else {
+            return Err("应构造 SIP Request".into());
+        };
+        assert_eq!(
+            request_uri_user(&request).as_deref(),
+            Some("34020000002000999001")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn subscribe_response_should_only_contain_response_headers_once()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = "SUBSCRIBE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
@@ -651,6 +678,44 @@ mod tests {
             );
         }
         assert!(!response.headers.contains(&HeaderName::ContentType));
+        Ok(())
+    }
+
+    #[test]
+    fn subscribe_refresh_should_preserve_existing_uas_to_tag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = "SUBSCRIBE sip:34020000002000000100@192.168.10.94:5060 SIP/2.0\r\n\
+                       Via: SIP/2.0/UDP 192.168.10.91:5060;branch=z9hG4bK-refresh\r\n\
+                       From: <sip:34020000002000000001@3402000000>;tag=platform-tag\r\n\
+                       To: <sip:34020000002000000100@192.168.10.94:5060>;tag=existing-device-tag\r\n\
+                       Call-ID: alarm-subscription\r\n\
+                       CSeq: 10 SUBSCRIBE\r\n\
+                       Event: Alarm\r\n\
+                       Expires: 3599\r\n\
+                       Content-Length: 0\r\n\r\n";
+
+        let payload = build_request_response(
+            request,
+            200,
+            "OK",
+            Some("newly-generated-tag"),
+            "34020000002000000100",
+            "192.168.10.94".parse::<IpAddr>()?,
+            5060,
+        );
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(payload.as_bytes())?;
+        let SipMessage::Response(response) = parsed else {
+            return Err("应构造 SIP Response".into());
+        };
+        let Some(siprs::siprs_message::HeaderValue::FromTo(to)) =
+            response.headers.get(&HeaderName::To)
+        else {
+            return Err("响应缺少结构化 To 头".into());
+        };
+        assert_eq!(
+            to.tag.as_ref().map(|tag| tag.0.as_str()),
+            Some("existing-device-tag")
+        );
         Ok(())
     }
 

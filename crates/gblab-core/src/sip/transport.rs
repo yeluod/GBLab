@@ -31,8 +31,9 @@ use super::{
         InboundRequestDisposition, SIP_MESSAGE_LIMIT, accept_sip_success, build_channel_index,
         build_request_response, dispatch_inbound_request, extract_header, header_u32_value,
         invite_key_from_cancel, payload_command_type, request_body_text, request_call_id,
-        request_method, resolve_device_and_channel, response_class, structured_header_value,
-        transaction_key_from_request, transaction_key_from_response, xml_metadata,
+        request_method, request_uri_user, resolve_device_and_channel, response_class,
+        structured_header_value, transaction_key_from_request, transaction_key_from_response,
+        xml_metadata,
     },
     registration::{
         CachedServerResponse, InviteServerTransaction, InviteServerTransactionState,
@@ -126,11 +127,17 @@ impl SipRegistrationClient {
                     }
                 }
                 let body = request_body_text(&request);
+                let method = Some(request.request_line.method.to_string());
                 let (requested_id, parsed_command_type) = xml_metadata(&body);
-                let requested_id = requested_id.unwrap_or_default();
+                let requested_id = requested_id
+                    .or_else(|| {
+                        (method.as_deref() == Some("INVITE"))
+                            .then(|| request_uri_user(&request))
+                            .flatten()
+                    })
+                    .unwrap_or_default();
                 let (device_id, channel_id) =
                     resolve_device_and_channel(&requested_id, &catalog_devices, &channel_index);
-                let method = Some(request.request_line.method.to_string());
                 let is_subscribe = method.as_deref() == Some("SUBSCRIBE");
                 let command_type = parsed_command_type;
                 let event =
@@ -147,6 +154,12 @@ impl SipRegistrationClient {
                     .get(&HeaderName::CallId)
                     .and_then(HeaderValue::as_call_id)
                     .map(|value| value.0.clone());
+                let request_to_tag = request
+                    .headers
+                    .get(&HeaderName::To)
+                    .and_then(HeaderValue::as_from_to)
+                    .and_then(|header| header.tag.as_ref())
+                    .map(ToString::to_string);
                 let expires = request
                     .headers
                     .get(&HeaderName::Expires)
@@ -161,10 +174,18 @@ impl SipRegistrationClient {
                     if is_subscribe {
                         let mut tags = self.uas_tags.lock().await;
                         let lifetime = Duration::from_secs(u64::from(expires.unwrap_or(3_600)));
+                        // 刷新订阅属于同一对话，并携带上次 200 响应中的 UAS To-tag。
+                        // 优先复用该 Tag，确保后续 NOTIFY 仍属于平台已有对话。
+                        let value = select_uas_dialog_tag(
+                            request_to_tag,
+                            tags.get(call_id.as_str())
+                                .map(|dialog| dialog.value.as_str()),
+                        );
                         let dialog = tags.entry(call_id.clone()).or_insert_with(|| UasDialogTag {
-                            value: Tag::new().to_string(),
+                            value: value.clone(),
                             expires_at: now + lifetime,
                         });
+                        dialog.value = value;
                         dialog.expires_at = now + lifetime;
                         let value = dialog.value.clone();
                         drop(tags);
@@ -783,6 +804,12 @@ fn reserve_query_permit(
     Arc::clone(executor).try_acquire_owned().ok()
 }
 
+fn select_uas_dialog_tag(request_tag: Option<String>, cached_tag: Option<&str>) -> String {
+    request_tag
+        .or_else(|| cached_tag.map(str::to_owned))
+        .unwrap_or_else(|| Tag::new().to_string())
+}
+
 fn cancel_invite_transaction(
     invites: &mut HashMap<TransactionKey, InviteServerTransaction>,
     key: Option<&TransactionKey>,
@@ -819,7 +846,10 @@ mod tests {
     use siprs::siprs_message::Method;
     use tokio::{sync::Semaphore, time::Instant};
 
-    use super::{InboundRequestDisposition, cancel_invite_transaction, reserve_query_permit};
+    use super::{
+        InboundRequestDisposition, cancel_invite_transaction, reserve_query_permit,
+        select_uas_dialog_tag,
+    };
     use crate::sip::{
         registration::{InviteServerTransaction, InviteServerTransactionState},
         transaction::TransactionKey,
@@ -890,5 +920,17 @@ mod tests {
 
         drop(permit);
         assert!(reserve_query_permit(&executor).is_some());
+    }
+
+    #[test]
+    fn subscription_tag_should_prefer_request_tag_then_cache() {
+        assert_eq!(
+            select_uas_dialog_tag(Some("request-tag".to_owned()), Some("cached-tag")),
+            "request-tag"
+        );
+        assert_eq!(
+            select_uas_dialog_tag(None, Some("cached-tag")),
+            "cached-tag"
+        );
     }
 }

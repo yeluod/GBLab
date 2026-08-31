@@ -11,6 +11,9 @@ const value = (name) => {
 const platform = value('--platform');
 const sdkRoot = path.resolve(value('--sdk-root'));
 const output = path.resolve(value('--output'));
+const bundleFrameworkRoot = args.includes('--bundle-framework-root')
+  ? path.resolve(value('--bundle-framework-root'))
+  : null;
 const projectRoot = process.cwd();
 const configPath = path.join(projectRoot, 'src-tauri', 'tauri.conf.json');
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -53,7 +56,12 @@ if (platform === 'macos') {
     [manifestPath]: 'manifest.json',
     [licensePath]: 'FFMPEG-LICENSE.txt',
   };
-  config.bundle.macOS = { ...(config.bundle.macOS ?? {}), frameworks };
+  config.bundle.macOS = {
+    ...(config.bundle.macOS ?? {}),
+    frameworks: bundleFrameworkRoot
+      ? frameworks.map((framework) => path.join(bundleFrameworkRoot, path.basename(framework)))
+      : frameworks,
+  };
 } else if (platform === 'windows') {
   const binRoot = path.join(sdkRoot, 'bin');
   const dlls = fs.readdirSync(binRoot).filter((name) => name.toLowerCase().endsWith('.dll'));

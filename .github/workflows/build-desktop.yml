@@ -72,12 +72,20 @@ jobs:
         id: metadata
         shell: bash
         run: node -e "process.stdout.write('version=' + require('./package.json').version + String.fromCharCode(10))" >> "$GITHUB_OUTPUT"
+      - name: Prepare macOS framework output directory
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/release/Frameworks
+          cp -Lf .ffmpeg-sdk/macos/frameworks/*.dylib target/release/Frameworks/
       - name: Generate release Tauri configuration
         shell: bash
         run: >-
           node scripts/generate-tauri-release-config.mjs
           --platform "${{ matrix.platform }}"
           --sdk-root ".ffmpeg-sdk/${{ matrix.platform }}"
+          ${{ matrix.platform == 'macos' && '--bundle-framework-root target/release/Frameworks' || '' }}
           --output src-tauri/tauri.release.generated.json
       - name: Compile desktop application
         shell: bash
