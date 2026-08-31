@@ -65,7 +65,29 @@ impl MediaSession {
             if !*activation.borrow() {
                 let activated = tokio::select! {
                     () = task_cancellation.cancelled() => false,
-                    result = timeout(Duration::from_secs(8), activation.changed()) => result.is_ok_and(|result| result.is_ok()),
+                    result = timeout(Duration::from_secs(8), async {
+                        loop {
+                            tokio::select! {
+                                () = task_cancellation.cancelled() => return false,
+                                result = activation.changed() => {
+                                    if result.is_err() {
+                                        return false;
+                                    }
+                                    if *activation.borrow() {
+                                        return true;
+                                    }
+                                }
+                                packet = subscription.recv() => {
+                                    // Drain pre-ACK packets so a slow SIP transaction
+                                    // cannot fill the bounded Live queue and disconnect
+                                    // the session before media is negotiated.
+                                    if packet.is_none() {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }) => result.is_ok_and(|activated| activated),
                 };
                 if !activated {
                     let _ = media_for_task.unsubscribe(subscription_id);

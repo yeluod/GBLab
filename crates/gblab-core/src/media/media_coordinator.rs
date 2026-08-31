@@ -71,14 +71,6 @@ impl MediaSessionCoordinator {
             self.media
                 .subscribe(MediaConsumerKind::Live, 128, BackpressurePolicy::Disconnect)?;
         let subscription_id = subscription.id;
-        if !matches!(
-            self.media.status().source_status,
-            super::MediaSourceStatus::Playing
-        ) && let Err(error) = self.media.play()
-        {
-            let _ = self.media.unsubscribe(subscription.id);
-            return Err(error);
-        }
         let session = match MediaSession::start(
             subscription,
             remote,
@@ -125,11 +117,25 @@ impl MediaSessionCoordinator {
 
     /// Releases the ACK gate for a negotiated dialog.
     pub async fn activate(&self, dialog_id: &str) -> bool {
-        let sessions = self.sessions.lock().await;
-        sessions.get(dialog_id).is_some_and(|session| {
-            session.activate();
-            true
-        })
+        let exists = self.sessions.lock().await.contains_key(dialog_id);
+        if !exists {
+            return false;
+        }
+        if !matches!(
+            self.media.status().source_status,
+            super::MediaSourceStatus::Playing
+        ) && self.media.play().is_err()
+        {
+            return false;
+        }
+        self.sessions
+            .lock()
+            .await
+            .get(dialog_id)
+            .is_some_and(|session| {
+                session.activate();
+                true
+            })
     }
 
     /// Stops all active sessions during runtime shutdown.
