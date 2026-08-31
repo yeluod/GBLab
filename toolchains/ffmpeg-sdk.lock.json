@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sdkRevision": 4,
+  "sdkRevision": 5,
   "ffmpegVersion": "8.1",
   "license": "LGPL-2.1-or-later",
   "linkMode": "dynamic",

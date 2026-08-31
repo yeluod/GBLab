@@ -42,7 +42,7 @@ if [[ ! -f "$install_dir/lib/libavformat.dylib" ]]; then
   source_dir="$(find "$source_root" -mindepth 1 -maxdepth 2 -type d -name 'ffmpeg-*' -print -quit)"
   [[ -n "$source_dir" ]] || { printf 'Unable to locate FFmpeg source directory in %s.\n' "$archive" >&2; exit 1; }
   pushd "$source_dir" >/dev/null
-  ./configure --prefix="$install_dir" --disable-programs --disable-doc --disable-debug --disable-gpl --disable-version3 --disable-nonfree --disable-static --enable-shared --enable-pic --disable-network
+  ./configure --prefix="$install_dir" --disable-programs --disable-doc --disable-debug --disable-gpl --disable-version3 --disable-nonfree --disable-static --enable-shared --enable-pic --disable-network --disable-autodetect
   make -j"$(sysctl -n hw.ncpu)"
   make install
   popd >/dev/null
