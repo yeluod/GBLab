@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/yeluod/GBLab/compare/v0.8.1...v0.8.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **release:** 修复发布 Action 固定版本校验 ([4887bbe](https://github.com/yeluod/GBLab/commit/4887bbed9a7b3e54f0fe09be4024faa67da00b59))
+
 ## [0.8.1](https://github.com/yeluod/GBLab/compare/v0.8.0...v0.8.1) (2026-08-31)
 
 
