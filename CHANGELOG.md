@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/yeluod/GBLab/compare/v0.8.0...v0.8.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **media:** 收口媒体传输与桌面发布验证 ([b7ad796](https://github.com/yeluod/GBLab/commit/b7ad796c12d203169bc0408f44d496fd652d02cd))
+
 ## [0.8.0](https://github.com/yeluod/GBLab/compare/v0.7.0...v0.8.0) (2026-08-31)
 
 
