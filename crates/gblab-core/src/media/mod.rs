@@ -10,8 +10,12 @@ mod clock;
 mod decoder;
 mod error;
 mod hub;
+mod media_coordinator;
+mod media_session;
 mod mp4;
 mod packet;
+mod ps;
+mod rtp;
 mod runtime;
 mod types;
 
@@ -20,11 +24,15 @@ pub use error::MediaError;
 pub use hub::{
     BackpressurePolicy, BroadcastReport, MediaConsumerKind, MediaStreamHub, MediaSubscription,
 };
+pub use media_coordinator::{MediaCoordinatorConfig, MediaSessionCoordinator};
+pub use media_session::{MediaSession, MediaSessionStats};
 use mp4::Mp4MediaSource;
 pub use packet::{
     AudioCodec, CodecConfigurationFormat, EncodedMediaCodec, EncodedMediaPacket,
     EncodedStreamDescriptor, FrameRate, MediaTimeBase, MediaTrackKind, VideoCodec,
 };
+pub use ps::mux_video_packet;
+pub use rtp::RtpPacketizer;
 pub use runtime::{GlobalMediaHandle, GlobalMediaRuntime};
 pub use types::{
     AudioSinkInfo, AudioSinkStatus, AudioStreamInfo, MediaResult, MediaRuntimeMetrics,

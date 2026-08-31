@@ -4,6 +4,7 @@ mod charset;
 mod dispatcher;
 pub(crate) mod notify;
 mod registration;
+pub mod sdp;
 mod session;
 mod time;
 pub(crate) mod transaction;

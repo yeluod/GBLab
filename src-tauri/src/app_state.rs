@@ -14,11 +14,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(core: CoreService, registration: RegistrationHandle) -> Result<Self, MediaError> {
+    pub fn new(
+        core: CoreService,
+        registration: RegistrationHandle,
+        media: GlobalMediaRuntime,
+    ) -> Result<Self, MediaError> {
         Ok(Self {
             core: Arc::new(RwLock::new(core)),
             registration,
-            media: GlobalMediaRuntime::start()?,
+            media,
             operation_gate: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
         })

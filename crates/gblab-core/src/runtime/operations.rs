@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     SimulatedDevice, SipServiceConfiguration,
+    media::MediaSessionCoordinator,
     runtime::scheduler::Scheduler,
     sip::{DeviceSipSession, SipRegistrationClient, SipRegistrationError},
 };
@@ -39,6 +40,7 @@ pub(super) async fn run_registration_operation(
     concurrency: usize,
     cancellation: CancellationToken,
     internal_tx: mpsc::Sender<InternalEvent>,
+    media: Option<MediaSessionCoordinator>,
 ) {
     let (transport_event_tx, mut transport_event_rx) = mpsc::channel(INTERNAL_EVENT_QUEUE_CAPACITY);
     let client = match SipRegistrationClient::connect(&configuration, transport_event_tx).await {
@@ -68,10 +70,12 @@ pub(super) async fn run_registration_operation(
             .map(|device| (device.id.to_string(), device.clone()))
             .collect::<std::collections::HashMap<_, _>>(),
     );
-    let receiver_task = tokio::spawn(
-        Arc::clone(&client)
-            .receive_loop(transport_cancellation.clone(), Arc::clone(&catalog_devices)),
-    );
+    let media_for_receive = media.clone();
+    let receiver_task = tokio::spawn(Arc::clone(&client).receive_loop(
+        transport_cancellation.clone(),
+        Arc::clone(&catalog_devices),
+        media_for_receive,
+    ));
     let transport_forward_tx = internal_tx.clone();
     let transport_forward_task = tokio::spawn(async move {
         while let Some(event) = transport_event_rx.recv().await {
@@ -184,6 +188,10 @@ pub(super) async fn run_registration_operation(
 
     transient_tasks.abort_all();
     while transient_tasks.join_next().await.is_some() {}
+
+    if let Some(media) = media.as_ref() {
+        media.stop_all().await;
+    }
 
     // 停止阶段也走同一个有界 transient executor，不再按设备串行等待。
     let mut unregister_tasks = JoinSet::new();

@@ -48,10 +48,11 @@ if (platform === 'macos') {
     .sort()
     .map((name) => configPathValue(path.join(frameworkRoot, name)));
   if (frameworks.length === 0) throw new Error(`No macOS FFmpeg dylibs found in ${frameworkRoot}`);
-  config.bundle.resources = [
-    manifestPath,
-    requiredResource(path.join(sdkRoot, 'FFMPEG-LICENSE.txt')),
-  ];
+  const licensePath = requiredResource(path.join(sdkRoot, 'FFMPEG-LICENSE.txt'));
+  config.bundle.resources = {
+    [manifestPath]: 'manifest.json',
+    [licensePath]: 'FFMPEG-LICENSE.txt',
+  };
   config.bundle.macOS = { ...(config.bundle.macOS ?? {}), frameworks };
 } else if (platform === 'windows') {
   const binRoot = path.join(sdkRoot, 'bin');

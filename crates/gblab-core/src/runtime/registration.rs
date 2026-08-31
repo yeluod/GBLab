@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     SimulatedDevice, SipServiceConfiguration,
+    media::MediaSessionCoordinator,
     runtime::{PlatformCommandType, PlatformRequest, PlatformRequestMethod, SubscriptionSnapshot},
     sip::{SipLogDirection, SipTransportEvent, parse_gb_xml},
 };
@@ -134,6 +135,10 @@ pub(super) enum BusinessCommand {
     },
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "监督器需要显式接收所有有界运行时通道"
+)]
 pub(super) async fn run_supervisor(
     mut command_rx: mpsc::Receiver<RegistrationCommand>,
     mut internal_rx: mpsc::Receiver<InternalEvent>,
@@ -141,6 +146,7 @@ pub(super) async fn run_supervisor(
     snapshot_tx: watch::Sender<RegistrationSnapshot>,
     event_tx: broadcast::Sender<RegistrationEvent>,
     shutdown: CancellationToken,
+    media: Option<MediaSessionCoordinator>,
 ) {
     let mut state = SupervisorState::new();
     let mut flush_interval = interval(EVENT_FLUSH_INTERVAL);
@@ -154,7 +160,7 @@ pub(super) async fn run_supervisor(
             }
             command = command_rx.recv() => {
                 let Some(command) = command else { break };
-                handle_command(command, &mut state, &internal_tx);
+                handle_command(command, &mut state, &internal_tx, media.as_ref());
             }
             event = internal_rx.recv() => {
                 let Some(event) = event else { break };
@@ -175,6 +181,7 @@ fn handle_command(
     command: RegistrationCommand,
     state: &mut SupervisorState,
     internal_tx: &mpsc::Sender<InternalEvent>,
+    media: Option<&MediaSessionCoordinator>,
 ) {
     match command {
         RegistrationCommand::RegisterAll {
@@ -229,6 +236,7 @@ fn handle_command(
                 concurrency,
                 cancellation,
                 internal_tx.clone(),
+                media.cloned(),
             ));
             let _ = reply.send(Ok(BatchOperationAccepted {
                 operation_id,

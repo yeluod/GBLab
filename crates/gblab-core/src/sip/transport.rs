@@ -21,7 +21,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use super::sdp::{SdpAnswer, SdpOffer};
 use crate::SimulatedDevice;
+use crate::media::MediaSessionCoordinator;
 
 use super::{
     charset::{encode_xml, prepare_inbound_sip_message, sip_message_for_display},
@@ -50,6 +52,7 @@ impl SipRegistrationClient {
     pub(crate) async fn clear_server_transactions(&self) {
         self.server_transactions.lock().await.clear();
         self.invite_transactions.lock().await.clear();
+        self.invite_dialog_tags.lock().await.clear();
     }
 
     #[expect(
@@ -60,6 +63,7 @@ impl SipRegistrationClient {
         self: Arc<Self>,
         cancellation: CancellationToken,
         catalog_devices: Arc<HashMap<String, SimulatedDevice>>,
+        media: Option<MediaSessionCoordinator>,
     ) {
         let parser = MessageParser::new(SIP_MESSAGE_LIMIT);
         let mut buffer = vec![0_u8; SIP_MESSAGE_LIMIT];
@@ -179,7 +183,7 @@ impl SipRegistrationClient {
                     device_id: device_id.clone(),
                     direction: SipLogDirection::Receive,
                     message: display_text,
-                    channel_id,
+                    channel_id: channel_id.clone(),
                     is_request: true,
                     method: method.clone(),
                     command_type,
@@ -190,14 +194,33 @@ impl SipRegistrationClient {
                     call_id: call_id.clone(),
                     expires,
                 });
-                let disposition = self
-                    .dispatch_inbound_request(
+                let special_response = match method.as_deref() {
+                    Some("INVITE") => {
+                        self.handle_invite(
+                            &request,
+                            parse_text,
+                            &device_id,
+                            channel_id.as_deref(),
+                            &catalog_devices,
+                            media.as_ref(),
+                        )
+                        .await
+                    }
+                    Some("BYE") => self.handle_bye(&request, parse_text, media.as_ref()).await,
+                    Some("ACK") => self.handle_ack(&request, media.as_ref()).await,
+                    _ => None,
+                };
+                let disposition = if special_response.is_some() {
+                    InboundRequestDisposition::NoResponse
+                } else {
+                    self.dispatch_inbound_request(
                         &request,
                         parse_text,
                         method.as_deref(),
                         &catalog_devices,
                     )
-                    .await;
+                    .await
+                };
                 let query_permit = if matches!(
                     disposition,
                     InboundRequestDisposition::RespondAndQuery { .. }
@@ -218,16 +241,18 @@ impl SipRegistrationClient {
                 } else {
                     disposition
                 };
-                let response = disposition.response().map(|(status, reason)| {
-                    build_request_response(
-                        parse_text,
-                        status,
-                        reason,
-                        local_tag.as_deref(),
-                        &device_id,
-                        self.advertised_ip,
-                        self.local_port,
-                    )
+                let response = special_response.or_else(|| {
+                    disposition.response().map(|(status, reason)| {
+                        build_request_response(
+                            parse_text,
+                            status,
+                            reason,
+                            local_tag.as_deref(),
+                            &device_id,
+                            self.advertised_ip,
+                            self.local_port,
+                        )
+                    })
                 });
                 if let Some(response) = response {
                     let response_call_id = extract_header(&response, "Call-ID");
@@ -516,6 +541,148 @@ impl SipRegistrationClient {
             }
             _ => dispatch_inbound_request(raw, method, devices),
         }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "INVITE 需要完整的协议和目录上下文"
+    )]
+    async fn handle_invite(
+        &self,
+        request: &SipRequest,
+        raw: &str,
+        device_id: &str,
+        channel_id: Option<&str>,
+        devices: &HashMap<String, SimulatedDevice>,
+        media: Option<&MediaSessionCoordinator>,
+    ) -> Option<String> {
+        let media = media?;
+        if !devices.contains_key(device_id) || channel_id.is_none() {
+            return Some(build_request_response(
+                raw,
+                404,
+                "Not Found",
+                None,
+                device_id,
+                self.advertised_ip,
+                self.local_port,
+            ));
+        }
+        if !media.source_available() {
+            return Some(build_request_response(
+                raw,
+                500,
+                "Server Internal Error",
+                None,
+                device_id,
+                self.advertised_ip,
+                self.local_port,
+            ));
+        }
+        let Ok(offer) = SdpOffer::parse(&request_body_text(request)) else {
+            return Some(build_request_response(
+                raw,
+                488,
+                "Not Acceptable Here",
+                None,
+                device_id,
+                self.advertised_ip,
+                self.local_port,
+            ));
+        };
+        let remote = std::net::SocketAddr::new(offer.remote_address, offer.remote_port);
+        let call_id = request_call_id(request)?;
+        let ssrc = offer.ssrc.unwrap_or_else(|| {
+            call_id.bytes().fold(0_u32, |hash, byte| {
+                hash.wrapping_mul(33).wrapping_add(u32::from(byte))
+            })
+        });
+        let local_port = match media.start(call_id.clone(), remote, ssrc).await {
+            Ok(local) => local.port(),
+            Err(_) => {
+                return Some(build_request_response(
+                    raw,
+                    486,
+                    "Busy Here",
+                    None,
+                    device_id,
+                    self.advertised_ip,
+                    self.local_port,
+                ));
+            }
+        };
+        let local_tag = Tag::new().to_string();
+        self.invite_dialog_tags
+            .lock()
+            .await
+            .insert(call_id.clone(), local_tag.clone());
+        let answer = SdpAnswer {
+            address: self.advertised_ip,
+            port: local_port,
+            payload_type: offer.payload_type,
+            ssrc,
+        }
+        .to_string();
+        let mut response = build_request_response(
+            raw,
+            200,
+            "OK",
+            Some(&local_tag),
+            device_id,
+            self.advertised_ip,
+            self.local_port,
+        );
+        if let Some(prefix) = response.strip_suffix("Content-Length: 0\r\n\r\n") {
+            response = format!(
+                "{prefix}Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{answer}",
+                answer.len()
+            );
+        }
+        Some(response)
+    }
+
+    async fn handle_bye(
+        &self,
+        request: &SipRequest,
+        raw: &str,
+        media: Option<&MediaSessionCoordinator>,
+    ) -> Option<String> {
+        let media = media?;
+        let call_id = request_call_id(request)?;
+        if !media.stop(&call_id).await {
+            return None;
+        }
+        self.invite_dialog_tags.lock().await.remove(&call_id);
+        Some(build_request_response(
+            raw,
+            200,
+            "OK",
+            None,
+            "",
+            self.advertised_ip,
+            self.local_port,
+        ))
+    }
+
+    async fn handle_ack(
+        &self,
+        request: &SipRequest,
+        media: Option<&MediaSessionCoordinator>,
+    ) -> Option<String> {
+        let media = media?;
+        let call_id = request_call_id(request)?;
+        let expected_tag = self.invite_dialog_tags.lock().await.get(&call_id).cloned();
+        let received_tag = request
+            .headers
+            .get(&HeaderName::To)
+            .and_then(HeaderValue::as_from_to)
+            .and_then(|header| header.tag.as_ref())
+            .map(ToString::to_string);
+        if expected_tag.as_deref() != received_tag.as_deref() {
+            return None;
+        }
+        let _ = media.activate(&call_id).await;
+        None
     }
 
     pub(super) const fn endpoint_host(&self) -> Host {
