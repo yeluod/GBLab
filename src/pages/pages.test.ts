@@ -306,24 +306,10 @@ describe('静态演示页面', () => {
   it('全局配置页应拆分平台与设备配置并通过桌面后端保存', async () => {
     const wrapper = mount(GlobalSettingsPage, { global: { plugins: [createPinia()] } });
     await flushPromises();
-    const passwordInput = wrapper
-      .findAll('input')
-      .find((input) => input.attributes('maxlength') === '128');
-    if (passwordInput === undefined) {
-      throw new Error('未找到认证密码输入框');
-    }
 
-    await passwordInput.setValue('test-only-password');
-    await findButtonByText(wrapper, '保存配置').trigger('click');
-    await flushPromises();
-
-    expect(wrapper.text()).toContain('认证密码');
     expect(wrapper.text()).toContain('平台配置');
     expect(wrapper.text()).toContain('设备配置');
-    expect(passwordInput.attributes('type')).toBe('text');
-    expect(settingsMocks.saveSipServiceConfiguration).toHaveBeenCalledWith(
-      expect.objectContaining({ password: 'test-only-password' }),
-    );
+    expect(wrapper.text()).not.toContain('认证密码');
 
     const deviceTab = wrapper.findAll('.n-tabs-tab').find((tab) => tab.text().includes('设备配置'));
     if (deviceTab === undefined) {
@@ -331,6 +317,24 @@ describe('静态演示页面', () => {
     }
     await deviceTab.trigger('click');
     await nextTick();
+
+    const passwordInput = wrapper
+      .findAll('input')
+      .find((input) => input.attributes('maxlength') === '128');
+    if (passwordInput === undefined) {
+      throw new Error('未找到认证密码输入框');
+    }
+
+    await passwordInput.setValue('temporary-password');
+    await passwordInput.setValue('');
+    await findButtonByText(wrapper, '保存配置').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('认证密码（可选）');
+    expect(passwordInput.attributes('type')).toBe('text');
+    expect(settingsMocks.saveSipServiceConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({ password: '' }),
+    );
     expect(wrapper.text()).toContain('信令字符集');
     expect(wrapper.text()).toContain('GB2312');
   });

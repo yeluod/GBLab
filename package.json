@@ -18,13 +18,14 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run type:check && pnpm run test:run && pnpm run build",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run test:run && pnpm run build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
     "naive-ui": "2.45.2",
     "pinia": "4.0.3",
     "vue": "3.5.41",

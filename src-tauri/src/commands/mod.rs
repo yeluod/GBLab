@@ -1,13 +1,19 @@
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command extractors require owned values for IPC arguments"
+)]
+
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tauri::State;
+use tauri::{State, ipc::Response};
 
 use crate::{
     app_state::AppState,
     dto::{
         AppInfoDto, BatchDeviceDraftDto, BatchOperationAcceptedDto, CommandErrorDto, DevicePageDto,
-        DeviceSnapshotDto, DeviceUpdateDraftDto, SimulatedChannelDto, SipServiceConfigurationDto,
+        DeviceSnapshotDto, DeviceUpdateDraftDto, MediaRuntimeStatusDto, Mp4ProbeResultDto,
+        SimulatedChannelDto, SipServiceConfigurationDto,
     },
 };
 
@@ -55,6 +61,184 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, CommandErr
 }
 
 #[tauri::command]
+pub fn probe_mp4(file_path: String) -> Result<Mp4ProbeResultDto, CommandErrorDto> {
+    gblab_core::probe_mp4(std::path::Path::new(&file_path))
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn open_mp4(
+    file_path: String,
+    looping: bool,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .open_mp4(std::path::PathBuf::from(file_path), looping)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn play_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .play()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn attach_media_preview(
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .attach_preview()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn detach_media_preview(
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .detach_preview()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn pause_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .pause()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn stop_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .stop()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn reset_media(state: State<'_, AppState>) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .reset()
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn seek_media(
+    position_seconds: f64,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .seek(position_seconds)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn set_media_playback_rate(
+    rate: f64,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .set_playback_rate(rate)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn set_media_audio_control(
+    muted: bool,
+    volume: f64,
+    state: State<'_, AppState>,
+) -> Result<MediaRuntimeStatusDto, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .set_audio_control(muted, volume)
+        .map(Into::into)
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn step_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+    state
+        .media
+        .handle()
+        .step_frame()
+        .map(|frame| Response::new(frame.map_or_else(Vec::new, encode_preview_frame)))
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+#[tauri::command]
+pub fn get_media_runtime_status(state: State<'_, AppState>) -> MediaRuntimeStatusDto {
+    state.media.handle().status().into()
+}
+
+/// Reads one bounded preview frame as raw binary, never as a JSON number array.
+#[tauri::command]
+pub fn read_media_frame(state: State<'_, AppState>) -> Result<Response, CommandErrorDto> {
+    let handle = state.media.handle();
+    let status = handle.status();
+    if let Some(error) = status.last_error {
+        return Err(CommandErrorDto::media(&gblab_core::MediaError::Playback(
+            error,
+        )));
+    }
+    if matches!(
+        status.source_status,
+        gblab_core::media::MediaSourceStatus::Stopped
+            | gblab_core::media::MediaSourceStatus::Unconfigured
+    ) {
+        // Natural MP4 EOF is a normal lifecycle state.  Return an empty
+        // payload so the frontend can observe the stopped status without
+        // converting it into a synthetic playback error.
+        return Ok(Response::new(Vec::new()));
+    }
+    handle
+        .try_preview_frame()
+        .map(|frame| Response::new(frame.map_or_else(Vec::new, encode_preview_frame)))
+        .map_err(|error| CommandErrorDto::media(&error))
+}
+
+fn encode_preview_frame(frame: gblab_core::MediaVideoFrame) -> Vec<u8> {
+    const HEADER_SIZE: usize = 21;
+    let mut bytes = Vec::with_capacity(HEADER_SIZE.saturating_add(frame.rgba.len()));
+    bytes.extend_from_slice(b"GBPF");
+    bytes.push(1);
+    bytes.extend_from_slice(&frame.width.to_le_bytes());
+    bytes.extend_from_slice(&frame.height.to_le_bytes());
+    bytes.extend_from_slice(&frame.position_seconds.to_le_bytes());
+    bytes.extend_from_slice(&frame.rgba);
+    bytes
+}
+
+#[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Tauri command 参数提取器要求按值接收 State"
@@ -69,6 +253,44 @@ pub fn get_sip_service_configuration(
     Ok(SipServiceConfigurationDto::from_core(
         core.sip_service_configuration(),
     ))
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri command 参数提取器要求按值接收 State"
+)]
+pub fn get_media_configuration(
+    state: State<'_, AppState>,
+) -> Result<gblab_core::MediaConfiguration, CommandErrorDto> {
+    let core = state
+        .core
+        .read()
+        .map_err(|_| CommandErrorDto::state_unavailable())?;
+    Ok(core.media_configuration())
+}
+
+#[tauri::command]
+pub async fn save_media_configuration(
+    configuration: gblab_core::MediaConfiguration,
+    state: State<'_, AppState>,
+) -> Result<gblab_core::MediaConfiguration, CommandErrorDto> {
+    let _operation = state
+        .try_operation()
+        .ok_or_else(CommandErrorDto::operation_busy)?;
+    if state.registration.is_active() {
+        return Err(CommandErrorDto::registration_active());
+    }
+    let core = Arc::clone(&state.core);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut core = core
+            .write()
+            .map_err(|_| CommandErrorDto::state_unavailable())?;
+        core.save_media_configuration(configuration)
+            .map_err(|error| CommandErrorDto::from_core(&error))
+    })
+    .await
+    .map_err(|_| CommandErrorDto::task_failed())?
 }
 
 #[tauri::command]
@@ -174,7 +396,7 @@ pub async fn add_devices_in_batch(
     }
     let core = Arc::clone(&state.core);
     let draft = draft.into_core();
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         let mut core = core
             .write()
             .map_err(|_| CommandErrorDto::state_unavailable())?;
@@ -182,10 +404,11 @@ pub async fn add_devices_in_batch(
             .add_devices_in_batch(draft)
             .map_err(|error| CommandErrorDto::from_core(&error))?;
         drop(core);
-        Ok(DeviceSnapshotDto::from_core(snapshot))
+        Ok::<_, CommandErrorDto>(snapshot)
     })
     .await
-    .map_err(|_| CommandErrorDto::task_failed())?
+    .map_err(|_| CommandErrorDto::task_failed())??;
+    Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
 #[tauri::command]
@@ -199,7 +422,7 @@ pub async fn clear_devices(
         return Err(CommandErrorDto::registration_active());
     }
     let core = Arc::clone(&state.core);
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         let mut core = core
             .write()
             .map_err(|_| CommandErrorDto::state_unavailable())?;
@@ -207,10 +430,11 @@ pub async fn clear_devices(
             .clear_devices()
             .map_err(|error| CommandErrorDto::from_core(&error))?;
         drop(core);
-        Ok(DeviceSnapshotDto::from_core(snapshot))
+        Ok::<_, CommandErrorDto>(snapshot)
     })
     .await
-    .map_err(|_| CommandErrorDto::task_failed())?
+    .map_err(|_| CommandErrorDto::task_failed())??;
+    Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
 #[tauri::command]
@@ -227,7 +451,7 @@ pub async fn update_device(
     }
     let core = Arc::clone(&state.core);
     let draft = draft.into_core();
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         let mut core = core
             .write()
             .map_err(|_| CommandErrorDto::state_unavailable())?;
@@ -235,10 +459,11 @@ pub async fn update_device(
             .update_device(&device_id, draft)
             .map_err(|error| CommandErrorDto::from_core(&error))?;
         drop(core);
-        Ok(DeviceSnapshotDto::from_core(snapshot))
+        Ok::<_, CommandErrorDto>(snapshot)
     })
     .await
-    .map_err(|_| CommandErrorDto::task_failed())?
+    .map_err(|_| CommandErrorDto::task_failed())??;
+    Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
 #[tauri::command]
@@ -253,7 +478,7 @@ pub async fn delete_device(
         return Err(CommandErrorDto::registration_active());
     }
     let core = Arc::clone(&state.core);
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         let mut core = core
             .write()
             .map_err(|_| CommandErrorDto::state_unavailable())?;
@@ -261,10 +486,11 @@ pub async fn delete_device(
             .delete_device(&device_id)
             .map_err(|error| CommandErrorDto::from_core(&error))?;
         drop(core);
-        Ok(DeviceSnapshotDto::from_core(snapshot))
+        Ok::<_, CommandErrorDto>(snapshot)
     })
     .await
-    .map_err(|_| CommandErrorDto::task_failed())?
+    .map_err(|_| CommandErrorDto::task_failed())??;
+    Ok(DeviceSnapshotDto::from_core(snapshot))
 }
 
 #[tauri::command]

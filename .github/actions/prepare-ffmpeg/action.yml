@@ -1,0 +1,47 @@
+name: Prepare FFmpeg native SDK
+description: Resolve, prepare and verify the locked platform FFmpeg SDK
+
+inputs:
+  platform:
+    description: Target platform (linux, macos or windows)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Read FFmpeg SDK lock metadata
+      id: metadata
+      shell: bash
+      run: node -e "const m = require('./toolchains/ffmpeg-sdk.lock.json'); process.stdout.write('version=' + m.ffmpegVersion + String.fromCharCode(10) + 'revision=' + m.sdkRevision + String.fromCharCode(10))" >> "$GITHUB_OUTPUT"
+    - name: Resolve Windows FFmpeg SDK source
+      id: windows-source
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: ./scripts/resolve-ffmpeg-windows.ps1 -OutputFile .ffmpeg-sdk/windows-source.json
+    - name: Restore FFmpeg SDK cache
+      uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+      with:
+        path: .ffmpeg-sdk/${{ inputs.platform }}
+        key: gblab-ffmpeg-${{ inputs.platform }}-${{ runner.arch }}-v${{ steps.metadata.outputs.version }}-r${{ steps.metadata.outputs.revision }}-${{ steps.windows-source.outputs.fingerprint || hashFiles('toolchains/ffmpeg-sdk.lock.json') }}
+    - name: Prepare macOS FFmpeg SDK
+      if: ${{ inputs.platform == 'macos' }}
+      shell: bash
+      run: bash scripts/prepare-ffmpeg-macos.sh .ffmpeg-sdk/macos
+    - name: Prepare Windows FFmpeg SDK
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: ./scripts/prepare-ffmpeg-windows.ps1 -OutputRoot .ffmpeg-sdk/windows
+    - name: Prepare Linux FFmpeg SDK
+      if: ${{ inputs.platform == 'linux' }}
+      shell: bash
+      run: bash scripts/prepare-ffmpeg-linux.sh .ffmpeg-sdk/linux
+    - name: Verify Unix FFmpeg SDK integrity
+      if: ${{ inputs.platform == 'linux' || inputs.platform == 'macos' }}
+      shell: bash
+      run: bash scripts/verify-ffmpeg-sdk.sh .ffmpeg-sdk/${{ inputs.platform }} ${{ inputs.platform }}
+    - name: Verify Windows FFmpeg SDK integrity
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: ./scripts/verify-ffmpeg-windows.ps1 -SdkRoot .ffmpeg-sdk/windows -SdkOnly

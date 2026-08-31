@@ -1,0 +1,11 @@
+[package]
+name = "gblab-ffmpeg-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Audited safe wrapper for FFmpeg packet and MP4 audio helpers"
+publish = false
+
+[dependencies]
+rsmpeg.workspace = true

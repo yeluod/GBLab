@@ -28,7 +28,7 @@ pub fn run() -> Result<(), tauri::Error> {
             let core = CoreService::open(&configuration_path)?;
             let (registration, supervisor) = RegistrationHandle::prepare();
             tauri::async_runtime::spawn(supervisor);
-            let state = AppState::new(core, registration);
+            let state = AppState::new(core, registration)?;
             let mut registration_events = state.registration.subscribe();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -57,10 +57,27 @@ pub fn run() -> Result<(), tauri::Error> {
             app.manage(state);
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::probe_mp4,
+            commands::open_mp4,
+            commands::play_media,
+            commands::attach_media_preview,
+            commands::detach_media_preview,
+            commands::pause_media,
+            commands::stop_media,
+            commands::reset_media,
+            commands::seek_media,
+            commands::set_media_playback_rate,
+            commands::set_media_audio_control,
+            commands::step_media_frame,
+            commands::get_media_runtime_status,
+            commands::read_media_frame,
             commands::get_sip_service_configuration,
             commands::save_sip_service_configuration,
+            commands::get_media_configuration,
+            commands::save_media_configuration,
             commands::get_device_snapshot,
             commands::get_device_page,
             commands::get_device_channels,
@@ -84,6 +101,7 @@ pub fn run() -> Result<(), tauri::Error> {
             if state.registration.is_active() && state.begin_shutdown() {
                 api.prevent_exit();
                 let registration = state.registration.clone();
+                let _ = state.media.shutdown();
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = registration.stop_all().await;

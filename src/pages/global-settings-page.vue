@@ -16,6 +16,7 @@
   } from 'naive-ui';
 
   import { useSimulatorStore, type SipServiceConfig } from '@/features/simulator';
+  import AppIcon from '@/shared/components/app-icon.vue';
 
   const store = useSimulatorStore();
   const message = useMessage();
@@ -51,7 +52,7 @@
   <section class="page-shell global-settings-page" aria-labelledby="global-settings-title">
     <header class="page-header compact-header">
       <div>
-        <p class="eyebrow">GLOBAL CONFIGURATION</p>
+        <p class="eyebrow">SHARED RUNTIME CONFIGURATION</p>
         <h1 id="global-settings-title">全局配置</h1>
         <p>统一维护平台连接与设备运行参数，所有模拟设备共同使用。</p>
       </div>
@@ -61,6 +62,7 @@
         :disabled="store.isSipServiceLoading || store.isRegistrationActive"
         @click="handleSave"
       >
+        <template #icon><AppIcon icon="save" /></template>
         保存配置
       </NButton>
     </header>
@@ -75,7 +77,8 @@
         :disabled="store.isSipServiceLoading || store.isRegistrationActive"
       >
         <NTabs type="line" animated pane-class="settings-tab-pane">
-          <NTabPane name="platform" tab="平台配置">
+          <NTabPane name="platform">
+            <template #tab><AppIcon icon="globe" :size="15" /> 平台配置</template>
             <p class="settings-section-description">
               配置模拟设备连接的唯一 GB28181 平台、认证信息与本地网络参数。
             </p>
@@ -88,13 +91,6 @@
               </NFormItem>
               <NFormItem label="平台 ID" path="platformId">
                 <NInput v-model:value="formModel.platformId" maxlength="20" />
-              </NFormItem>
-              <NFormItem label="认证密码" path="password">
-                <NInput
-                  v-model:value="formModel.password"
-                  :maxlength="128"
-                  placeholder="请输入 SIP Digest 认证密码"
-                />
               </NFormItem>
               <NFormItem label="本地监听地址" path="localBindAddress">
                 <NInput v-model:value="formModel.localBindAddress" placeholder="0.0.0.0" />
@@ -119,11 +115,20 @@
             </div>
           </NTabPane>
 
-          <NTabPane name="device" tab="设备配置">
+          <NTabPane name="device">
+            <template #tab><AppIcon icon="settings" :size="15" /> 设备配置</template>
             <p class="settings-section-description">
-              配置全部模拟设备共享的 XML 信令字符集、注册周期和心跳行为。
+              配置全部模拟设备共享的认证密码、XML 信令字符集、注册周期和心跳行为。
             </p>
             <div class="form-grid">
+              <NFormItem label="认证密码（可选）" path="password">
+                <NInput
+                  v-model:value="formModel.password"
+                  :maxlength="128"
+                  placeholder="留空表示平台无需 Digest 认证"
+                />
+                <template #feedback>仅在平台启用 SIP Digest 认证时填写。</template>
+              </NFormItem>
               <NFormItem label="信令字符集" path="signalCharset">
                 <NSelect v-model:value="formModel.signalCharset" :options="signalCharsetOptions" />
                 <template #feedback>

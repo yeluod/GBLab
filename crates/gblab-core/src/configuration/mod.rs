@@ -8,14 +8,14 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::domain::SimulatedDevice;
 
-const CURRENT_SCHEMA_VERSION: u8 = 2;
+const CURRENT_SCHEMA_VERSION: u8 = 3;
 const MAX_SIP_URI_LENGTH: usize = 256;
 const MAX_PASSWORD_LENGTH: usize = 128;
 const MAX_DOMAIN_LENGTH: usize = 64;
@@ -34,6 +34,8 @@ pub struct AppConfiguration {
     pub sip_service: SipServiceConfiguration,
     /// 设备配置；注册状态和通道不会写入此集合。
     pub device_collection: DeviceCollectionConfiguration,
+    /// 全局媒体源配置；播放会话和运行时状态不落盘。
+    pub media: MediaConfiguration,
 }
 
 impl Default for AppConfiguration {
@@ -42,6 +44,80 @@ impl Default for AppConfiguration {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: SipServiceConfiguration::default(),
             device_collection: DeviceCollectionConfiguration::default(),
+            media: MediaConfiguration::default(),
+        }
+    }
+}
+
+/// 全局媒体配置。所有设备和通道共享这一份配置。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaConfiguration {
+    /// 媒体源配置。
+    pub source: MediaSourceConfiguration,
+    /// 媒体页面偏好。
+    pub preferences: MediaPreferences,
+}
+
+/// 媒体源配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaSourceConfiguration {
+    /// 媒体源类型。
+    pub r#type: MediaSourceType,
+    /// MP4 文件配置。
+    pub mp4: Mp4SourceConfiguration,
+}
+
+impl Default for MediaSourceConfiguration {
+    fn default() -> Self {
+        Self {
+            r#type: MediaSourceType::Mp4,
+            mp4: Mp4SourceConfiguration::default(),
+        }
+    }
+}
+
+/// 媒体源类型。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaSourceType {
+    /// MP4 文件。
+    #[default]
+    Mp4,
+}
+
+/// MP4 文件配置。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Mp4SourceConfiguration {
+    /// 文件路径。
+    pub file_path: String,
+    /// 是否循环播放。
+    pub is_looping: bool,
+}
+
+impl Default for Mp4SourceConfiguration {
+    fn default() -> Self {
+        Self {
+            file_path: String::new(),
+            is_looping: true,
+        }
+    }
+}
+
+/// 媒体页面偏好。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MediaPreferences {
+    /// 选择文件后是否立即探测。
+    pub should_probe_after_selection: bool,
+}
+
+impl Default for MediaPreferences {
+    fn default() -> Self {
+        Self {
+            should_probe_after_selection: true,
         }
     }
 }
@@ -57,7 +133,7 @@ pub struct DeviceCollectionConfiguration {
 }
 
 /// SIP 信令传输协议。
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SipTransport {
     /// 用户数据报协议。
@@ -96,7 +172,7 @@ impl SignalCharset {
 /// 全部模拟设备共享的 SIP 服务配置。
 ///
 /// 密码作为模拟器配置明文读取、传输并写入 JSON。
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SipServiceConfiguration {
     /// SIP 平台地址，格式为 `sip:host:port`。
@@ -107,7 +183,7 @@ pub struct SipServiceConfiguration {
     pub platform_id: String,
     /// SIP 认证域。
     pub domain: String,
-    /// 全部设备共用的 SIP Digest 认证密码。
+    /// 全部模拟设备共用的 SIP Digest 认证密码；为空表示平台不要求 Digest 认证。
     pub password: String,
     /// SIP socket 本地绑定地址。
     pub local_bind_address: String,
@@ -241,6 +317,12 @@ impl ConfigurationStore {
         self.configuration.device_collection.clone()
     }
 
+    /// 返回全局媒体配置快照。
+    #[must_use]
+    pub fn media(&self) -> MediaConfiguration {
+        self.configuration.media.clone()
+    }
+
     /// 校验并保存唯一 SIP 服务配置。
     ///
     /// 只有文件写入成功后才会替换内存配置，确保内存与磁盘一致。
@@ -257,10 +339,10 @@ impl ConfigurationStore {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: sip_service.clone(),
             device_collection: self.configuration.device_collection.clone(),
+            media: self.configuration.media.clone(),
         };
 
-        write_configuration(&self.path, &next_configuration)?;
-        self.configuration = next_configuration;
+        self.commit(next_configuration)?;
         Ok(sip_service)
     }
 
@@ -277,10 +359,60 @@ impl ConfigurationStore {
             schema_version: CURRENT_SCHEMA_VERSION,
             sip_service: self.configuration.sip_service.clone(),
             device_collection: device_collection.clone(),
+            media: self.configuration.media.clone(),
         };
-        write_configuration(&self.path, &next_configuration)?;
-        self.configuration = next_configuration;
+        self.commit(next_configuration)?;
         Ok(device_collection)
+    }
+
+    /// 校验并保存全局媒体配置。
+    ///
+    /// # Errors
+    ///
+    /// 媒体配置字段校验或 JSON 文件写入失败时返回错误。
+    pub fn save_media(
+        &mut self,
+        media: MediaConfiguration,
+    ) -> Result<MediaConfiguration, ConfigurationError> {
+        let media = media.normalize_and_validate()?;
+        let next_configuration = AppConfiguration {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            sip_service: self.configuration.sip_service.clone(),
+            device_collection: self.configuration.device_collection.clone(),
+            media: media.clone(),
+        };
+        self.commit(next_configuration)?;
+        Ok(media)
+    }
+
+    fn commit(&mut self, next: AppConfiguration) -> Result<(), ConfigurationError> {
+        let path = self.path.clone();
+        self.commit_with(next, |configuration| {
+            write_configuration(&path, configuration)
+        })
+    }
+
+    fn commit_with(
+        &mut self,
+        next: AppConfiguration,
+        persist: impl FnOnce(&AppConfiguration) -> Result<(), ConfigurationError>,
+    ) -> Result<(), ConfigurationError> {
+        persist(&next)?;
+        self.configuration = next;
+        Ok(())
+    }
+}
+
+impl MediaConfiguration {
+    fn normalize_and_validate(mut self) -> Result<Self, ConfigurationError> {
+        self.source.mp4.file_path = self.source.mp4.file_path.trim().to_owned();
+        if self.source.mp4.file_path.len() > 4_096 {
+            return Err(ConfigurationError::invalid_field(
+                "source.mp4.filePath",
+                "MP4 文件路径长度不能超过 4096 个字符",
+            ));
+        }
+        Ok(self)
     }
 }
 
@@ -343,10 +475,10 @@ fn validate_domain(domain: &str) -> Result<(), ConfigurationError> {
 }
 
 fn validate_password(password: &str) -> Result<(), ConfigurationError> {
-    if password.is_empty() || password.len() > MAX_PASSWORD_LENGTH {
+    if password.len() > MAX_PASSWORD_LENGTH {
         return Err(ConfigurationError::invalid_field(
             "password",
-            "密码不能为空且长度不能超过 128 个字符",
+            "密码长度不能超过 128 个字符",
         ));
     }
     if password.chars().any(char::is_control) {
@@ -393,17 +525,23 @@ fn write_configuration(
     let mut contents = serde_json::to_vec_pretty(configuration)?;
     contents.push(b'\n');
 
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "配置文件缺少父目录"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    options.mode(0o600);
-
-    let mut file = options.open(path)?;
-    file.write_all(&contents)?;
-    file.sync_all()?;
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(&contents)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    let persisted = temporary.persist(path).map_err(|error| error.error)?;
+    persisted.sync_all()?;
 
     #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        OpenOptions::new().read(true).open(parent)?.sync_all()?;
+    }
 
     Ok(())
 }
@@ -440,8 +578,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration, SignalCharset,
-        SipServiceConfiguration, SipTransport,
+        AppConfiguration, ConfigurationError, ConfigurationStore, DeviceCollectionConfiguration,
+        MediaSourceConfiguration, MediaSourceType, SignalCharset, SipServiceConfiguration,
+        SipTransport,
     };
 
     fn valid_sip_service() -> SipServiceConfiguration {
@@ -487,25 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn save_sip_service_should_reject_empty_password_without_changing_file()
+    fn save_sip_service_should_accept_and_persist_empty_password()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let configuration_path = directory.path().join("gblab.config.json");
         let mut store = ConfigurationStore::open(&configuration_path)?;
-        let original_contents = fs::read_to_string(&configuration_path)?;
-        let mut invalid = valid_sip_service();
-        invalid.password.clear();
+        let mut configuration = valid_sip_service();
+        configuration.password.clear();
 
-        let error = store.save_sip_service(invalid).err();
+        store.save_sip_service(configuration)?;
+        let reloaded = ConfigurationStore::open(&configuration_path)?;
 
-        assert!(matches!(
-            error,
-            Some(ConfigurationError::InvalidField {
-                field: "password",
-                ..
-            })
-        ));
-        assert_eq!(fs::read_to_string(&configuration_path)?, original_contents);
+        assert!(reloaded.sip_service().password.is_empty());
         Ok(())
     }
 
@@ -546,6 +678,24 @@ mod tests {
     }
 
     #[test]
+    fn media_source_should_accept_mp4() -> Result<(), Box<dyn std::error::Error>> {
+        let mp4: MediaSourceConfiguration =
+            serde_json::from_str(r#"{"type":"mp4","mp4":{"filePath":"","isLooping":true}}"#)?;
+        assert_eq!(mp4.r#type, MediaSourceType::Mp4);
+        Ok(())
+    }
+
+    #[test]
+    fn media_source_should_reject_unsupported_and_legacy_types() {
+        for source_type in ["camera", "unknown"] {
+            let json =
+                format!(r#"{{"type":"{source_type}","mp4":{{"filePath":"","isLooping":true}}}}"#);
+            let result: Result<MediaSourceConfiguration, _> = serde_json::from_str(&json);
+            assert!(result.is_err(), "{source_type} must not be accepted");
+        }
+    }
+
+    #[test]
     fn save_sip_service_should_persist_signal_charset() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let configuration_path = directory.path().join("gblab.config.json");
@@ -574,6 +724,50 @@ mod tests {
         store.save_sip_service(valid_sip_service())?;
 
         assert!(store.device_collection().has_completed_batch_add);
+        Ok(())
+    }
+
+    #[test]
+    fn successful_save_should_atomically_replace_with_complete_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+
+        store.save_sip_service(valid_sip_service())?;
+
+        let contents = fs::read(&configuration_path)?;
+        let persisted: AppConfiguration = serde_json::from_slice(&contents)?;
+        assert_eq!(persisted.sip_service, valid_sip_service());
+        assert!(contents.ends_with(b"\n"));
+        let remaining_files = fs::read_dir(directory.path())?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(remaining_files.len(), 1);
+        assert_eq!(remaining_files[0].path(), configuration_path);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_persist_should_preserve_memory_and_existing_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let configuration_path = directory.path().join("gblab.config.json");
+        let mut store = ConfigurationStore::open(&configuration_path)?;
+        let original_memory = store.sip_service();
+        let original_file = fs::read(&configuration_path)?;
+        let next = AppConfiguration {
+            sip_service: valid_sip_service(),
+            ..AppConfiguration::default()
+        };
+
+        let result = store.commit_with(next, |_| {
+            Err(ConfigurationError::Io(std::io::Error::other(
+                "injected persistence failure",
+            )))
+        });
+
+        assert!(matches!(result, Err(ConfigurationError::Io(_))));
+        assert_eq!(store.sip_service(), original_memory);
+        assert_eq!(fs::read(&configuration_path)?, original_file);
         Ok(())
     }
 }

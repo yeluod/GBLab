@@ -1,6 +1,7 @@
 use gblab_core::{
     BatchDeviceDraft, CoreError, CoreInfo, DeviceKind, DeviceSnapshot, DeviceUpdateDraft,
-    SignalCharset, SimulatedChannel, SimulatedDevice, SipServiceConfiguration, SipTransport,
+    MediaRuntimeStatus, Mp4ProbeResult, SignalCharset, SimulatedChannel, SimulatedDevice,
+    SipServiceConfiguration, SipTransport,
     runtime::{BatchOperationAccepted, RegistrationRuntimeError},
 };
 use serde::{Deserialize, Serialize};
@@ -383,6 +384,79 @@ impl CommandErrorDto {
         Self {
             code: "invalid_configuration",
             message,
+        }
+    }
+
+    pub fn media(error: &gblab_core::MediaError) -> Self {
+        Self {
+            code: "media_error",
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRuntimeStatusDto {
+    source_status: gblab_core::media::MediaSourceStatus,
+    source_kind: Option<gblab_core::media::MediaSourceKind>,
+    video: Option<gblab_core::media::VideoStreamInfo>,
+    audio: Option<gblab_core::media::AudioStreamInfo>,
+    duration_seconds: Option<f64>,
+    position_seconds: f64,
+    playback_rate: f64,
+    decoded_frames: u64,
+    metrics: gblab_core::media::MediaRuntimeMetrics,
+    muted: bool,
+    volume: f64,
+    active_live_consumers: u64,
+    active_recorder_consumers: u64,
+    last_error: Option<String>,
+    last_pipeline_error: Option<String>,
+    audio_sink: Option<gblab_core::media::AudioSinkInfo>,
+}
+
+impl From<MediaRuntimeStatus> for MediaRuntimeStatusDto {
+    fn from(value: MediaRuntimeStatus) -> Self {
+        Self {
+            source_status: value.source_status,
+            source_kind: value.source_kind,
+            video: value.video,
+            audio: value.audio,
+            duration_seconds: value.duration_seconds,
+            position_seconds: value.position_seconds,
+            playback_rate: value.playback_rate,
+            decoded_frames: value.decoded_frames,
+            metrics: value.metrics,
+            muted: value.muted,
+            volume: value.volume,
+            active_live_consumers: value.active_live_consumers,
+            active_recorder_consumers: value.active_recorder_consumers,
+            last_error: value.last_error,
+            last_pipeline_error: value.last_pipeline_error,
+            audio_sink: value.audio_sink,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mp4ProbeResultDto {
+    file_path: String,
+    video: gblab_core::media::VideoStreamInfo,
+    audio: Option<gblab_core::media::AudioStreamInfo>,
+    duration_seconds: Option<f64>,
+    bitrate: Option<u64>,
+}
+
+impl From<Mp4ProbeResult> for Mp4ProbeResultDto {
+    fn from(value: Mp4ProbeResult) -> Self {
+        Self {
+            file_path: value.file_path,
+            video: value.video,
+            audio: value.audio,
+            duration_seconds: value.duration_seconds,
+            bitrate: value.bitrate,
         }
     }
 }

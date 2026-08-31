@@ -1,0 +1,161 @@
+name: Desktop build
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: false
+        type: string
+        default: all
+      ref:
+        required: false
+        type: string
+        default: ''
+      bundle:
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      platform:
+        required: true
+        type: choice
+        options: [macos, windows, all]
+        default: all
+      bundle:
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-matrix:
+    name: Select desktop matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            all) printf 'matrix={"include":[{"platform":"macos","runner":"macos-14","architecture":"arm64","timeout":45},{"platform":"windows","runner":"windows-2025","architecture":"x86_64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            macos) printf 'matrix={"include":[{"platform":"macos","runner":"macos-14","architecture":"arm64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            windows) printf 'matrix={"include":[{"platform":"windows","runner":"windows-2025","architecture":"x86_64","timeout":45}]}\n' >> "$GITHUB_OUTPUT" ;;
+            *) printf 'Unsupported platform: %s\n' "$PLATFORM" >&2; exit 1 ;;
+          esac
+
+  build:
+    needs: prepare-matrix
+    name: Build ${{ matrix.platform }} (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-build
+      - uses: ./.github/actions/prepare-ffmpeg
+        with:
+          platform: ${{ matrix.platform }}
+      - name: Read application version
+        id: metadata
+        shell: bash
+        run: node -e "process.stdout.write('version=' + require('./package.json').version + String.fromCharCode(10))" >> "$GITHUB_OUTPUT"
+      - name: Generate release Tauri configuration
+        shell: bash
+        run: >-
+          node scripts/generate-tauri-release-config.mjs
+          --platform "${{ matrix.platform }}"
+          --sdk-root ".ffmpeg-sdk/${{ matrix.platform }}"
+          --output src-tauri/tauri.release.generated.json
+      - name: Compile desktop application
+        shell: bash
+        run: pnpm exec tauri build --no-bundle --config src-tauri/tauri.release.generated.json
+      - name: Stage Windows FFmpeg runtime
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: Copy-Item -Force .ffmpeg-sdk/windows/bin/*.dll target/release/
+      - name: Verify macOS linkage
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks .ffmpeg-sdk/macos/frameworks
+      - name: Verify Windows linkage
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: ./scripts/verify-ffmpeg-windows.ps1 -Binary target/release/gblab-desktop.exe -SdkRoot .ffmpeg-sdk/windows
+      - name: Bundle macOS installers
+        if: ${{ inputs.bundle && matrix.platform == 'macos' }}
+        shell: bash
+        run: pnpm exec tauri bundle --config src-tauri/tauri.release.generated.json --bundles app,dmg
+      - name: Bundle Windows installers
+        if: ${{ inputs.bundle && matrix.platform == 'windows' }}
+        shell: bash
+        run: pnpm exec tauri bundle --config src-tauri/tauri.release.generated.json --bundles nsis,msi
+      - name: Verify macOS artifacts
+        if: ${{ inputs.bundle && matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          compgen -G 'target/release/bundle/dmg/*.dmg' >/dev/null || { echo 'No macOS DMG generated.' >&2; exit 1; }
+          compgen -G 'target/release/bundle/macos/*.app' >/dev/null || { echo 'No macOS app generated.' >&2; exit 1; }
+          app="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          compgen -G "$app/Contents/Frameworks/*.dylib" >/dev/null || { echo 'Final macOS app has no bundled FFmpeg dylibs.' >&2; exit 1; }
+          test -f "$app/Contents/Resources/manifest.json" || { echo 'Final macOS app is missing FFmpeg manifest.' >&2; exit 1; }
+          test -f "$app/Contents/Resources/FFMPEG-LICENSE.txt" || { echo 'Final macOS app is missing FFmpeg license.' >&2; exit 1; }
+          ! rg -n '/opt/homebrew|/usr/local|/Users/runner' "$app/Contents/Frameworks" || { echo 'Final macOS app contains a build-machine absolute path.' >&2; exit 1; }
+      - name: Verify Windows artifacts
+        if: ${{ inputs.bundle && matrix.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          if ($null -eq (Get-ChildItem 'target/release/bundle/nsis/*-setup.exe' -File | Select-Object -First 1)) { throw 'No Windows NSIS installer generated.' }
+          if ($null -eq (Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1)) { throw 'No Windows MSI installer generated.' }
+          $msi = Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'gblab-msi-contents'
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$extractRoot`"")
+          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed with exit code $($process.ExitCode)." }
+          $bundleFiles = Get-ChildItem $extractRoot -File -Recurse
+          $application = $bundleFiles | Where-Object { $_.Name -eq 'gblab-desktop.exe' } | Select-Object -First 1
+          if ($null -eq $application) { throw 'Extracted MSI is missing gblab-desktop.exe.' }
+          $lock = Get-Content -Raw 'toolchains/ffmpeg-sdk.lock.json' | ConvertFrom-Json
+          foreach ($name in $lock.requiredLibraries) {
+            if ($null -eq ($bundleFiles | Where-Object { $_.Name -like "*$name*.dll" } | Select-Object -First 1)) { throw "Extracted MSI is missing FFmpeg DLL: $name" }
+          }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg manifest.' }
+          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg license.' }
+          if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Extracted MSI must not contain FFmpeg CLI executables.' }
+          $headers = & dumpbin.exe /HEADERS $application.FullName | Out-String
+          if ($headers -notmatch 'machine \(x64\)') { throw 'Extracted application executable is not x64.' }
+      - name: Upload macOS artifacts
+        if: ${{ inputs.bundle && matrix.platform == 'macos' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: GBLab-${{ steps.metadata.outputs.version }}-macos-${{ matrix.architecture }}
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload Windows artifacts
+        if: ${{ inputs.bundle && matrix.platform == 'windows' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: GBLab-${{ steps.metadata.outputs.version }}-windows-${{ matrix.architecture }}
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

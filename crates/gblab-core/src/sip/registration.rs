@@ -20,8 +20,6 @@ use crate::{
     sip::transaction::{TransactionKey, TransactionManager},
 };
 
-use super::dialog::DialogManager;
-
 #[cfg(test)]
 use super::dispatcher::{
     InboundRequestDisposition, SipResponseClass, accept_sip_success, dispatch_inbound_request,
@@ -88,11 +86,10 @@ pub struct SipRegistrationClient {
     pub(super) local_port: u16,
     pub(super) registrar: SipUri,
     pub(super) domain: String,
-    pub(super) subscription_tags: Mutex<HashMap<String, String>>,
+    pub(super) uas_tags: Mutex<HashMap<String, UasDialogTag>>,
     pub(super) transactions: TransactionManager,
     pub(super) event_tx: mpsc::Sender<SipTransportEvent>,
-    pub(super) dialogs: Mutex<DialogManager>,
-    pub(super) invite_transactions: Mutex<HashMap<TransactionKey, Instant>>,
+    pub(super) invite_transactions: Mutex<HashMap<TransactionKey, InviteServerTransaction>>,
     pub(super) server_transactions: Mutex<HashMap<TransactionKey, CachedServerResponse>>,
     pub(super) query_cseq: AtomicU32,
     pub(super) signal_charset: SignalCharset,
@@ -102,6 +99,29 @@ pub struct SipRegistrationClient {
 
 pub(super) struct CachedServerResponse {
     pub(super) response: Vec<u8>,
+    pub(super) expires_at: Instant,
+}
+
+pub(super) struct UasDialogTag {
+    pub(super) value: String,
+    pub(super) expires_at: Instant,
+}
+
+impl UasDialogTag {
+    pub(super) fn is_active(&self, now: Instant) -> bool {
+        self.expires_at > now
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum InviteServerTransactionState {
+    Proceeding,
+    Completed,
+    Terminated,
+}
+
+pub(super) struct InviteServerTransaction {
+    pub(super) state: InviteServerTransactionState,
     pub(super) expires_at: Instant,
 }
 
@@ -163,10 +183,9 @@ impl SipRegistrationClient {
             local_port: local_address.port(),
             registrar,
             domain: configuration.domain.clone(),
-            subscription_tags: Mutex::new(HashMap::new()),
+            uas_tags: Mutex::new(HashMap::new()),
             transactions: TransactionManager::default(),
             event_tx,
-            dialogs: Mutex::new(DialogManager::default()),
             invite_transactions: Mutex::new(HashMap::new()),
             server_transactions: Mutex::new(HashMap::new()),
             query_cseq: AtomicU32::new(0),
@@ -185,16 +204,19 @@ impl SipRegistrationClient {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use siprs::{
         siprs_core::{SipVersion, StatusCode},
         siprs_message::{HeaderCollection, MessageParser, SipMessage, SipResponse, StatusLine},
     };
 
+    use tokio::time::Instant;
+
     use super::{
-        InboundRequestDisposition, SipResponseClass, accept_sip_success, dispatch_inbound_request,
-        invite_key_from_cancel, response_class, transaction_key_from_request,
+        InboundRequestDisposition, SipResponseClass, UasDialogTag, accept_sip_success,
+        dispatch_inbound_request, invite_key_from_cancel, response_class,
+        transaction_key_from_request,
     };
 
     #[test]
@@ -205,6 +227,22 @@ mod tests {
         assert_eq!(response_class(401), SipResponseClass::ClientFailure);
         assert_eq!(response_class(503), SipResponseClass::ServerFailure);
         assert_eq!(response_class(699), SipResponseClass::GlobalFailure);
+    }
+
+    #[test]
+    fn subscribe_dialog_tag_should_expire_naturally() {
+        let now = Instant::now();
+        let active = UasDialogTag {
+            value: "tag".to_owned(),
+            expires_at: now + Duration::from_secs(1),
+        };
+        let expired = UasDialogTag {
+            value: "tag".to_owned(),
+            expires_at: now,
+        };
+
+        assert!(active.is_active(now));
+        assert!(!expired.is_active(now));
     }
 
     #[test]

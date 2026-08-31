@@ -1,5 +1,12 @@
 export { useSimulatorStore } from './simulator-store';
 export {
+  classifyInteractionMessage,
+  directionLabel,
+  formatLogsAsTsv,
+  formatTimestamp,
+} from './interaction-log';
+export type { InteractionMessageType } from './interaction-log';
+export {
   alarmMethodOptions,
   alarmPriorityOptions,
   getAlarmTypeOptions,

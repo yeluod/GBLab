@@ -29,16 +29,16 @@ use super::{
         InboundRequestDisposition, SIP_MESSAGE_LIMIT, accept_sip_success, build_channel_index,
         build_request_response, dispatch_inbound_request, extract_header, header_u32_value,
         invite_key_from_cancel, payload_command_type, request_body_text, request_call_id,
-        request_cseq, request_dialog_id, request_method, resolve_device_and_channel,
-        response_class, structured_header_value, transaction_key_from_request,
-        transaction_key_from_response, xml_metadata,
+        request_method, resolve_device_and_channel, response_class, structured_header_value,
+        transaction_key_from_request, transaction_key_from_response, xml_metadata,
     },
     registration::{
-        CachedServerResponse, SipLogDirection, SipRegistrationClient, SipRegistrationError,
-        SipTransportEvent,
+        CachedServerResponse, InviteServerTransaction, InviteServerTransactionState,
+        SipLogDirection, SipRegistrationClient, SipRegistrationError, SipTransportEvent,
+        UasDialogTag,
     },
     time::now_millis,
-    transaction::{TransactionContext, TransactionState},
+    transaction::{TransactionContext, TransactionKey, TransactionState},
 };
 
 const SERVER_TRANSACTION_TTL: Duration = Duration::from_secs(32);
@@ -92,7 +92,7 @@ impl SipRegistrationClient {
                 self.invite_transactions
                     .lock()
                     .await
-                    .retain(|_, expires_at| *expires_at > now);
+                    .retain(|_, transaction| transaction.expires_at > now);
                 {
                     let mut transactions = self.server_transactions.lock().await;
                     transactions.retain(|_, cached| cached.expires_at > now);
@@ -147,16 +147,29 @@ impl SipRegistrationClient {
                     .headers
                     .get(&HeaderName::Expires)
                     .and_then(header_u32_value);
-                let local_tag = if is_subscribe {
-                    if let Some(call_id) = call_id.as_ref() {
-                        let mut tags = self.subscription_tags.lock().await;
-                        Some(
-                            tags.entry(call_id.clone())
-                                .or_insert_with(|| Tag::new().to_string())
-                                .clone(),
-                        )
+                {
+                    let mut tags = self.uas_tags.lock().await;
+                    tags.retain(|_, dialog| dialog.is_active(now));
+                }
+                let local_tag = if method.as_deref() == Some("ACK") {
+                    None
+                } else if let Some(call_id) = call_id.as_ref() {
+                    if is_subscribe {
+                        let mut tags = self.uas_tags.lock().await;
+                        let lifetime = Duration::from_secs(u64::from(expires.unwrap_or(3_600)));
+                        let dialog = tags.entry(call_id.clone()).or_insert_with(|| UasDialogTag {
+                            value: Tag::new().to_string(),
+                            expires_at: now + lifetime,
+                        });
+                        dialog.expires_at = now + lifetime;
+                        let value = dialog.value.clone();
+                        drop(tags);
+                        Some(value)
                     } else {
-                        None
+                        // Non-dialog requests only need a tag for this response;
+                        // retaining every transient Call-ID would create an
+                        // unbounded map under MESSAGE/OPTIONS traffic.
+                        Some(Tag::new().to_string())
                     }
                 } else {
                     None
@@ -185,6 +198,26 @@ impl SipRegistrationClient {
                         &catalog_devices,
                     )
                     .await;
+                let query_permit = if matches!(
+                    disposition,
+                    InboundRequestDisposition::RespondAndQuery { .. }
+                ) {
+                    reserve_query_permit(&self.query_executor)
+                } else {
+                    None
+                };
+                let disposition = if matches!(
+                    disposition,
+                    InboundRequestDisposition::RespondAndQuery { .. }
+                ) && query_permit.is_none()
+                {
+                    InboundRequestDisposition::Respond {
+                        status: 503,
+                        reason: "Service Unavailable",
+                    }
+                } else {
+                    disposition
+                };
                 let response = disposition.response().map(|(status, reason)| {
                     build_request_response(
                         parse_text,
@@ -229,23 +262,26 @@ impl SipRegistrationClient {
                         && expires == Some(0)
                         && let Some(call_id) = call_id.as_ref()
                     {
-                        self.subscription_tags.lock().await.remove(call_id);
+                        self.uas_tags.lock().await.remove(call_id);
                     }
                 }
                 if let InboundRequestDisposition::RespondAndQuery { body } = disposition {
                     let client = Arc::clone(&self);
-                    let executor = Arc::clone(&self.query_executor);
+                    let Some(permit) = query_permit else {
+                        drop(query_permit);
+                        continue;
+                    };
                     let request = request.clone();
                     let device_id = device_id.clone();
                     let cancellation = cancellation.clone();
                     tokio::spawn(async move {
-                        let Ok(_permit) = executor.acquire_owned().await else {
-                            return;
-                        };
+                        let _permit = permit;
                         let _ = client
                             .send_query_response(&device_id, &request, body, &cancellation)
                             .await;
                     });
+                } else {
+                    drop(query_permit);
                 }
                 continue;
             };
@@ -443,62 +479,34 @@ impl SipRegistrationClient {
         match method_name.as_str() {
             "CANCEL" => {
                 let mut invites = self.invite_transactions.lock().await;
-                invites.retain(|_, expires_at| *expires_at > Instant::now());
+                invites.retain(|_, transaction| {
+                    transaction.expires_at > Instant::now()
+                        && transaction.state != InviteServerTransactionState::Terminated
+                });
                 let key = invite_key_from_cancel(request);
-                let disposition = key.map_or(
-                    InboundRequestDisposition::Respond {
-                        status: 481,
-                        reason: "Call/Transaction Does Not Exist",
-                    },
-                    |key| {
-                        if invites.remove(&key).is_none() {
-                            return InboundRequestDisposition::Respond {
-                                status: 481,
-                                reason: "Call/Transaction Does Not Exist",
-                            };
-                        }
-                        InboundRequestDisposition::Respond {
-                            status: 200,
-                            reason: "OK",
-                        }
-                    },
-                );
+                let disposition = cancel_invite_transaction(&mut invites, key.as_ref());
                 drop(invites);
                 disposition
             }
             "BYE" => {
-                let Some(dialog_id) = request_dialog_id(request) else {
-                    return InboundRequestDisposition::Respond {
-                        status: 481,
-                        reason: "Call/Transaction Does Not Exist",
-                    };
-                };
-                if self.dialogs.lock().await.terminate(&dialog_id) {
-                    InboundRequestDisposition::Respond {
-                        status: 200,
-                        reason: "OK",
-                    }
-                } else {
-                    InboundRequestDisposition::Respond {
-                        status: 481,
-                        reason: "Call/Transaction Does Not Exist",
-                    }
+                // This phase never establishes an INVITE dialog, so every BYE is out of dialog.
+                InboundRequestDisposition::Respond {
+                    status: 481,
+                    reason: "Call/Transaction Does Not Exist",
                 }
             }
-            "ACK" => {
-                if let Some(dialog_id) = request_dialog_id(request)
-                    && let Some(cseq) = request_cseq(request)
-                {
-                    let _ = self.dialogs.lock().await.confirm(&dialog_id, cseq);
-                }
-                InboundRequestDisposition::NoResponse
-            }
+            "ACK" => InboundRequestDisposition::NoResponse,
             "INVITE" => {
                 if let Some(key) = transaction_key_from_request(request) {
+                    let mut transaction = InviteServerTransaction {
+                        state: InviteServerTransactionState::Proceeding,
+                        expires_at: Instant::now() + SERVER_TRANSACTION_TTL,
+                    };
+                    transaction.state = InviteServerTransactionState::Completed;
                     self.invite_transactions
                         .lock()
                         .await
-                        .insert(key, Instant::now() + SERVER_TRANSACTION_TTL);
+                        .insert(key, transaction);
                 }
                 // 媒体能力尚未启用，明确拒绝而不是伪造 200/SDP。
                 InboundRequestDisposition::Respond {
@@ -594,5 +602,126 @@ impl SipRegistrationClient {
         self.exchange_with_channel(device_id, outbound, cancellation, None)
             .await
             .map(|_| ())
+    }
+}
+
+/// Reserves a bounded query worker slot before acknowledging the SIP request.
+///
+/// Keeping this decision synchronous and non-blocking means saturation is exposed as a
+/// protocol-level 503 instead of accepting a request and silently dropping its business
+/// response later.
+fn reserve_query_permit(
+    executor: &Arc<tokio::sync::Semaphore>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    Arc::clone(executor).try_acquire_owned().ok()
+}
+
+fn cancel_invite_transaction(
+    invites: &mut HashMap<TransactionKey, InviteServerTransaction>,
+    key: Option<&TransactionKey>,
+) -> InboundRequestDisposition {
+    let Some(key) = key else {
+        return InboundRequestDisposition::Respond {
+            status: 481,
+            reason: "Call/Transaction Does Not Exist",
+        };
+    };
+    let Some(transaction) = invites.get_mut(key) else {
+        return InboundRequestDisposition::Respond {
+            status: 481,
+            reason: "Call/Transaction Does Not Exist",
+        };
+    };
+    if transaction.state != InviteServerTransactionState::Proceeding {
+        return InboundRequestDisposition::Respond {
+            status: 481,
+            reason: "Call/Transaction Does Not Exist",
+        };
+    }
+    transaction.state = InviteServerTransactionState::Terminated;
+    InboundRequestDisposition::Respond {
+        status: 200,
+        reason: "OK",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, time::Duration};
+
+    use siprs::siprs_message::Method;
+    use tokio::{sync::Semaphore, time::Instant};
+
+    use super::{InboundRequestDisposition, cancel_invite_transaction, reserve_query_permit};
+    use crate::sip::{
+        registration::{InviteServerTransaction, InviteServerTransactionState},
+        transaction::TransactionKey,
+    };
+
+    fn invite_key() -> TransactionKey {
+        TransactionKey {
+            call_id: "call-1".to_owned(),
+            cseq: 42,
+            method: Method::Invite,
+            branch: "z9hG4bK-invite".to_owned(),
+        }
+    }
+
+    #[test]
+    fn cancel_after_invite_final_response_should_return_481() {
+        let key = invite_key();
+        let mut invites = HashMap::from([(
+            key.clone(),
+            InviteServerTransaction {
+                state: InviteServerTransactionState::Completed,
+                expires_at: Instant::now() + Duration::from_secs(32),
+            },
+        )]);
+
+        let disposition = cancel_invite_transaction(&mut invites, Some(&key));
+
+        assert!(matches!(
+            disposition,
+            InboundRequestDisposition::Respond { status: 481, .. }
+        ));
+        assert_eq!(
+            invites.get(&key).map(|transaction| transaction.state),
+            Some(InviteServerTransactionState::Completed)
+        );
+    }
+
+    #[test]
+    fn cancel_while_invite_is_proceeding_should_terminate_transaction() {
+        let key = invite_key();
+        let mut invites = HashMap::from([(
+            key.clone(),
+            InviteServerTransaction {
+                state: InviteServerTransactionState::Proceeding,
+                expires_at: Instant::now() + Duration::from_secs(32),
+            },
+        )]);
+
+        let disposition = cancel_invite_transaction(&mut invites, Some(&key));
+
+        assert!(matches!(
+            disposition,
+            InboundRequestDisposition::Respond { status: 200, .. }
+        ));
+        assert_eq!(
+            invites.get(&key).map(|transaction| transaction.state),
+            Some(InviteServerTransactionState::Terminated)
+        );
+    }
+
+    #[test]
+    fn query_capacity_should_be_rejected_before_ack_when_saturated() {
+        let executor = std::sync::Arc::new(Semaphore::new(1));
+        let permit = reserve_query_permit(&executor);
+
+        assert!(permit.is_some());
+        assert!(reserve_query_permit(&executor).is_none());
+
+        drop(permit);
+        assert!(reserve_query_permit(&executor).is_some());
     }
 }

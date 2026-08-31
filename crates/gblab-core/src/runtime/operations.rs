@@ -106,75 +106,22 @@ pub(super) async fn run_registration_operation(
     let mut runtime_devices = BTreeMap::new();
     let mut device_queue = devices.into_iter();
     let mut registration_tasks = JoinSet::new();
-    while registration_tasks.len() < concurrency.max(1) {
-        let Some(device) = device_queue.next() else {
-            break;
-        };
-        let _ = queue_initial_registration(
-            device,
-            &configuration,
-            &client,
-            &semaphore,
-            &cancellation,
-            &internal_tx,
-            &session_map,
-            &mut registration_tasks,
-        )
-        .await;
-    }
-    while let Some(joined) = registration_tasks.join_next().await {
-        let Ok((device_id, session, registration)) = joined else {
-            continue;
-        };
-        let now = now_millis();
-        match registration {
-            Ok(expires) => {
-                send_device_state(
-                    &internal_tx,
-                    &device_id,
-                    DeviceRegistrationStatus::Registered,
-                    None,
-                    Some(now.saturating_add(duration_millis(expires))),
-                )
-                .await;
-                runtime_devices.insert(
-                    device_id.clone(),
-                    RuntimeDeviceState {
-                        session,
-                        next_refresh_at: now
-                            .saturating_add(duration_millis_u64(refresh_delay(expires).as_secs())),
-                        next_keepalive_at: now.saturating_add(duration_millis(
-                            configuration.keepalive_interval.max(1),
-                        )),
-                        next_retry_at: None,
-                        in_flight: None,
-                    },
-                );
-            }
-            Err(error) => {
-                send_device_state(
-                    &internal_tx,
-                    &device_id,
-                    DeviceRegistrationStatus::Failed,
-                    Some(error.to_string()),
-                    None,
-                )
-                .await;
-                runtime_devices.insert(
-                    device_id.clone(),
-                    RuntimeDeviceState {
-                        session,
-                        next_refresh_at: u64::MAX,
-                        next_keepalive_at: u64::MAX,
-                        next_retry_at: Some(
-                            now.saturating_add(duration_millis_u64(RETRY_CYCLE_DELAY.as_secs())),
-                        ),
-                        in_flight: None,
-                    },
-                );
-            }
-        }
-        let _ = internal_tx.send(InternalEvent::InitialSettled).await;
+    let mut scheduler_rx = scheduler.subscribe();
+    let (operation_tx, mut operation_rx) =
+        mpsc::channel::<OperationCompleted>(TRANSIENT_OPERATION_QUEUE_CAPACITY);
+    let executor = OperationExecutor {
+        limit: Arc::new(Semaphore::new(concurrency.max(1))),
+        operation_tx,
+        client: Arc::clone(&client),
+        configuration: configuration.clone(),
+        cancellation: cancellation.clone(),
+        internal_tx: internal_tx.clone(),
+    };
+    let mut transient_tasks = JoinSet::new();
+
+    // 首轮 REGISTER 与已注册设备的维护共享同一个 owner loop。先完成的设备不会再等待
+    // 其余首轮事务结束后才进入 Refresh/Keepalive 调度。
+    loop {
         while registration_tasks.len() < concurrency.max(1) {
             let Some(device) = device_queue.next() else {
                 break;
@@ -191,93 +138,46 @@ pub(super) async fn run_registration_operation(
             )
             .await;
         }
+        if registration_tasks.is_empty() {
+            break;
+        }
+        tokio::select! {
+            () = cancellation.cancelled() => break,
+            joined = registration_tasks.join_next() => {
+                let Some(Ok((device_id, session, registration))) = joined else { continue };
+                install_initial_result(
+                    &mut runtime_devices,
+                    &configuration,
+                    &internal_tx,
+                    device_id,
+                    session,
+                    registration,
+                ).await;
+            }
+            completed = operation_rx.recv() => {
+                let Some(completed) = completed else { break };
+                executor.apply_completed(&mut runtime_devices, completed).await;
+            }
+            tick = scheduler_rx.recv() => {
+                let Ok(tick) = tick else { break };
+                while transient_tasks.try_join_next().is_some() {}
+                executor.dispatch_due(tick.now_millis, &mut runtime_devices, &mut transient_tasks);
+            }
+        }
     }
+
     // 所有设备共享一个 owner loop：设备只保存会话和截止时间，不创建生命周期 task。
-    let mut scheduler_rx = scheduler.subscribe();
-    let operation_limit = Arc::new(Semaphore::new(concurrency.max(1)));
-    let (operation_tx, mut operation_rx) =
-        mpsc::channel::<OperationCompleted>(TRANSIENT_OPERATION_QUEUE_CAPACITY);
-    let mut transient_tasks = JoinSet::new();
     loop {
         tokio::select! {
             () = cancellation.cancelled() => break,
             completed = operation_rx.recv() => {
                 let Some(completed) = completed else { break };
-                let Some(runtime_device) = runtime_devices.get_mut(&completed.device_id) else { continue };
-                runtime_device.in_flight = None;
-                match completed.result {
-                    Ok(OperationResult::Registered(expires)) => {
-                        let now = now_millis();
-                        runtime_device.next_retry_at = None;
-                        runtime_device.next_refresh_at = now.saturating_add(duration_millis_u64(refresh_delay(expires).as_secs()));
-                        runtime_device.next_keepalive_at = now.saturating_add(duration_millis(configuration.keepalive_interval.max(1)));
-                        send_device_state(&internal_tx, &completed.device_id, DeviceRegistrationStatus::Registered, None, Some(now.saturating_add(duration_millis(expires)))).await;
-                    }
-                    Ok(OperationResult::Heartbeat) => {
-                        let _ = internal_tx.send(InternalEvent::Heartbeat { device_id: completed.device_id.clone(), success: true, timestamp: now_millis() }).await;
-                        runtime_device.next_keepalive_at = now_millis().saturating_add(duration_millis(configuration.keepalive_interval.max(1)));
-                    }
-                    Err(error) => {
-                        if !matches!(error, SipRegistrationError::Cancelled) {
-                            let now = now_millis();
-                            if matches!(completed.operation, RuntimeOperation::Keepalive) {
-                                let _ = internal_tx.send(InternalEvent::Heartbeat { device_id: completed.device_id.clone(), success: false, timestamp: now }).await;
-                                runtime_device.next_keepalive_at = now.saturating_add(duration_millis(configuration.keepalive_interval.max(1)));
-                            } else {
-                                runtime_device.next_retry_at = Some(now.saturating_add(duration_millis_u64(RETRY_CYCLE_DELAY.as_secs())));
-                                send_device_state(&internal_tx, &completed.device_id, DeviceRegistrationStatus::Failed, Some(error.to_string()), None).await;
-                            }
-                        }
-                    }
-                }
+                executor.apply_completed(&mut runtime_devices, completed).await;
             }
             tick = scheduler_rx.recv() => {
                 let Ok(tick) = tick else { break };
                 while transient_tasks.try_join_next().is_some() {}
-                if tick.now_millis == 0 { continue; }
-                for (device_id, runtime_device) in &mut runtime_devices {
-                    if runtime_device.in_flight.is_some() { continue; }
-                    let operation = if runtime_device.next_retry_at.is_some_and(|deadline| tick.now_millis >= deadline) {
-                        Some(RuntimeOperation::Retry)
-                    } else if runtime_device.next_retry_at.is_none() && tick.now_millis >= runtime_device.next_refresh_at {
-                        Some(RuntimeOperation::Refresh)
-                    } else if tick.now_millis >= runtime_device.next_keepalive_at {
-                        Some(RuntimeOperation::Keepalive)
-                    } else { None };
-                    let Some(operation) = operation else { continue };
-                    let Ok(permit) = Arc::clone(&operation_limit).try_acquire_owned() else { continue };
-                    runtime_device.in_flight = Some(operation);
-                    let session = Arc::clone(&runtime_device.session);
-                    let client = Arc::clone(&client);
-                    let configuration = configuration.clone();
-                    let cancellation = cancellation.clone();
-                    let operation_tx = operation_tx.clone();
-                    let device_id = device_id.clone();
-                    transient_tasks.spawn(async move {
-                        let _permit = permit;
-                        let result = match operation {
-                            RuntimeOperation::Refresh | RuntimeOperation::Retry => register_with_retry_unbounded(&session, &client, &configuration, &cancellation).await.map(OperationResult::Registered),
-                            RuntimeOperation::Keepalive => {
-                                match CodecDeviceId::parse(&device_id) {
-                                    Ok(codec_id) => {
-                                        let sn = session.next_sn();
-                                        session
-                                            .send_message(
-                                                &client,
-                                                Notify::keepalive(sn, codec_id).to_xml(),
-                                                &cancellation,
-                                                None,
-                                            )
-                                            .await
-                                            .map(|()| OperationResult::Heartbeat)
-                                    }
-                                    Err(error) => Err(SipRegistrationError::Build(error.to_string())),
-                                }
-                            }
-                        };
-                        let _ = operation_tx.send(OperationCompleted { device_id, operation, result }).await;
-                    });
-                }
+                executor.dispatch_due(tick.now_millis, &mut runtime_devices, &mut transient_tasks);
             }
         }
     }
@@ -287,6 +187,7 @@ pub(super) async fn run_registration_operation(
 
     // 停止阶段也走同一个有界 transient executor，不再按设备串行等待。
     let mut unregister_tasks = JoinSet::new();
+    let unregister_limit = Arc::new(Semaphore::new(concurrency.max(1)));
     for (device_id, runtime_device) in runtime_devices {
         send_device_state(
             &internal_tx,
@@ -301,7 +202,11 @@ pub(super) async fn run_registration_operation(
         let configuration = configuration.clone();
         let cancellation = CancellationToken::new();
         let internal_tx = internal_tx.clone();
+        let Ok(permit) = Arc::clone(&unregister_limit).acquire_owned().await else {
+            break;
+        };
         unregister_tasks.spawn(async move {
+            let _permit = permit;
             let result = session
                 .unregister(&client, &configuration, &cancellation)
                 .await;
@@ -417,6 +322,237 @@ struct OperationCompleted {
 enum OperationResult {
     Registered(u32),
     Heartbeat,
+}
+
+struct OperationExecutor {
+    limit: Arc<Semaphore>,
+    operation_tx: mpsc::Sender<OperationCompleted>,
+    client: Arc<SipRegistrationClient>,
+    configuration: SipServiceConfiguration,
+    cancellation: CancellationToken,
+    internal_tx: mpsc::Sender<InternalEvent>,
+}
+
+impl OperationExecutor {
+    fn dispatch_due(
+        &self,
+        now: u64,
+        devices: &mut BTreeMap<String, RuntimeDeviceState>,
+        tasks: &mut JoinSet<()>,
+    ) {
+        if now == 0 {
+            return;
+        }
+        for (device_id, runtime_device) in devices {
+            if runtime_device.in_flight.is_some() {
+                continue;
+            }
+            let operation = if runtime_device
+                .next_retry_at
+                .is_some_and(|deadline| now >= deadline)
+            {
+                Some(RuntimeOperation::Retry)
+            } else if runtime_device.next_retry_at.is_none()
+                && now >= runtime_device.next_refresh_at
+            {
+                Some(RuntimeOperation::Refresh)
+            } else if now >= runtime_device.next_keepalive_at {
+                Some(RuntimeOperation::Keepalive)
+            } else {
+                None
+            };
+            let Some(operation) = operation else {
+                continue;
+            };
+            let Ok(permit) = Arc::clone(&self.limit).try_acquire_owned() else {
+                continue;
+            };
+            runtime_device.in_flight = Some(operation);
+            let session = Arc::clone(&runtime_device.session);
+            let client = Arc::clone(&self.client);
+            let configuration = self.configuration.clone();
+            let cancellation = self.cancellation.clone();
+            let operation_tx = self.operation_tx.clone();
+            let device_id = device_id.clone();
+            tasks.spawn(async move {
+                let _permit = permit;
+                let result = execute_runtime_operation(
+                    operation,
+                    &device_id,
+                    &session,
+                    &client,
+                    &configuration,
+                    &cancellation,
+                )
+                .await;
+                let _ = operation_tx
+                    .send(OperationCompleted {
+                        device_id,
+                        operation,
+                        result,
+                    })
+                    .await;
+            });
+        }
+    }
+
+    async fn apply_completed(
+        &self,
+        devices: &mut BTreeMap<String, RuntimeDeviceState>,
+        completed: OperationCompleted,
+    ) {
+        let Some(runtime_device) = devices.get_mut(&completed.device_id) else {
+            return;
+        };
+        runtime_device.in_flight = None;
+        match completed.result {
+            Ok(OperationResult::Registered(expires)) => {
+                let now = now_millis();
+                runtime_device.next_retry_at = None;
+                runtime_device.next_refresh_at =
+                    now.saturating_add(duration_millis_u64(refresh_delay(expires).as_secs()));
+                runtime_device.next_keepalive_at = now.saturating_add(duration_millis(
+                    self.configuration.keepalive_interval.max(1),
+                ));
+                send_device_state(
+                    &self.internal_tx,
+                    &completed.device_id,
+                    DeviceRegistrationStatus::Registered,
+                    None,
+                    Some(now.saturating_add(duration_millis(expires))),
+                )
+                .await;
+            }
+            Ok(OperationResult::Heartbeat) => {
+                let now = now_millis();
+                let _ = self
+                    .internal_tx
+                    .send(InternalEvent::Heartbeat {
+                        device_id: completed.device_id,
+                        success: true,
+                        timestamp: now,
+                    })
+                    .await;
+                runtime_device.next_keepalive_at = now.saturating_add(duration_millis(
+                    self.configuration.keepalive_interval.max(1),
+                ));
+            }
+            Err(error) => {
+                if matches!(error, SipRegistrationError::Cancelled) {
+                    return;
+                }
+                let now = now_millis();
+                if matches!(completed.operation, RuntimeOperation::Keepalive) {
+                    let _ = self
+                        .internal_tx
+                        .send(InternalEvent::Heartbeat {
+                            device_id: completed.device_id,
+                            success: false,
+                            timestamp: now,
+                        })
+                        .await;
+                    runtime_device.next_keepalive_at = now.saturating_add(duration_millis(
+                        self.configuration.keepalive_interval.max(1),
+                    ));
+                } else {
+                    runtime_device.next_retry_at =
+                        Some(now.saturating_add(duration_millis_u64(RETRY_CYCLE_DELAY.as_secs())));
+                    send_device_state(
+                        &self.internal_tx,
+                        &completed.device_id,
+                        DeviceRegistrationStatus::Failed,
+                        Some(error.to_string()),
+                        None,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
+async fn install_initial_result(
+    devices: &mut BTreeMap<String, RuntimeDeviceState>,
+    configuration: &SipServiceConfiguration,
+    internal_tx: &mpsc::Sender<InternalEvent>,
+    device_id: String,
+    session: Arc<DeviceSipSession>,
+    registration: Result<u32, SipRegistrationError>,
+) {
+    let now = now_millis();
+    let state = match registration {
+        Ok(expires) => {
+            send_device_state(
+                internal_tx,
+                &device_id,
+                DeviceRegistrationStatus::Registered,
+                None,
+                Some(now.saturating_add(duration_millis(expires))),
+            )
+            .await;
+            RuntimeDeviceState {
+                session,
+                next_refresh_at: now
+                    .saturating_add(duration_millis_u64(refresh_delay(expires).as_secs())),
+                next_keepalive_at: now
+                    .saturating_add(duration_millis(configuration.keepalive_interval.max(1))),
+                next_retry_at: None,
+                in_flight: None,
+            }
+        }
+        Err(error) => {
+            send_device_state(
+                internal_tx,
+                &device_id,
+                DeviceRegistrationStatus::Failed,
+                Some(error.to_string()),
+                None,
+            )
+            .await;
+            RuntimeDeviceState {
+                session,
+                next_refresh_at: u64::MAX,
+                next_keepalive_at: u64::MAX,
+                next_retry_at: Some(
+                    now.saturating_add(duration_millis_u64(RETRY_CYCLE_DELAY.as_secs())),
+                ),
+                in_flight: None,
+            }
+        }
+    };
+    devices.insert(device_id, state);
+    let _ = internal_tx.send(InternalEvent::InitialSettled).await;
+}
+
+async fn execute_runtime_operation(
+    operation: RuntimeOperation,
+    device_id: &str,
+    session: &DeviceSipSession,
+    client: &SipRegistrationClient,
+    configuration: &SipServiceConfiguration,
+    cancellation: &CancellationToken,
+) -> Result<OperationResult, SipRegistrationError> {
+    match operation {
+        RuntimeOperation::Refresh | RuntimeOperation::Retry => {
+            register_with_retry_unbounded(session, client, configuration, cancellation)
+                .await
+                .map(OperationResult::Registered)
+        }
+        RuntimeOperation::Keepalive => {
+            let codec_id = CodecDeviceId::parse(device_id)
+                .map_err(|error| SipRegistrationError::Build(error.to_string()))?;
+            let sn = session.next_sn();
+            session
+                .send_message(
+                    client,
+                    Notify::keepalive(sn, codec_id).to_xml(),
+                    cancellation,
+                    None,
+                )
+                .await
+                .map(|()| OperationResult::Heartbeat)
+        }
+    }
 }
 
 async fn register_with_retry(
