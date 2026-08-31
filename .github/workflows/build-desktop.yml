@@ -113,7 +113,7 @@ jobs:
           compgen -G "$app/Contents/Frameworks/*.dylib" >/dev/null || { echo 'Final macOS app has no bundled FFmpeg dylibs.' >&2; exit 1; }
           test -f "$app/Contents/Resources/manifest.json" || { echo 'Final macOS app is missing FFmpeg manifest.' >&2; exit 1; }
           test -f "$app/Contents/Resources/FFMPEG-LICENSE.txt" || { echo 'Final macOS app is missing FFmpeg license.' >&2; exit 1; }
-          ! rg -n '/opt/homebrew|/usr/local|/Users/runner' "$app/Contents/Frameworks" || { echo 'Final macOS app contains a build-machine absolute path.' >&2; exit 1; }
+          ! grep -R -n -E '/opt/homebrew|/usr/local|/Users/runner' "$app/Contents/Frameworks" >/dev/null || { echo 'Final macOS app contains a build-machine absolute path.' >&2; exit 1; }
       - name: Verify Windows artifacts
         if: ${{ inputs.bundle && matrix.platform == 'windows' }}
         shell: pwsh
@@ -135,8 +135,19 @@ jobs:
           if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg manifest.' }
           if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg license.' }
           if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Extracted MSI must not contain FFmpeg CLI executables.' }
-          $headers = & dumpbin.exe /HEADERS $application.FullName | Out-String
-          if ($headers -notmatch 'machine \(x64\)') { throw 'Extracted application executable is not x64.' }
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($null -ne $dumpbin) {
+            $headers = & $dumpbin.Source /HEADERS $application.FullName | Out-String
+            if ($headers -notmatch 'machine \(x64\)') { throw 'Extracted application executable is not x64.' }
+          } else {
+            $bytes = [System.IO.File]::ReadAllBytes($application.FullName)
+            if ($bytes.Length -lt 64) { throw 'Extracted application executable is too small to be a PE file.' }
+            $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw 'Extracted application executable has an invalid PE header.' }
+            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0x00 -or $bytes[$peOffset + 3] -ne 0x00) { throw 'Extracted application executable is not a PE file.' }
+            $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0x8664) { throw 'Extracted application executable is not x64.' }
+          }
       - name: Upload macOS artifacts
         if: ${{ inputs.bundle && matrix.platform == 'macos' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

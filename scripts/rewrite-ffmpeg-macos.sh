@@ -17,8 +17,8 @@ while IFS= read -r dependency; do
 done < <(otool -L "$binary" | sed -n 's/^[[:space:]]*\([^ ]*\.dylib\).*/\1/p')
 for library in "$framework_dir"/*.dylib; do
   [[ -e "$library" ]] || continue
-  if otool -L "$library" | rg -q '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated dependency found in %s\n' "$library" >&2; exit 1; fi
+  if otool -L "$library" | grep -Eq '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated dependency found in %s\n' "$library" >&2; exit 1; fi
 done
-if otool -L "$binary" | rg -q '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated FFmpeg dependency found in %s\n' "$binary" >&2; exit 1; fi
-if otool -L "$binary" | rg -q 'ffmpeg\.exe|ffprobe\.exe|ffplay\.exe'; then printf 'FFmpeg CLI dependency found in %s\n' "$binary" >&2; exit 1; fi
+if otool -L "$binary" | grep -Eq '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated FFmpeg dependency found in %s\n' "$binary" >&2; exit 1; fi
+if otool -L "$binary" | grep -Eq 'ffmpeg\.exe|ffprobe\.exe|ffplay\.exe'; then printf 'FFmpeg CLI dependency found in %s\n' "$binary" >&2; exit 1; fi
 printf 'macOS FFmpeg linkage verified: %s\n' "$binary"
