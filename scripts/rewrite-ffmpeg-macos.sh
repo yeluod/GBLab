@@ -28,6 +28,10 @@ rewrite_ffmpeg_dependencies() {
 rewrite_ffmpeg_dependencies "$binary"
 for library in "$framework_dir"/*.dylib; do
   [[ -e "$library" ]] || continue
+  base="$(basename "$library")"
+  # Cached SDKs may contain an absolute LC_ID_DYLIB from the build machine.
+  # Normalize the install name again after copying into the final artifact.
+  install_name_tool -id "@rpath/$base" "$library"
   rewrite_ffmpeg_dependencies "$library"
   if otool -L "$library" | grep -Eq '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated dependency found in %s\n' "$library" >&2; exit 1; fi
 done
