@@ -55,6 +55,16 @@ impl MediaSessionCoordinator {
         remote: SocketAddr,
         ssrc: u32,
     ) -> MediaResult<SocketAddr> {
+        if matches!(
+            self.media.status().source_status,
+            super::MediaSourceStatus::Stopped
+        ) {
+            // A non-looping MP4 remains at EOF after the previous dialog.  All
+            // sessions are stale at that point, so release their subscriptions
+            // before rewinding the single global source for a new INVITE.
+            self.stop_all().await;
+            self.media.reset()?;
+        }
         let dialog_id = dialog_id.into();
         {
             let sessions = self.sessions.lock().await;
@@ -71,14 +81,6 @@ impl MediaSessionCoordinator {
             self.media
                 .subscribe(MediaConsumerKind::Live, 128, BackpressurePolicy::Disconnect)?;
         let subscription_id = subscription.id;
-        if !matches!(
-            self.media.status().source_status,
-            super::MediaSourceStatus::Playing
-        ) && let Err(error) = self.media.play()
-        {
-            let _ = self.media.unsubscribe(subscription.id);
-            return Err(error);
-        }
         let session = match MediaSession::start(
             subscription,
             remote,
@@ -106,10 +108,10 @@ impl MediaSessionCoordinator {
     /// Returns whether a configured MP4 source can provide encoded packets.
     #[must_use]
     pub fn source_available(&self) -> bool {
-        !matches!(
-            self.media.status().source_status,
-            super::MediaSourceStatus::Unconfigured
-        )
+        let status = self.media.status();
+        !matches!(status.source_status, super::MediaSourceStatus::Unconfigured)
+            && status.video.is_some()
+            && status.last_error.is_none()
     }
 
     /// Stops a session and releases its Live subscription.
@@ -125,11 +127,27 @@ impl MediaSessionCoordinator {
 
     /// Releases the ACK gate for a negotiated dialog.
     pub async fn activate(&self, dialog_id: &str) -> bool {
-        let sessions = self.sessions.lock().await;
-        sessions.get(dialog_id).is_some_and(|session| {
-            session.activate();
-            true
-        })
+        let activated = self
+            .sessions
+            .lock()
+            .await
+            .get(dialog_id)
+            .is_some_and(|session| {
+                session.activate();
+                true
+            });
+        if !activated {
+            return false;
+        }
+        if !matches!(
+            self.media.status().source_status,
+            super::MediaSourceStatus::Playing
+        ) && self.media.play().is_err()
+        {
+            let _ = self.stop(dialog_id).await;
+            return false;
+        }
+        true
     }
 
     /// Stops all active sessions during runtime shutdown.

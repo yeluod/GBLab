@@ -65,7 +65,29 @@ impl MediaSession {
             if !*activation.borrow() {
                 let activated = tokio::select! {
                     () = task_cancellation.cancelled() => false,
-                    result = timeout(Duration::from_secs(8), activation.changed()) => result.is_ok_and(|result| result.is_ok()),
+                    result = timeout(Duration::from_secs(8), async {
+                        loop {
+                            tokio::select! {
+                                () = task_cancellation.cancelled() => return false,
+                                result = activation.changed() => {
+                                    if result.is_err() {
+                                        return false;
+                                    }
+                                    if *activation.borrow() {
+                                        return true;
+                                    }
+                                }
+                                packet = subscription.recv() => {
+                                    // Drain pre-ACK packets so a slow SIP transaction
+                                    // cannot fill the bounded Live queue and disconnect
+                                    // the session before media is negotiated.
+                                    if packet.is_none() {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }) => result.is_ok_and(|activated| activated),
                 };
                 if !activated {
                     let _ = media_for_task.unsubscribe(subscription_id);
@@ -76,16 +98,21 @@ impl MediaSession {
                 () = task_cancellation.cancelled() => None,
                 packet = subscription.recv() => packet,
             } {
-                let Some(ps) = mux_video_packet(
-                    &packet,
-                    packet.pts.unwrap_or_default().max(0).cast_unsigned(),
-                ) else {
+                // RTP and MPEG-PS SCR follow decode order.  Using PTS here makes
+                // B-frame sources publish timestamps that move backwards (for
+                // example 0, 0.4, 0.2, 0.1), which causes downstream FLV muxers
+                // to buffer and render with visible stalls.  PES PTS remains the
+                // presentation timestamp passed to the PS muxer below.
+                let decode_timestamp = packet.dts.or(packet.pts).unwrap_or_default();
+                let decode_timestamp = decode_timestamp.max(0).cast_unsigned();
+                let presentation_timestamp =
+                    packet.pts.unwrap_or_else(|| decode_timestamp.cast_signed());
+                let Some(ps) =
+                    mux_video_packet(&packet, presentation_timestamp.max(0).cast_unsigned())
+                else {
                     continue;
                 };
-                packetizer.set_timestamp(
-                    u32::try_from(packet.pts.unwrap_or_default().max(0).cast_unsigned())
-                        .unwrap_or(u32::MAX),
-                );
+                packetizer.set_timestamp(u32::try_from(decode_timestamp).unwrap_or(u32::MAX));
                 for rtp in packetizer.packetize(&ps) {
                     match sender_socket.send_to(&rtp, remote).await {
                         Ok(bytes) => {

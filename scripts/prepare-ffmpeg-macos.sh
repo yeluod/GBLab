@@ -55,7 +55,16 @@ mkdir -p "$framework_dir"
 for name in $(jq -er '.requiredLibraries[]' "$lockfile"); do
   source_lib="$(find "$install_dir/lib" -maxdepth 1 -name "lib${name}.*.dylib" -print -quit)"
   [[ -n "$source_lib" ]] || { printf 'Missing FFmpeg library: %s\n' "$name" >&2; exit 1; }
-  cp -L "$source_lib" "$framework_dir/$(basename "$source_lib")"
+  install_id="$(otool -D "$source_lib" | tail -n 1)"
+  staged_name="$(basename "$install_id")"
+  case "$staged_name" in
+    "lib${name}."*.dylib) ;;
+    *)
+      printf 'Unexpected FFmpeg install name: library=%s install-id=%s\n' "$name" "$install_id" >&2
+      exit 1
+      ;;
+  esac
+  cp -L "$source_lib" "$framework_dir/$staged_name"
 done
 for library in "$framework_dir"/*.dylib; do
   base="$(basename "$library")"

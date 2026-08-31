@@ -3,6 +3,7 @@
 use super::{EncodedMediaCodec, EncodedMediaPacket, VideoCodec};
 
 const VIDEO_STREAM_ID: u8 = 0xe0;
+const PROGRAM_MUX_RATE: u32 = 2_257_150;
 
 /// Creates one PS payload containing a pack header, PSM and a video PES.
 pub fn mux_video_packet(packet: &EncodedMediaPacket, pts_90khz: u64) -> Option<Vec<u8>> {
@@ -19,7 +20,13 @@ pub fn mux_video_packet(packet: &EncodedMediaPacket, pts_90khz: u64) -> Option<V
         .len()
         .saturating_add(configuration.map_or(0, <[u8]>::len));
     let mut output = Vec::with_capacity(payload_len + 128);
-    output.extend_from_slice(&pack_header(pts_90khz));
+    let scr_90khz = packet
+        .dts
+        .or(packet.pts)
+        .unwrap_or_else(|| pts_90khz.cast_signed())
+        .max(0)
+        .cast_unsigned();
+    output.extend_from_slice(&pack_header(scr_90khz));
     output.extend_from_slice(&program_stream_map(codec));
     let mut video_payload = Vec::with_capacity(payload_len);
     if packet.is_keyframe
@@ -42,13 +49,20 @@ fn pack_header(scr_90khz: u64) -> [u8; 14] {
     result[..4].copy_from_slice(&[0, 0, 1, 0xba]);
     result[4] = 0x44 | (((scr >> 30) as u8 & 0x07) << 3) | (((scr >> 28) as u8) & 0x03);
     result[5] = (scr >> 20) as u8;
-    result[6] = ((scr >> 12) as u8) | 1;
+    // This byte spans both 15-bit SCR groups: SCR[19..15], marker,
+    // SCR[14..13].
+    result[6] = (((scr >> 12) as u8) & 0xf8) | 0x04 | (((scr >> 13) as u8) & 0x03);
     result[7] = (scr >> 5) as u8;
-    result[8] = ((scr as u8) << 3) | 1;
+    // SCR[4..0] occupies bits 7..3; bit 2 is the marker before the
+    // nine-bit SCR extension (zero here).
+    result[8] = (((scr as u8) << 3) & 0xf8) | 0x04;
+    // SCR extension is zero. Its trailing marker bit remains mandatory.
     result[9] = 0x01;
-    result[10] = 0x89;
-    result[11] = 0xc3;
-    result[12] = 0xf8;
+    // Encode a 22-bit program_mux_rate followed by the two required marker
+    // bits, reserved bits and zero stuffing length.
+    result[10] = (PROGRAM_MUX_RATE >> 14) as u8;
+    result[11] = (PROGRAM_MUX_RATE >> 6) as u8;
+    result[12] = ((PROGRAM_MUX_RATE << 2) as u8 & 0xfc) | 0x03;
     result[13] = 0xf8;
     result
 }
@@ -165,5 +179,21 @@ mod tests {
         packet.track = MediaTrackKind::Audio;
         packet.codec = EncodedMediaCodec::Audio(crate::media::AudioCodec::Aac);
         assert!(mux_video_packet(&packet, 0).is_none());
+    }
+
+    #[test]
+    fn pack_header_should_set_mpeg_scr_marker_bits() {
+        let mut packet = packet(VideoCodec::H264);
+        packet.pts = None;
+        packet.dts = None;
+        let Some(output) = mux_video_packet(&packet, 0x12345) else {
+            return;
+        };
+
+        assert_eq!(&output[..4], &[0, 0, 1, 0xba]);
+        assert_eq!(
+            &output[4..14],
+            &[0x44, 0x00, 0x15, 0x1a, 0x2c, 0x01, 0x89, 0xc3, 0xfb, 0xf8]
+        );
     }
 }

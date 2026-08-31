@@ -490,6 +490,9 @@ impl MediaWorker {
                     .ensure_source_replacement_allowed()
                     .and_then(|()| Mp4MediaSource::new(path).open(looping))
                     .map(|session| self.replace_session(session));
+                if let Err(error) = &result {
+                    self.status.last_error = Some(error.to_string());
+                }
                 self.reply_status(&reply, result);
             }
             MediaCommand::Play(reply) => {

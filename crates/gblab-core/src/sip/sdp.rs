@@ -132,7 +132,7 @@ impl fmt::Display for SdpAnswer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "v=0\r\no=GBLab 1 1 IN IP4 {}\r\ns=Play\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video {} RTP/AVP {}\r\na=sendonly\r\na=rtpmap:{} PS/90000\r\ny={}\r\n",
+            "v=0\r\no=GBLab 1 1 IN IP4 {}\r\ns=Play\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video {} RTP/AVP {}\r\na=sendonly\r\na=rtpmap:{} PS/90000\r\ny={:010}\r\n",
             self.address, self.address, self.port, self.payload_type, self.payload_type, self.ssrc
         )
     }
@@ -180,5 +180,18 @@ mod tests {
         assert!(answer.contains("m=video 5000 RTP/AVP 96"));
         assert!(answer.contains("a=sendonly"));
         assert!(answer.contains("a=rtpmap:96 PS/90000"));
+    }
+
+    #[test]
+    fn answer_should_preserve_ten_digit_ssrc_with_leading_zeroes() {
+        let answer = SdpAnswer {
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 5000,
+            payload_type: 96,
+            ssrc: 20_000_001,
+        }
+        .to_string();
+
+        assert!(answer.contains("y=0020000001\r\n"));
     }
 }

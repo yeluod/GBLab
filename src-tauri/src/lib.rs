@@ -27,10 +27,18 @@ pub fn run() -> Result<(), tauri::Error> {
             let configuration_path = app_data_dir.join("gblab.config.json");
             let core = CoreService::open(&configuration_path)?;
             let media = GlobalMediaRuntime::start()?;
+            let media_configuration = core.media_configuration();
+            let mp4 = media_configuration.source.mp4;
+            if !mp4.file_path.is_empty() {
+                // 打开已保存的 MP4 只建立可点播的编码源，不附加本地预览消费者。
+                let _ = media
+                    .handle()
+                    .open_mp4(std::path::PathBuf::from(mp4.file_path), mp4.is_looping);
+            }
             let (registration, supervisor) =
                 RegistrationHandle::prepare_with_media(Some(media.handle()));
             tauri::async_runtime::spawn(supervisor);
-            let state = AppState::new(core, registration, media)?;
+            let state = AppState::new(core, registration, media);
             let mut registration_events = state.registration.subscribe();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

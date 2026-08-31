@@ -274,6 +274,10 @@ pub(super) fn dispatch_inbound_request(
     clippy::too_many_arguments,
     reason = "无状态 SIP 响应需要复用请求头和本地传输上下文"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "结构化解析和兼容回退必须在同一响应构造边界完成"
+)]
 pub(super) fn build_request_response(
     request: &str,
     status: u16,
@@ -286,6 +290,12 @@ pub(super) fn build_request_response(
     let parser = MessageParser::new(SIP_MESSAGE_LIMIT);
     if let Ok(SipMessage::Request(parsed)) = parser.parse(request.as_bytes()) {
         let method = parsed.request_line.method.to_string();
+        let request_uri_user = parsed
+            .request_line
+            .request_uri
+            .user_info
+            .as_ref()
+            .map(|user_info| user_info.user.as_str());
         let request_headers = parsed.headers;
         let mut headers = HeaderCollection::new();
         for via in request_headers.get_all(&HeaderName::Via) {
@@ -305,13 +315,16 @@ pub(super) fn build_request_response(
             };
             headers.insert(HeaderName::To, to);
         }
-        if method == "SUBSCRIBE" {
-            if let Some(expires) = request_headers.get(&HeaderName::Expires) {
+        if method == "SUBSCRIBE" || (method == "INVITE" && status / 100 == 2) {
+            if method == "SUBSCRIBE"
+                && let Some(expires) = request_headers.get(&HeaderName::Expires)
+            {
                 headers.insert(HeaderName::Expires, expires.clone());
             }
-            if let Ok(contact) =
-                SipUri::parse(&format!("sip:{device_id}@{advertised_ip}:{local_port}"))
-            {
+            let contact_user = request_uri_user.unwrap_or(device_id);
+            if let Ok(contact) = SipUri::parse(&format!(
+                "sip:{contact_user}@{advertised_ip}:{local_port};transport=udp"
+            )) {
                 headers.insert(
                     HeaderName::Contact,
                     HeaderValue::Contact(ContactHeader::new(contact)),
@@ -380,7 +393,13 @@ pub(super) fn build_request_response(
         }
         let _ = write!(
             response,
-            "Contact: <sip:{device_id}@{advertised_ip}:{local_port}>\r\n"
+            "Contact: <sip:{device_id}@{advertised_ip}:{local_port};transport=udp>\r\n"
+        );
+    }
+    if method == "INVITE" && status / 100 == 2 {
+        let _ = write!(
+            response,
+            "Contact: <sip:{device_id}@{advertised_ip}:{local_port};transport=udp>\r\n"
         );
     }
     if status == 405 {
@@ -752,6 +771,36 @@ mod tests {
         assert_eq!(
             to.tag.as_ref().map(|tag| tag.0.as_str()),
             Some("device-uas-tag")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invite_success_response_should_contain_one_contact_header()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = "INVITE sip:34020000002000999001@192.168.10.94:5060;transport=udp SIP/2.0\r\n\
+                       Via: SIP/2.0/UDP 192.168.10.91:5060;branch=z9hG4bK-invite\r\n\
+                       From: <sip:34020000002000000001@3402000000>;tag=platform-tag\r\n\
+                       To: <sip:34020000002000999001@192.168.10.94:5060>\r\n\
+                       Call-ID: invite-call\r\n\
+                       CSeq: 10 INVITE\r\n\
+                       Content-Length: 0\r\n\
+                       \r\n";
+
+        let payload = build_request_response(
+            request,
+            200,
+            "OK",
+            Some("device-uas-tag"),
+            "34020000002000000999",
+            "192.168.10.94".parse::<IpAddr>()?,
+            5060,
+        );
+
+        assert_eq!(payload.matches("Contact:").count(), 1);
+        assert!(
+            payload
+                .contains("Contact: <sip:34020000002000999001@192.168.10.94:5060;transport=udp>")
         );
         Ok(())
     }

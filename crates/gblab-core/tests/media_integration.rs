@@ -11,8 +11,8 @@ use std::{
 
 use gblab_core::media::{
     AudioCodec, BackpressurePolicy, CodecConfigurationFormat, EncodedMediaCodec,
-    GlobalMediaRuntime, MediaConsumerKind, MediaSourceStatus, MediaTrackKind, VideoCodec,
-    probe_mp4,
+    GlobalMediaRuntime, MediaConsumerKind, MediaCoordinatorConfig, MediaSessionCoordinator,
+    MediaSourceStatus, MediaTrackKind, VideoCodec, probe_mp4,
 };
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -164,6 +164,41 @@ fn encoded_video_should_contain_real_annex_b_bytes() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn completed_live_source_should_restart_for_the_next_dialog()
+-> Result<(), Box<dyn std::error::Error>> {
+    let runtime = GlobalMediaRuntime::start()?;
+    let handle = runtime.handle();
+    handle.open_mp4(asset("h264-noaudio.mp4"), false)?;
+    let coordinator =
+        MediaSessionCoordinator::new(handle.clone(), MediaCoordinatorConfig::default());
+
+    let first_receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    coordinator
+        .start("first-dialog", first_receiver.local_addr()?, 1)
+        .await?;
+    assert!(coordinator.activate("first-dialog").await);
+    let mut packet = [0_u8; 2_048];
+    tokio::time::timeout(Duration::from_secs(2), first_receiver.recv(&mut packet)).await??;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while handle.status().source_status != MediaSourceStatus::Stopped && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(handle.status().source_status, MediaSourceStatus::Stopped);
+
+    let second_receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    coordinator
+        .start("second-dialog", second_receiver.local_addr()?, 2)
+        .await?;
+    assert!(coordinator.activate("second-dialog").await);
+    tokio::time::timeout(Duration::from_secs(2), second_receiver.recv(&mut packet)).await??;
+
+    coordinator.stop_all().await;
+    runtime.shutdown()?;
+    Ok(())
 }
 
 #[test]
