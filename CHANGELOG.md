@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.0](https://github.com/yeluod/GBLab/compare/v0.6.0...v0.7.0) (2026-08-31)
+
+
+### Features
+
+* **media:** 完成 MP4 媒体核心与桌面构建链路 ([#12](https://github.com/yeluod/GBLab/issues/12)) ([532bbb9](https://github.com/yeluod/GBLab/commit/532bbb9bd5f21dae014233a0c85955f56d5b8919))
+
+## [0.6.0](https://github.com/yeluod/GBLab/compare/v0.5.0...v0.6.0) (2026-08-31)
+
+
+### Features
+
+* **media:** 完成 MP4 媒体核心与桌面构建链路 ([#10](https://github.com/yeluod/GBLab/issues/10)) ([a33b0d2](https://github.com/yeluod/GBLab/commit/a33b0d2bcf102ae33e6abf138cded8fdc1aac91e))
+
+## [0.5.0](https://github.com/yeluod/GBLab/compare/v0.4.0...v0.5.0) (2026-08-31)
+
+
+### Features
+
+* **media:** 完成 MP4 媒体核心与桌面构建发布体系 ([#6](https://github.com/yeluod/GBLab/issues/6)) ([cd364ea](https://github.com/yeluod/GBLab/commit/cd364ea9bae9ab40fb999650453300cb49554686))
+* **media:** 完成 MP4 媒体核心与桌面构建发布体系 ([#8](https://github.com/yeluod/GBLab/issues/8)) ([282a378](https://github.com/yeluod/GBLab/commit/282a37848dadbf6a554a7fd5b8b59f503263dadf))
+
 ## [0.4.0](https://github.com/yeluod/GBLab/compare/v0.3.0...v0.4.0) (2026-08-27)
 
 
