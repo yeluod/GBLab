@@ -7,6 +7,12 @@ export {
 } from './interaction-log';
 export type { InteractionMessageType } from './interaction-log';
 export {
+  formatInteractionMessage,
+  MAX_FORMATTABLE_MESSAGE_LENGTH,
+  xmlHighlighter,
+} from './interaction-message';
+export type { InteractionMessageView } from './interaction-message';
+export {
   alarmMethodOptions,
   alarmPriorityOptions,
   getAlarmTypeOptions,

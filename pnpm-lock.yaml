@@ -14,6 +14,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2.4.0
         version: 2.7.2
+      highlight.js:
+        specifier: 11.12.0
+        version: 11.12.0
       naive-ui:
         specifier: 2.45.2
         version: 2.45.2(vue@3.5.41(typescript@6.0.3))

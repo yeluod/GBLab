@@ -417,6 +417,71 @@ select {
   word-break: break-word;
 }
 
+.interaction-message-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.interaction-message-view-switch {
+  display: flex;
+  gap: 6px;
+}
+
+.interaction-message-hint {
+  margin: 0 0 10px;
+  color: #a16207;
+  font-size: 0.78rem;
+}
+
+.interaction-message-formatted {
+  padding: 0;
+  white-space: normal;
+}
+
+.interaction-message-headers,
+.interaction-message-xml {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  font: inherit;
+  white-space: pre;
+}
+
+.interaction-message-headers {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.interaction-message-xml {
+  color: #334155;
+}
+
+.interaction-message-xml .__code__ {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  background: transparent;
+  font: inherit;
+  white-space: pre;
+}
+
+.interaction-message-xml .hljs-tag,
+.interaction-message-xml .hljs-name,
+.interaction-message-xml .hljs-attr {
+  color: #0369a1;
+}
+
+.interaction-message-xml .hljs-string {
+  color: #15803d;
+}
+
+.interaction-message-xml .hljs-comment {
+  color: #64748b;
+}
+
 .table-actions {
   display: flex;
   gap: 2px;
