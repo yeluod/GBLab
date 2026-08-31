@@ -222,7 +222,7 @@ pub struct EncodedStreamDescriptor {
     pub configuration_format: Option<CodecConfigurationFormat>,
 }
 
-/// Packet ready for recorder, live-session and preview consumers.
+/// Packet ready for live-session and preview consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedMediaPacket {
     /// Logical track kind, independent from container stream indices.

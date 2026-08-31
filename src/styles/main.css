@@ -649,6 +649,18 @@ select {
   overflow: hidden;
 }
 
+.media-config-column {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-width: thin;
+}
+
 .media-config-panel,
 .media-monitor-panel {
   min-width: 0;
@@ -664,9 +676,18 @@ select {
   border-right: 1px solid #e2e8f0;
 }
 
+.media-config-column .media-config-panel,
+.media-config-column .media-information-section {
+  border-right: 0;
+}
+
 .media-monitor-panel {
   background: #f8fafc;
   overflow-y: auto;
+}
+
+.media-monitor-panel .preview-section {
+  min-width: 0;
 }
 
 .media-section-heading {
@@ -721,10 +742,6 @@ select {
   margin-top: 8px;
 }
 
-.recording-grid {
-  grid-template-columns: minmax(0, 1.6fr) minmax(150px, 0.4fr);
-}
-
 .media-config-panel .n-input-number,
 .media-config-panel .n-select,
 .media-config-panel .n-input-group {
@@ -736,6 +753,7 @@ select {
   display: flex;
   min-height: 0;
   aspect-ratio: 16 / 9;
+  max-height: 460px;
   align-items: center;
   justify-content: center;
   overflow: hidden;
@@ -829,6 +847,10 @@ select {
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #fff;
+}
+
+.media-detail-grid .runtime-section {
+  grid-column: 1 / -1;
 }
 
 .media-info-list dt,

@@ -104,7 +104,6 @@ export interface SubscriptionSnapshot {
     | 'deviceInfo'
     | 'deviceStatus'
     | 'deviceControl'
-    | 'recordInfo'
     | 'alarm'
     | 'mobilePosition'
     | 'keepalive'

@@ -3,6 +3,7 @@
   import { NAlert, NButton, NCard, NTag, useMessage } from 'naive-ui';
 
   import MediaSourceForm from '@/features/media/components/media-source-form.vue';
+  import MediaInformationPanel from '@/features/media/components/media-information-panel.vue';
   import MediaStatusPanel from '@/features/media/components/media-status-panel.vue';
   import { MediaSourceStatus, useMediaStore } from '@/features/media';
   import AppIcon from '@/shared/components/app-icon.vue';
@@ -57,16 +58,21 @@
 
     <NCard class="media-workbench" content-style="padding: 0;">
       <div class="media-workbench-body">
-        <MediaSourceForm
-          v-model:config="store.draftConfig"
-          :field-errors="store.fieldErrors"
-          :is-probing="store.isProbing"
-          @select-mp4="runOperation(store.selectMp4)"
-          @probe-mp4="runOperation(store.probeCurrentMp4, '媒体信息检测完成。')"
-        />
+        <div class="media-config-column">
+          <MediaSourceForm
+            v-model:config="store.draftConfig"
+            :field-errors="store.fieldErrors"
+            :is-probing="store.isProbing"
+            @select-mp4="runOperation(store.selectMp4)"
+            @probe-mp4="runOperation(store.probeCurrentMp4, '媒体信息检测完成。')"
+          />
+          <MediaInformationPanel
+            :runtime-status="store.runtimeStatus"
+            :probe-result="store.probeResult"
+          />
+        </div>
         <MediaStatusPanel
           :runtime-status="store.runtimeStatus"
-          :probe-result="store.probeResult"
           :is-preview-pending="store.isPreviewPending"
           :can-start-preview="store.canStartPreview"
           :preview-frame="store.previewFrame"
