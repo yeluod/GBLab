@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/yeluod/GBLab/compare/v0.5.0...v0.6.0) (2026-08-31)
+
+
+### Features
+
+* **media:** 完成 MP4 媒体核心与桌面构建链路 ([#10](https://github.com/yeluod/GBLab/issues/10)) ([a33b0d2](https://github.com/yeluod/GBLab/commit/a33b0d2bcf102ae33e6abf138cded8fdc1aac91e))
+
 ## [0.5.0](https://github.com/yeluod/GBLab/compare/v0.4.0...v0.5.0) (2026-08-31)
 
 
