@@ -106,10 +106,10 @@ impl MediaSessionCoordinator {
     /// Returns whether a configured MP4 source can provide encoded packets.
     #[must_use]
     pub fn source_available(&self) -> bool {
-        !matches!(
-            self.media.status().source_status,
-            super::MediaSourceStatus::Unconfigured
-        )
+        let status = self.media.status();
+        !matches!(status.source_status, super::MediaSourceStatus::Unconfigured)
+            && status.video.is_some()
+            && status.last_error.is_none()
     }
 
     /// Stops a session and releases its Live subscription.

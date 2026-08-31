@@ -282,12 +282,26 @@ pub async fn save_media_configuration(
         return Err(CommandErrorDto::registration_active());
     }
     let core = Arc::clone(&state.core);
+    let media = state.media.handle();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut core = core
-            .write()
-            .map_err(|_| CommandErrorDto::state_unavailable())?;
-        core.save_media_configuration(configuration)
-            .map_err(|error| CommandErrorDto::from_core(&error))
+        let saved = {
+            let mut core = core
+                .write()
+                .map_err(|_| CommandErrorDto::state_unavailable())?;
+            core.save_media_configuration(configuration)
+                .map_err(|error| CommandErrorDto::from_core(&error))?
+        };
+        let mp4 = &saved.source.mp4;
+        if mp4.file_path.is_empty() {
+            media
+                .close()
+                .map_err(|error| CommandErrorDto::media(&error))?;
+        } else {
+            media
+                .open_mp4(std::path::PathBuf::from(&mp4.file_path), mp4.is_looping)
+                .map_err(|error| CommandErrorDto::media(&error))?;
+        }
+        Ok(saved)
     })
     .await
     .map_err(|_| CommandErrorDto::task_failed())?

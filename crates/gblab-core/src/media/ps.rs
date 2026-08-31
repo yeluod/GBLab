@@ -19,7 +19,13 @@ pub fn mux_video_packet(packet: &EncodedMediaPacket, pts_90khz: u64) -> Option<V
         .len()
         .saturating_add(configuration.map_or(0, <[u8]>::len));
     let mut output = Vec::with_capacity(payload_len + 128);
-    output.extend_from_slice(&pack_header(pts_90khz));
+    let scr_90khz = packet
+        .dts
+        .or(packet.pts)
+        .unwrap_or_else(|| pts_90khz.cast_signed())
+        .max(0)
+        .cast_unsigned();
+    output.extend_from_slice(&pack_header(scr_90khz));
     output.extend_from_slice(&program_stream_map(codec));
     let mut video_payload = Vec::with_capacity(payload_len);
     if packet.is_keyframe

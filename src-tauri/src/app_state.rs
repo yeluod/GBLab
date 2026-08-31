@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use gblab_core::{CoreService, GlobalMediaRuntime, MediaError, runtime::RegistrationHandle};
+use gblab_core::{CoreService, GlobalMediaRuntime, runtime::RegistrationHandle};
 
 pub struct AppState {
     pub core: Arc<RwLock<CoreService>>,
@@ -18,14 +18,14 @@ impl AppState {
         core: CoreService,
         registration: RegistrationHandle,
         media: GlobalMediaRuntime,
-    ) -> Result<Self, MediaError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             core: Arc::new(RwLock::new(core)),
             registration,
             media,
             operation_gate: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
-        })
+        }
     }
 
     pub fn try_operation(&self) -> Option<OperationGuard<'_>> {
