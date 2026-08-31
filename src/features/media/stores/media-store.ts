@@ -303,10 +303,19 @@ export const useMediaStore = defineStore('media', () => {
   }
 
   async function seekPreview(positionSeconds: number): Promise<MediaOperationResult> {
+    const wasPreviewing = runtimeStatus.value.sourceStatus === MediaSourceStatus.Previewing;
+    preview.beginSeek();
     try {
       runtimeStatus.value = await service.seek(positionSeconds);
       if (runtimeStatus.value.sourceStatus === MediaSourceStatus.Paused) {
         await preview.step();
+      } else if (
+        wasPreviewing &&
+        runtimeStatus.value.sourceStatus === MediaSourceStatus.Previewing
+      ) {
+        // A frame that was in flight before seek is discarded by the controller. Restart
+        // the loop only after the backend has established the new timeline.
+        preview.start();
       }
       return { ok: true };
     } catch (error) {

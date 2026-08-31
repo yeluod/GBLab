@@ -302,7 +302,9 @@ select {
 }
 
 .media-page {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .device-workspace {
@@ -628,6 +630,7 @@ select {
 }
 
 .media-workbench {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -752,8 +755,8 @@ select {
   position: relative;
   display: flex;
   min-height: 0;
+  width: 100%;
   aspect-ratio: 16 / 9;
-  max-height: 460px;
   align-items: center;
   justify-content: center;
   overflow: hidden;
@@ -764,6 +767,21 @@ select {
     linear-gradient(#dceaf0 1px, transparent 1px),
     linear-gradient(90deg, #dceaf0 1px, transparent 1px), #eef5f7;
   background-size: 26px 26px;
+}
+
+.player-shell {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d9e3ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.player-shell .mock-preview-surface {
+  border: 0;
+  border-radius: 4px;
 }
 
 .mock-preview-surface strong,
@@ -816,9 +834,9 @@ select {
 
 .preview-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
-  margin-top: 12px;
 }
 
 .preview-actions span {
@@ -929,5 +947,20 @@ select {
 
   .media-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .media-workbench-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .media-config-column,
+  .media-monitor-panel {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .media-monitor-panel {
+    border-top: 1px solid #e2e8f0;
   }
 }

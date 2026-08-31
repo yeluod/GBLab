@@ -13,10 +13,22 @@ export function createPreviewController(
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let frameLoopActive = false;
   let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  let timelineGeneration = 0;
 
   function applyFrame(frame: MediaVideoFrame): void {
     previewFrame.value = frame;
-    runtimeStatus.value.positionSeconds = frame.positionSeconds;
+    const previousPosition = runtimeStatus.value.positionSeconds;
+    const isPlaying = runtimeStatus.value.sourceStatus === MediaSourceStatus.Previewing;
+    const isLoopReset =
+      isPlaying &&
+      runtimeStatus.value.durationSeconds !== null &&
+      frame.positionSeconds + 0.5 < previousPosition;
+    // Decoder timestamps can briefly move backwards around reordered frames. Keep the
+    // visible playback clock monotonic, while still allowing a real loop to reset it.
+    runtimeStatus.value.positionSeconds =
+      isPlaying && !isLoopReset
+        ? Math.max(previousPosition, frame.positionSeconds)
+        : frame.positionSeconds;
     runtimeStatus.value.decodedFrames += 1;
   }
 
@@ -29,13 +41,28 @@ export function createPreviewController(
     if (clearFrame) previewFrame.value = null;
   }
 
+  /** Invalidates in-flight reads so a frame from before seek cannot rewind the UI. */
+  function beginSeek(): void {
+    timelineGeneration += 1;
+  }
+
   function start(): void {
     stop(false);
     frameLoopActive = true;
     const refreshStatus = async (): Promise<void> => {
       if (!frameLoopActive) return;
+      const generation = timelineGeneration;
       try {
-        runtimeStatus.value = await service.getRuntimeStatus();
+        const nextStatus = await service.getRuntimeStatus();
+        if (!frameLoopActive || generation !== timelineGeneration) {
+          return;
+        }
+        // 播放期间位置由逐帧时钟推进；状态轮询可能晚于 readFrame 返回，不能覆盖更新的进度。
+        if (runtimeStatus.value.sourceStatus === MediaSourceStatus.Previewing) {
+          nextStatus.positionSeconds = runtimeStatus.value.positionSeconds;
+          nextStatus.decodedFrames = runtimeStatus.value.decodedFrames;
+        }
+        runtimeStatus.value = nextStatus;
       } catch (error) {
         stop();
         onFailure(error);
@@ -53,9 +80,13 @@ export function createPreviewController(
     };
     const read = async (): Promise<void> => {
       if (!frameLoopActive) return;
+      const generation = timelineGeneration;
       try {
         const frame = await service.readFrame();
         if (!frameLoopActive) return;
+        if (generation !== timelineGeneration) {
+          return;
+        }
         if (frame !== null) applyFrame(frame);
       } catch (error) {
         stop();
@@ -78,5 +109,5 @@ export function createPreviewController(
     if (frame !== null) applyFrame(frame);
   }
 
-  return { previewFrame, start, stop, step };
+  return { previewFrame, start, stop, step, beginSeek };
 }
