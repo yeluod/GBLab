@@ -51,15 +51,24 @@ runs:
       with:
         toolchain: ${{ steps.versions.outputs.rust }}
         components: ${{ inputs.rust-components }}
-    - name: Restore Rust dependency and target cache
+    - name: Restore Cargo dependency cache
       if: ${{ inputs.rust == 'true' }}
       uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          target
-        key: gblab-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', 'toolchains/ffmpeg-sdk.lock.json') }}
+        key: gblab-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+        restore-keys: |
+          gblab-cargo-${{ runner.os }}-${{ runner.arch }}-
+    - name: Restore Rust target cache
+      if: ${{ inputs.rust == 'true' }}
+      uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+      with:
+        path: target
+        key: gblab-target-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', 'toolchains/ffmpeg-sdk.lock.json') }}
+        restore-keys: |
+          gblab-target-${{ runner.os }}-${{ runner.arch }}-
     - name: Install frontend dependencies
       if: ${{ inputs.frontend == 'true' }}
       shell: bash

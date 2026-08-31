@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-binary="${1:?Usage: rewrite-ffmpeg-macos.sh <binary> [framework-dir] [source-framework-dir]}"
+binary="${1:?Usage: rewrite-ffmpeg-macos.sh <binary> [framework-dir]}"
 framework_dir="${2:-target/release/Frameworks}"
-source_framework_dir="${3:-.ffmpeg-sdk/macos/frameworks}"
 [[ -f "$binary" ]] || { printf 'Binary not found: %s\n' "$binary" >&2; exit 1; }
-[[ -d "$source_framework_dir" ]] || { printf 'FFmpeg framework directory not found: %s\n' "$source_framework_dir" >&2; exit 1; }
-mkdir -p "$framework_dir"
-cp -Lf "$source_framework_dir"/*.dylib "$framework_dir/"
+[[ -d "$framework_dir" ]] || { printf 'FFmpeg framework directory not found: %s\n' "$framework_dir" >&2; exit 1; }
 if ! otool -l "$binary" | grep -q '@executable_path/../Frameworks'; then install_name_tool -add_rpath '@executable_path/../Frameworks' "$binary"; fi
 rewrite_ffmpeg_dependencies() {
   local file="$1"
@@ -33,8 +30,5 @@ for library in "$framework_dir"/*.dylib; do
   # Normalize the install name again after copying into the final artifact.
   install_name_tool -id "@rpath/$base" "$library"
   rewrite_ffmpeg_dependencies "$library"
-  if otool -L "$library" | grep -Eq '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated dependency found in %s\n' "$library" >&2; exit 1; fi
 done
-if otool -L "$binary" | grep -Eq '/opt/homebrew|/usr/local|/Users/runner'; then printf 'Unrelocated FFmpeg dependency found in %s\n' "$binary" >&2; exit 1; fi
-if otool -L "$binary" | grep -Eq 'ffmpeg\.exe|ffprobe\.exe|ffplay\.exe'; then printf 'FFmpeg CLI dependency found in %s\n' "$binary" >&2; exit 1; fi
-printf 'macOS FFmpeg linkage verified: %s\n' "$binary"
+bash "$(dirname "$0")/verify-macos-linkage.sh" "$binary" "$framework_dir"

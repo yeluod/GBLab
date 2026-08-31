@@ -97,7 +97,7 @@ jobs:
       - name: Verify macOS linkage
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
-        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks .ffmpeg-sdk/macos/frameworks
+        run: bash scripts/rewrite-ffmpeg-macos.sh target/release/gblab-desktop target/release/Frameworks
       - name: Verify Windows linkage
         if: ${{ matrix.platform == 'windows' }}
         shell: pwsh
@@ -115,47 +115,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          compgen -G 'target/release/bundle/dmg/*.dmg' >/dev/null || { echo 'No macOS DMG generated.' >&2; exit 1; }
-          compgen -G 'target/release/bundle/macos/*.app' >/dev/null || { echo 'No macOS app generated.' >&2; exit 1; }
           app="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          compgen -G "$app/Contents/Frameworks/*.dylib" >/dev/null || { echo 'Final macOS app has no bundled FFmpeg dylibs.' >&2; exit 1; }
-          test -f "$app/Contents/Resources/manifest.json" || { echo 'Final macOS app is missing FFmpeg manifest.' >&2; exit 1; }
-          test -f "$app/Contents/Resources/FFMPEG-LICENSE.txt" || { echo 'Final macOS app is missing FFmpeg license.' >&2; exit 1; }
-          ! grep -R -n -E '/opt/homebrew|/usr/local|/Users/runner' "$app/Contents/Frameworks" >/dev/null || { echo 'Final macOS app contains a build-machine absolute path.' >&2; exit 1; }
+          dmg="$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          bash scripts/verify-macos-bundle.sh "$app" "$dmg"
       - name: Verify Windows artifacts
         if: ${{ inputs.bundle && matrix.platform == 'windows' }}
         shell: pwsh
-        run: |
-          if ($null -eq (Get-ChildItem 'target/release/bundle/nsis/*-setup.exe' -File | Select-Object -First 1)) { throw 'No Windows NSIS installer generated.' }
-          if ($null -eq (Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1)) { throw 'No Windows MSI installer generated.' }
-          $msi = Get-ChildItem 'target/release/bundle/msi/*.msi' -File | Select-Object -First 1
-          $extractRoot = Join-Path $env:RUNNER_TEMP 'gblab-msi-contents'
-          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$extractRoot`"")
-          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed with exit code $($process.ExitCode)." }
-          $bundleFiles = Get-ChildItem $extractRoot -File -Recurse
-          $application = $bundleFiles | Where-Object { $_.Name -eq 'gblab-desktop.exe' } | Select-Object -First 1
-          if ($null -eq $application) { throw 'Extracted MSI is missing gblab-desktop.exe.' }
-          $lock = Get-Content -Raw 'toolchains/ffmpeg-sdk.lock.json' | ConvertFrom-Json
-          foreach ($name in $lock.requiredLibraries) {
-            if ($null -eq ($bundleFiles | Where-Object { $_.Name -like "*$name*.dll" } | Select-Object -First 1)) { throw "Extracted MSI is missing FFmpeg DLL: $name" }
-          }
-          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'manifest.json' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg manifest.' }
-          if ($null -eq ($bundleFiles | Where-Object { $_.Name -eq 'FFMPEG-LICENSE.txt' } | Select-Object -First 1)) { throw 'Extracted MSI is missing FFmpeg license.' }
-          if ($bundleFiles.Name -match '^(ffmpeg|ffprobe|ffplay)\.exe$') { throw 'Extracted MSI must not contain FFmpeg CLI executables.' }
-          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-          if ($null -ne $dumpbin) {
-            $headers = & $dumpbin.Source /HEADERS $application.FullName | Out-String
-            if ($headers -notmatch 'machine \(x64\)') { throw 'Extracted application executable is not x64.' }
-          } else {
-            $bytes = [System.IO.File]::ReadAllBytes($application.FullName)
-            if ($bytes.Length -lt 64) { throw 'Extracted application executable is too small to be a PE file.' }
-            $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
-            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw 'Extracted application executable has an invalid PE header.' }
-            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0x00 -or $bytes[$peOffset + 3] -ne 0x00) { throw 'Extracted application executable is not a PE file.' }
-            $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
-            if ($machine -ne 0x8664) { throw 'Extracted application executable is not x64.' }
-          }
+        run: ./scripts/verify-windows-artifact.ps1
       - name: Upload macOS artifacts
         if: ${{ inputs.bundle && matrix.platform == 'macos' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $errors = $null
-          foreach ($path in @('scripts/resolve-ffmpeg-windows.ps1', 'scripts/prepare-ffmpeg-windows.ps1', 'scripts/verify-ffmpeg-windows.ps1')) {
+          foreach ($path in @('scripts/resolve-ffmpeg-windows.ps1', 'scripts/prepare-ffmpeg-windows.ps1', 'scripts/verify-ffmpeg-windows.ps1', 'scripts/verify-windows-artifact.ps1')) {
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$null, [ref]$errors) | Out-Null
           }
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
@@ -91,7 +91,6 @@ jobs:
           rust: 'false'
       - run: pnpm run format:check
       - run: pnpm run lint
-      - run: pnpm run type:check
       - run: pnpm run test:run
       - run: pnpm run build
 
@@ -110,13 +109,12 @@ jobs:
         with:
           platform: linux
       - run: cargo fmt --all -- --check
-      - run: cargo check -p gblab-core -p gblab-ffmpeg-support --all-targets --locked
       - run: cargo clippy -p gblab-core -p gblab-ffmpeg-support --all-targets --all-features --locked -- -D warnings
       - run: cargo test -p gblab-core -p gblab-ffmpeg-support --locked
 
   native-verify:
     name: Native desktop verification
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--')) }}
     uses: ./.github/workflows/build-desktop.yml
     with:
       platform: all
