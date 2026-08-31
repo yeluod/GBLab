@@ -179,6 +179,16 @@ pub(super) fn request_method(payload: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Returns the user part of a SIP Request-URI, used by INVITE to target a channel.
+pub(super) fn request_uri_user(request: &SipRequest) -> Option<String> {
+    request
+        .request_line
+        .request_uri
+        .user_info
+        .as_ref()
+        .map(|user_info| user_info.user.clone())
+}
+
 pub(super) fn resolve_device_and_channel(
     requested_id: &str,
     devices: &HashMap<String, SimulatedDevice>,
@@ -548,7 +558,7 @@ mod tests {
         domain::{DeviceId, DeviceIdError},
     };
 
-    use super::{SIP_MESSAGE_LIMIT, build_catalog_body, build_request_response};
+    use super::{SIP_MESSAGE_LIMIT, build_catalog_body, build_request_response, request_uri_user};
 
     fn simulated_device(channel_count: u16) -> Result<SimulatedDevice, DeviceIdError> {
         Ok(SimulatedDevice {
@@ -603,6 +613,23 @@ mod tests {
                 .device_list
                 .iter()
                 .all(|item| item.device_id.as_str() != "34020000002000000100")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invite_request_uri_should_expose_channel_id() -> Result<(), Box<dyn std::error::Error>> {
+        let request = "INVITE sip:34020000002000999001@192.168.10.94:5060;transport=udp SIP/2.0\r\n\
+                       Call-ID: invite-call\r\n\
+                       CSeq: 41 INVITE\r\n\
+                       Content-Length: 0\r\n\r\n";
+        let parsed = MessageParser::new(SIP_MESSAGE_LIMIT).parse(request.as_bytes())?;
+        let SipMessage::Request(request) = parsed else {
+            return Err("应构造 SIP Request".into());
+        };
+        assert_eq!(
+            request_uri_user(&request).as_deref(),
+            Some("34020000002000999001")
         );
         Ok(())
     }

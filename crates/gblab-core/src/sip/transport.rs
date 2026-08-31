@@ -31,8 +31,9 @@ use super::{
         InboundRequestDisposition, SIP_MESSAGE_LIMIT, accept_sip_success, build_channel_index,
         build_request_response, dispatch_inbound_request, extract_header, header_u32_value,
         invite_key_from_cancel, payload_command_type, request_body_text, request_call_id,
-        request_method, resolve_device_and_channel, response_class, structured_header_value,
-        transaction_key_from_request, transaction_key_from_response, xml_metadata,
+        request_method, request_uri_user, resolve_device_and_channel, response_class,
+        structured_header_value, transaction_key_from_request, transaction_key_from_response,
+        xml_metadata,
     },
     registration::{
         CachedServerResponse, InviteServerTransaction, InviteServerTransactionState,
@@ -126,11 +127,17 @@ impl SipRegistrationClient {
                     }
                 }
                 let body = request_body_text(&request);
+                let method = Some(request.request_line.method.to_string());
                 let (requested_id, parsed_command_type) = xml_metadata(&body);
-                let requested_id = requested_id.unwrap_or_default();
+                let requested_id = requested_id
+                    .or_else(|| {
+                        (method.as_deref() == Some("INVITE"))
+                            .then(|| request_uri_user(&request))
+                            .flatten()
+                    })
+                    .unwrap_or_default();
                 let (device_id, channel_id) =
                     resolve_device_and_channel(&requested_id, &catalog_devices, &channel_index);
-                let method = Some(request.request_line.method.to_string());
                 let is_subscribe = method.as_deref() == Some("SUBSCRIBE");
                 let command_type = parsed_command_type;
                 let event =
