@@ -5,7 +5,10 @@ use std::future::Future;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::{SimulatedDevice, SipServiceConfiguration};
+use crate::{
+    SimulatedDevice, SipServiceConfiguration,
+    media::{GlobalMediaHandle, MediaCoordinatorConfig, MediaSessionCoordinator},
+};
 
 use super::{
     registration::{
@@ -33,6 +36,13 @@ impl RegistrationHandle {
     ///
     /// 调用方必须将返回的 `Future` 提交给自身的异步运行时执行。
     pub fn prepare() -> (Self, impl Future<Output = ()> + Send + 'static) {
+        Self::prepare_with_media(None)
+    }
+
+    /// Creates a registration runtime with optional real-time media support.
+    pub fn prepare_with_media(
+        media: Option<GlobalMediaHandle>,
+    ) -> (Self, impl Future<Output = ()> + Send + 'static) {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_EVENT_QUEUE_CAPACITY);
         let (snapshot_tx, snapshot_rx) = watch::channel(RegistrationSnapshot::default());
@@ -45,6 +55,9 @@ impl RegistrationHandle {
             snapshot_tx,
             event_tx.clone(),
             shutdown.clone(),
+            media.map(|handle| {
+                MediaSessionCoordinator::new(handle, MediaCoordinatorConfig::default())
+            }),
         );
         (
             Self {

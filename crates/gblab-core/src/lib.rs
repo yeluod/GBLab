@@ -25,6 +25,7 @@ pub use domain::{
 };
 pub use error::{CoreError, Result};
 pub use media::{
-    AudioSinkInfo, AudioSinkStatus, GlobalMediaHandle, GlobalMediaRuntime, MediaError, MediaResult,
-    MediaRuntimeStatus, MediaVideoFrame, Mp4ProbeResult, probe_mp4,
+    AudioSinkInfo, AudioSinkStatus, GlobalMediaHandle, GlobalMediaRuntime, MediaCoordinatorConfig,
+    MediaError, MediaResult, MediaRuntimeStatus, MediaSession, MediaSessionCoordinator,
+    MediaSessionStats, MediaVideoFrame, Mp4ProbeResult, RtpPacketizer, mux_video_packet, probe_mp4,
 };
