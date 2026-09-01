@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "gblab-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "bytes",
  "cpal",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "gblab-desktop"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "gblab-core",
  "serde",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "gblab-ffmpeg-support"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "rsmpeg",
 ]
