@@ -186,6 +186,13 @@ pub(super) async fn run_registration_operation(
         }
     }
 
+    // A stop request may arrive while the initial REGISTER batch is still in
+    // flight.  Those tasks hold client/event-channel clones; they must be
+    // aborted and joined before the transport forwarder can observe channel
+    // closure and before OperationFinished is emitted.
+    registration_tasks.abort_all();
+    while registration_tasks.join_next().await.is_some() {}
+
     transient_tasks.abort_all();
     while transient_tasks.join_next().await.is_some() {}
 
@@ -237,6 +244,11 @@ pub(super) async fn run_registration_operation(
     let _ = business_task.await;
     transport_cancellation.cancel();
     let _ = receiver_task.await;
+    // OperationExecutor owns another client clone for refresh/keepalive
+    // dispatch. Release it before waiting for the event forwarder; otherwise
+    // its event sender keeps the channel alive and OperationFinished cannot
+    // reach the supervisor.
+    drop(executor);
     client.clear_server_transactions().await;
     drop(client);
     let _ = transport_forward_task.await;
