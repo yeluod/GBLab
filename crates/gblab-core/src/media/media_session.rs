@@ -61,6 +61,7 @@ impl MediaSession {
         let task = tokio::spawn(async move {
             let mut packetizer = RtpPacketizer::new(0, 0, ssrc, payload_type, mtu);
             let mut stats = MediaSessionStats::default();
+            let mut waiting_for_keyframe = true;
             let mut activation = activation_rx;
             if !*activation.borrow() {
                 let activated = tokio::select! {
@@ -98,11 +99,20 @@ impl MediaSession {
                 () = task_cancellation.cancelled() => None,
                 packet = subscription.recv() => packet,
             } {
+                // A newly negotiated ZLM session cannot decode an inter-frame
+                // until it has received an IDR and its parameter sets.  The
+                // subscription may contain packets queued before SIP ACK, so
+                // discard those inter-frames and begin the RTP stream at the
+                // first random-access point.
+                if !accept_media_packet(&mut waiting_for_keyframe, packet.is_keyframe) {
+                    continue;
+                }
                 // RTP and MPEG-PS SCR follow decode order.  Using PTS here makes
                 // B-frame sources publish timestamps that move backwards (for
                 // example 0, 0.4, 0.2, 0.1), which causes downstream FLV muxers
-                // to buffer and render with visible stalls.  PES PTS remains the
-                // presentation timestamp passed to the PS muxer below.
+                // to buffer and render with visible stalls.  The PS muxer
+                // receives both PTS and DTS so downstream FLV remuxers retain
+                // the source decode order.
                 let decode_timestamp = packet.dts.or(packet.pts).unwrap_or_default();
                 let decode_timestamp = decode_timestamp.max(0).cast_unsigned();
                 let presentation_timestamp =
@@ -152,5 +162,28 @@ impl MediaSession {
         };
         let _ = self.media.unsubscribe(self.subscription_id);
         stats
+    }
+}
+
+const fn accept_media_packet(waiting_for_keyframe: &mut bool, is_keyframe: bool) -> bool {
+    if *waiting_for_keyframe && !is_keyframe {
+        return false;
+    }
+    *waiting_for_keyframe = false;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accept_media_packet;
+
+    #[test]
+    fn media_session_should_discard_interframes_before_first_keyframe() {
+        let mut waiting_for_keyframe = true;
+        assert!(!accept_media_packet(&mut waiting_for_keyframe, false));
+        assert!(waiting_for_keyframe);
+        assert!(accept_media_packet(&mut waiting_for_keyframe, true));
+        assert!(!waiting_for_keyframe);
+        assert!(accept_media_packet(&mut waiting_for_keyframe, false));
     }
 }

@@ -21,7 +21,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::sdp::{SdpAnswer, SdpOffer};
+use super::sdp::{SdpAnswer, SdpError, SdpOffer};
 use crate::SimulatedDevice;
 use crate::media::MediaSessionCoordinator;
 
@@ -589,6 +589,22 @@ impl SipRegistrationClient {
                 self.local_port,
             ));
         }
+        if let Some(content_type) = structured_header_value(request, &HeaderName::ContentType)
+            && !content_type
+                .split(';')
+                .next()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/sdp"))
+        {
+            return Some(build_request_response(
+                raw,
+                415,
+                "Unsupported Media Type",
+                None,
+                device_id,
+                self.advertised_ip,
+                self.local_port,
+            ));
+        }
         if !media.source_available() {
             return Some(build_request_response(
                 raw,
@@ -600,16 +616,25 @@ impl SipRegistrationClient {
                 self.local_port,
             ));
         }
-        let Ok(offer) = SdpOffer::parse(&request_body_text(request)) else {
-            return Some(build_request_response(
-                raw,
-                488,
-                "Not Acceptable Here",
-                None,
-                device_id,
-                self.advertised_ip,
-                self.local_port,
-            ));
+        let offer = match SdpOffer::parse(&request_body_text(request)) {
+            Ok(offer) => offer,
+            Err(error) => {
+                let (status, reason) = match error {
+                    SdpError::Missing(_) | SdpError::Invalid(_) => (400, "Bad Request"),
+                    SdpError::UnsupportedVideo
+                    | SdpError::UnsupportedDirection(_)
+                    | SdpError::UnsupportedTransport(_) => (488, "Not Acceptable Here"),
+                };
+                return Some(build_request_response(
+                    raw,
+                    status,
+                    reason,
+                    None,
+                    device_id,
+                    self.advertised_ip,
+                    self.local_port,
+                ));
+            }
         };
         let remote = std::net::SocketAddr::new(offer.remote_address, offer.remote_port);
         let call_id = request_call_id(request)?;
@@ -618,7 +643,10 @@ impl SipRegistrationClient {
                 hash.wrapping_mul(33).wrapping_add(u32::from(byte))
             })
         });
-        let local_port = match media.start(call_id.clone(), remote, ssrc).await {
+        let local_port = match media
+            .start_with_payload_type(call_id.clone(), remote, offer.payload_type, ssrc)
+            .await
+        {
             Ok(local) => local.port(),
             Err(_) => {
                 return Some(build_request_response(

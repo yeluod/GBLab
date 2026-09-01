@@ -35,7 +35,12 @@ pub fn mux_video_packet(packet: &EncodedMediaPacket, pts_90khz: u64) -> Option<V
         video_payload.extend_from_slice(configuration);
     }
     video_payload.extend_from_slice(&packet.data);
-    output.extend_from_slice(&pes(VIDEO_STREAM_ID, &video_payload, pts_90khz));
+    let dts_90khz = packet
+        .dts
+        .unwrap_or_else(|| pts_90khz.cast_signed())
+        .max(0)
+        .cast_unsigned();
+    output.extend_from_slice(&pes(VIDEO_STREAM_ID, &video_payload, pts_90khz, dts_90khz));
     Some(output)
 }
 
@@ -95,10 +100,18 @@ fn program_stream_map(codec: VideoCodec) -> Vec<u8> {
     map
 }
 
-fn pes(stream_id: u8, payload: &[u8], pts_90khz: u64) -> Vec<u8> {
-    let header_data = encode_pts(pts_90khz);
+fn pes(stream_id: u8, payload: &[u8], pts_90khz: u64, dts_90khz: u64) -> Vec<u8> {
+    let has_dts = pts_90khz != dts_90khz;
+    let mut header_data = Vec::with_capacity(if has_dts { 10 } else { 5 });
+    header_data.extend_from_slice(&encode_timestamp(
+        pts_90khz,
+        if has_dts { 0x31 } else { 0x21 },
+    ));
+    if has_dts {
+        header_data.extend_from_slice(&encode_timestamp(dts_90khz, 0x11));
+    }
     let pes_length = 3 + header_data.len() + payload.len();
-    let mut result = Vec::with_capacity(9 + payload.len());
+    let mut result = Vec::with_capacity(9 + header_data.len() + payload.len());
     result.extend_from_slice(&[0, 0, 1, stream_id]);
     let encoded_length = if pes_length > usize::from(u16::MAX) {
         0
@@ -106,7 +119,8 @@ fn pes(stream_id: u8, payload: &[u8], pts_90khz: u64) -> Vec<u8> {
         u16::try_from(pes_length).unwrap_or(0)
     };
     result.extend_from_slice(&encoded_length.to_be_bytes());
-    result.extend_from_slice(&[0x80, 0x80, 5]);
+    result.extend_from_slice(&[0x80, if has_dts { 0xc0 } else { 0x80 }]);
+    result.push(u8::try_from(header_data.len()).unwrap_or(0));
     result.extend_from_slice(&header_data);
     result.extend_from_slice(payload);
     result
@@ -131,10 +145,10 @@ fn crc32_mpeg2(bytes: &[u8]) -> u32 {
     clippy::cast_possible_truncation,
     reason = "PTS 按规范截取固定宽度位段"
 )]
-const fn encode_pts(value: u64) -> [u8; 5] {
+const fn encode_timestamp(value: u64, prefix: u8) -> [u8; 5] {
     let value = value & ((1 << 33) - 1);
     [
-        0x21 | (((value >> 30) as u8 & 0x07) << 1),
+        prefix | (((value >> 30) as u8 & 0x07) << 1),
         (value >> 22) as u8,
         (((value >> 15) as u8) << 1) | 1,
         (value >> 7) as u8,
@@ -171,6 +185,24 @@ mod tests {
         assert_eq!(&output[..4], &[0, 0, 1, 0xba]);
         assert!(output.windows(4).any(|window| window == [0, 0, 1, 0xbc]));
         assert!(output.windows(4).any(|window| window == [0, 0, 1, 0xe0]));
+    }
+
+    #[test]
+    fn mux_should_include_dts_when_decode_and_presentation_timestamps_differ() {
+        let mut packet = packet(VideoCodec::H264);
+        packet.pts = Some(18_000);
+        packet.dts = Some(9_000);
+        let Some(output) = mux_video_packet(&packet, 18_000) else {
+            return;
+        };
+        let pes_offset = output
+            .windows(4)
+            .position(|window| window == [0, 0, 1, 0xe0]);
+        assert!(pes_offset.is_some());
+        let pes_offset = pes_offset.unwrap_or_default();
+        assert_eq!(output[pes_offset + 6], 0x80);
+        assert_eq!(output[pes_offset + 7], 0xc0);
+        assert_eq!(output[pes_offset + 8], 10);
     }
 
     #[test]

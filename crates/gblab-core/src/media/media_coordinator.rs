@@ -55,6 +55,18 @@ impl MediaSessionCoordinator {
         remote: SocketAddr,
         ssrc: u32,
     ) -> MediaResult<SocketAddr> {
+        self.start_with_payload_type(dialog_id, remote, self.config.payload_type, ssrc)
+            .await
+    }
+
+    /// Starts one RTP session using the payload type selected during SDP negotiation.
+    pub async fn start_with_payload_type(
+        &self,
+        dialog_id: impl Into<String>,
+        remote: SocketAddr,
+        payload_type: u8,
+        ssrc: u32,
+    ) -> MediaResult<SocketAddr> {
         if matches!(
             self.media.status().source_status,
             super::MediaSourceStatus::Stopped
@@ -84,7 +96,7 @@ impl MediaSessionCoordinator {
         let session = match MediaSession::start(
             subscription,
             remote,
-            self.config.payload_type,
+            payload_type,
             ssrc,
             self.config.mtu,
             tokio_util::sync::CancellationToken::new(),

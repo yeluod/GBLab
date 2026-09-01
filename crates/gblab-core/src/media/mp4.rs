@@ -441,6 +441,10 @@ impl Mp4Session {
                 if let Some(frame) = audio_frames.last() {
                     (metrics.audio_rms, metrics.audio_peak) = audio_levels(&frame.samples);
                 }
+                // Drain packets belong to the previous timeline. Keep the
+                // loop marker pending until the first packet read after the
+                // seek, otherwise the old tail packet would be normalized
+                // with the new loop offset and cause a timestamp jump.
                 let packet = self.pending_packets.pop_front();
                 let pacing_timestamp = packet
                     .as_ref()
@@ -1214,12 +1218,19 @@ mod tests {
                 Err(error) => panic!("failed while looping MP4: {error}"),
             };
             saw_audio |= !output.audio_frames.is_empty();
-            if session.loop_pending {
+            if session.loop_pending && !output.looped {
                 saw_drain_output = true;
-                assert!(output.branch_errors.is_empty());
             }
             if output.looped {
                 saw_loop_packet = true;
+                assert!(
+                    output
+                        .packet
+                        .as_ref()
+                        .is_some_and(|packet| packet.is_keyframe),
+                    "loop marker must be attached to a new-generation keyframe"
+                );
+                assert!(output.branch_errors.is_empty());
                 break;
             }
         }
